@@ -60,6 +60,10 @@ init(_Args) ->
                      {riak_core_vnode_master, start_link, [logging_vnode]},
                      permanent, 5000, worker, [riak_core_vnode_master]},
 
+    AntidoteConfig = {antidote_config,
+                      {antidote_config, start_link, []},
+                      permanent, 5000, worker, [antidote_config]},
+
     ClockSIMaster = { clocksi_vnode_master,
                       {riak_core_vnode_master, start_link, [clocksi_vnode]},
                       permanent, 5000, worker, [riak_core_vnode_master]},
@@ -112,6 +116,7 @@ init(_Args) ->
     {ok,
      {{one_for_one, 5, 10},
       [LoggingMaster,
+       AntidoteConfig,
        ClockSIMaster,
        ClockSIiTxCoordSup,
        ClockSIReadSup,

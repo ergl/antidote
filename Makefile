@@ -39,6 +39,7 @@ reltest: rel
 lint:
 	${REBAR} as lint lint
 
+check: export TXN_PROT=clocksi
 check: distclean cleantests test reltest dialyzer lint
 
 relgentlerain: export TXN_PROTOCOL=gentlerain

@@ -86,32 +86,46 @@ unregister_hook(Prefix, Bucket) ->
 %% Transaction API %%
 %% ==============  %%
 
+protocol_module() ->
+    {ok, Protocol} = antidote_config:get(?TRANSACTION_CONFIG, clocksi),
+    Prot = case Protocol of
+        clocksi -> cure;
+        gr -> cure;
+        Other -> Other
+    end,
+    {ok, Prot}.
+
 -spec start_transaction(Clock::snapshot_time(), Properties::txn_properties())
                        -> {ok, txid()} | {error, reason()}.
 start_transaction(Clock, Properties) ->
-    cure:start_transaction(Clock, Properties, false).
+    {ok, TransactionalModule} = protocol_module(),
+    TransactionalModule:start_transaction(Clock, Properties, false).
 
 -spec abort_transaction(TxId::txid()) -> {error, reason()}.
 abort_transaction(TxId) ->
-    cure:abort_transaction(TxId).
+    {ok, TransactionalModule} = protocol_module(),
+    TransactionalModule:abort_transaction(TxId).
 
 -spec commit_transaction(TxId::txid()) ->
                                 {ok, snapshot_time()} | {error, reason()}.
 commit_transaction(TxId) ->
-    cure:commit_transaction(TxId).
+    {ok, TransactionalModule} = protocol_module(),
+    TransactionalModule:commit_transaction(TxId).
 %% TODO: Execute post_commit hooks here?
 
 -spec read_objects(Objects::[bound_object()], TxId::txid())
                   -> {ok, [term()]} | {error, reason()}.
 read_objects(Objects, TxId) ->
-    cure:read_objects(Objects, TxId).
+    {ok, TransactionalModule} = protocol_module(),
+    TransactionalModule:read_objects(Objects, TxId).
 
 -spec update_objects([{bound_object(), op_name(), op_param()} | {bound_object(), {op_name(), op_param()}}], txid())
                     -> ok | {error, reason()}.
 update_objects(Updates, TxId) ->
     case type_check(Updates) of
         ok ->
-            cure:update_objects(Updates, TxId);
+            {ok, TransactionalModule} = protocol_module(),
+            TransactionalModule:update_objects(Updates, TxId);
         {error, Reason} ->
             {error, Reason}
     end.
@@ -122,7 +136,8 @@ update_objects(Updates, TxId) ->
 update_objects(Clock, Properties, Updates) ->
     case type_check(Updates) of
         ok ->
-            cure:update_objects(Clock, Properties, Updates);
+            {ok, TransactionalModule} = protocol_module(),
+            TransactionalModule:update_objects(Clock, Properties, Updates);
         {error, Reason} ->
             {error, Reason}
     end.
@@ -130,7 +145,8 @@ update_objects(Clock, Properties, Updates) ->
 -spec read_objects(vectorclock(), any(), [bound_object()]) ->
                           {ok, list(), vectorclock()} | {error, reason()}.
 read_objects(Clock, Properties, Objects) ->
-    cure:read_objects(Clock, Properties, Objects).
+    {ok, TransactionalModule} = protocol_module(),
+    TransactionalModule:read_objects(Clock, Properties, Objects).
 
 %%% Internal function %%
 %%% ================= %%

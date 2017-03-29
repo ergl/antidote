@@ -138,6 +138,7 @@ stop(Pid) -> gen_fsm:sync_send_all_state_event(Pid, stop).
 %% @doc Initialize the state.
 init([From, ClientClock, UpdateClock, StayAlive]) ->
     {ok, execute_op, start_tx_internal(From, ClientClock, UpdateClock, init_state(StayAlive, false, false))};
+
 %% @doc Init static transaction with Operations.
 init([From, ClientClock, UpdateClock, StayAlive, Operations]) ->
     State = start_tx_internal(From, ClientClock, UpdateClock, init_state(StayAlive, true, true)),
@@ -957,6 +958,7 @@ main_test_() ->
 setup() ->
     {ok, Pid} = clocksi_interactive_tx_coord_fsm:start_link(self(), ignore),
     Pid.
+
 cleanup(Pid) ->
     case process_info(Pid) of undefined -> io:format("Already cleaned");
         _ -> clocksi_interactive_tx_coord_fsm:stop(Pid) end.
@@ -1041,6 +1043,5 @@ wait_for_clock_test() ->
     VecClock = dc_utilities:now_microsec(),
     {ok, SnapshotTime2} = wait_for_clock(vectorclock:from_list([{mock_dc, VecClock}])),
     ?assertMatch([{mock_dc, _}], dict:to_list(SnapshotTime2)).
-
 
 -endif.
