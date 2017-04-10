@@ -66,7 +66,7 @@
     stop/1]).
 
 %% States
--export([create_transaction_record/5,
+-export([create_transaction_record/6,
     start_tx/2,
     init_state/3,
     perform_update/6,
@@ -145,7 +145,9 @@ init([From, ClientClock, UpdateClock, StayAlive, Operations]) ->
     {ok, execute_op, State#tx_coord_state{operations = Operations, from = From}, 0}.
 
 init_state(StayAlive, FullCommit, IsStatic) ->
+    {ok, Protocol} = antidote_config:get(?TRANSACTION_CONFIG, clocksi),
     #tx_coord_state {
+        transactional_protocol = Protocol,
         transaction = undefined,
         updated_partitions = [],
         client_ops = [],
@@ -173,8 +175,12 @@ start_tx({start_tx, From, ClientClock, UpdateClock, Operation}, SD0) ->
     {next_state, execute_op, start_tx_internal(From, ClientClock, UpdateClock,
                                                 SD0#tx_coord_state{is_static = true, operations = Operation, from = From}), 0}.
 
-start_tx_internal(From, ClientClock, UpdateClock, SD = #tx_coord_state{stay_alive = StayAlive, is_static = IsStatic}) ->
-    {Transaction, TransactionId} = create_transaction_record(ClientClock, UpdateClock, StayAlive, From, false),
+start_tx_internal(From, ClientClock, UpdateClock, SD = #tx_coord_state{
+    transactional_protocol=Protocol,
+    stay_alive=StayAlive,
+    is_static=IsStatic
+}) ->
+    {Transaction, TransactionId} = create_transaction_record(ClientClock, UpdateClock, StayAlive, From, false, Protocol),
     case IsStatic of
         true ->
             ok;
@@ -183,34 +189,53 @@ start_tx_internal(From, ClientClock, UpdateClock, SD = #tx_coord_state{stay_aliv
     end,
     SD#tx_coord_state{transaction=Transaction, num_to_read=0}.
 
--spec create_transaction_record(snapshot_time() | ignore, update_clock | no_update_clock,
-                                boolean(), pid() | undefined, boolean()) -> {tx(), txid()}.
-create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic) ->
+-spec create_transaction_record(snapshot_time() | ignore,
+                                update_clock | no_update_clock,
+                                boolean(),
+                                pid() | undefined,
+                                boolean(),
+                                any()) -> {tx(), txid()}.
+
+create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic, Protocol) ->
     %% Seed the random because you pick a random read server, this is stored in the process state
     _Res = rand_compat:seed(erlang:phash2([node()]), erlang:monotonic_time(), erlang:unique_integer()),
-    {ok, SnapshotTime} = case ClientClock of
-                             ignore ->
-                                 get_snapshot_time();
-                             _ ->
-                                 case UpdateClock of
-                                     update_clock ->
-                                         get_snapshot_time(ClientClock);
-                                     no_update_clock ->
-                                         {ok, ClientClock}
-                                 end
-                         end,
-    DcId = ?DC_META_UTIL:get_my_dc_id(),
-    LocalClock = ?VECTORCLOCK:get_clock_of_dc(DcId, SnapshotTime),
     Name = case StayAlive of
-               true ->
-                   generate_name(From);
-               false ->
-                   self()
-           end,
-    TransactionId = #tx_id{local_start_time = LocalClock, server_pid = Name},
-    Transaction = #transaction{snapshot_time = LocalClock,
-        vec_snapshot_time = SnapshotTime,
-        txn_id = TransactionId},
+        true ->
+            generate_name(From);
+        false ->
+            self()
+    end,
+    case Protocol of
+        clocksi ->
+            create_cure_gr_tx_record(Name, ClientClock, UpdateClock);
+        gr ->
+            create_cure_gr_tx_record(Name, ClientClock, UpdateClock)
+        %% TODO: Support other protocols
+    end.
+
+-spec create_cure_gr_tx_record(atom(), snapshot_time() | ignore,
+                               update_clock | no_update_clock) -> {tx(), txid()}.
+
+create_cure_gr_tx_record(Name, ClientClock, UpdateClock) ->
+    {ok, SnapshotTime} = case ClientClock of
+        ignore ->
+            get_snapshot_time();
+        _ -> case UpdateClock of
+            update_clock ->
+                get_snapshot_time(ClientClock);
+            no_update_clock ->
+                {ok, ClientClock}
+        end
+    end,
+    DCId = ?DC_META_UTIL:get_my_dc_id(),
+    LocalClock = ?VECTORCLOCK:get_clock_of_dc(DCId, SnapshotTime),
+
+    TransactionId = #tx_id{local_start_time=LocalClock, server_pid=Name},
+    Transaction = #transaction{
+        snapshot_time=LocalClock,
+        vec_snapshot_time=SnapshotTime,
+        txn_id=TransactionId
+    },
     {Transaction, TransactionId}.
 
 %% @doc This is a standalone function for directly contacting the read
@@ -219,7 +244,8 @@ create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic) 
 %%      transaction fsm and directly in the calling thread.
 -spec perform_singleitem_read(key(), type()) -> {ok, val(), snapshot_time()} | {error, reason()}.
 perform_singleitem_read(Key, Type) ->
-    {Transaction, _TransactionId} = create_transaction_record(ignore, update_clock, false, undefined, true),
+    {ok, TransactionalProtocol} = antidote_config:get(?TRANSACTION_CONFIG, cure),
+    {Transaction, _TransactionId} = create_transaction_record(ignore, update_clock, false, undefined, true, TransactionalProtocol),
     Partition = ?LOG_UTIL:get_key_partition(Key),
     case clocksi_readitem_server:read_data_item(Partition, Key, Type, Transaction) of
         {error, Reason} ->
@@ -236,7 +262,8 @@ perform_singleitem_read(Key, Type) ->
 %%      because the update/prepare/commit are all done at one time
 -spec perform_singleitem_update(key(), type(), {op(), term()}) -> {ok, {txid(), [], snapshot_time()}} | {error, term()}.
 perform_singleitem_update(Key, Type, Params) ->
-    {Transaction, _TransactionId} = create_transaction_record(ignore, update_clock, false, undefined, true),
+    {ok, TransactionalProtocol} = antidote_config:get(?TRANSACTION_CONFIG, cure),
+    {Transaction, _TransactionId} = create_transaction_record(ignore, update_clock, false, undefined, true, TransactionalProtocol),
     Partition = ?LOG_UTIL:get_key_partition(Key),
     %% Execute pre_commit_hook if any
     case antidote_hooks:execute_pre_commit_hook(Key, Type, Params) of

@@ -36,11 +36,11 @@
     update_objects/4
 ]).
 
-start_transaction(Clock, _Properties) ->
-    cure:start_transaction(Clock, _Properties).
+start_transaction(Clock, Properties) ->
+    cure:start_transaction(Clock, Properties).
 
-start_transaction(Clock, _Properties, KeepAlive) ->
-    cure:start_transaction(Clock, _Properties, KeepAlive).
+start_transaction(Clock, Properties, KeepAlive) ->
+    cure:start_transaction(Clock, Properties, KeepAlive).
 
 commit_transaction(TxId) ->
     cure:commit_transaction(TxId).
@@ -51,17 +51,17 @@ abort_transaction(TxId) ->
 read_objects(Objects, TxId) ->
     cure:read_objects(Objects, TxId).
 
-read_objects(Clock, _Properterties, Objects) ->
-    cure:read_objects(Clock, _Properterties, Objects).
+read_objects(Clock, Properterties, Objects) ->
+    cure:read_objects(Clock, Properterties, Objects).
 
-read_objects(Clock, _Properterties, Objects, StayAlive) ->
-    cure:read_objects(Clock, _Properterties, Objects, StayAlive).
+read_objects(Clock, Properterties, Objects, StayAlive) ->
+    cure:read_objects(Clock, Properterties, Objects, StayAlive).
 
 update_objects(Updates, TxId) ->
     cure:update_objects(Updates, TxId).
 
-update_objects(Clock, _Properties, Updates) ->
-    cure:update_objects(Clock, _Properties, Updates).
+update_objects(Clock, Properties, Updates) ->
+    cure:update_objects(Clock, Properties, Updates).
 
-update_objects(Clock, _Properties, Updates, StayAlive) ->
-    cure:update_objects(Clock, _Properties, Updates, StayAlive).
+update_objects(Clock, Properties, Updates, StayAlive) ->
+    cure:update_objects(Clock, Properties, Updates, StayAlive).

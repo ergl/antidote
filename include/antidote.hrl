@@ -158,7 +158,19 @@
 
 -define(CLOCKSI_TIMEOUT, 1000).
 
+-record(pvc_tx_meta, {
+    %% VC representing the causal dependencies picked up during execution
+    vcdep :: snapshot_time(),
+    %% VC representing the minimum snapshot version that must be read
+    vcaggr :: snapshot_time(),
+    %% Represents the partitions where the transaction has fixed a snapshot
+    hasread :: sets:set(partition_id())
+}).
+
+-type pvc_metadata() :: undefined | #pvc_tx_meta{}.
+
 -record(transaction, {
+    pvc_meta :: pvc_metadata(),
     snapshot_time :: snapshot_time(),
     vec_snapshot_time :: snapshot_time(),
     txn_id :: txid()
@@ -174,6 +186,7 @@
 }).
 
 %%---------------------------------------------------------------------
+-type transactional_protocol() :: clocksi | gr | pvc.
 -type downstream_record() :: term().
 -type actor() :: term().
 -type key() :: term().
@@ -262,6 +275,7 @@
 %%----------------------------------------------------------------------
 
 -record(tx_coord_state, {
+    transactional_protocol :: transactional_protocol(),
     from :: undefined | {pid(), term()} | pid(),
     transaction :: undefined | tx(),
     updated_partitions :: list(),
