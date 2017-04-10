@@ -34,6 +34,7 @@
 -define(DC_META_UTIL, mock_partition_fsm).
 -define(DC_UTIL, mock_partition_fsm).
 -define(VECTORCLOCK, mock_partition_fsm).
+-define(PARTITION_VC, mock_partition_fsm).
 -define(LOG_UTIL, mock_partition_fsm).
 -define(CLOCKSI_VNODE, mock_partition_fsm).
 -define(CLOCKSI_DOWNSTREAM, mock_partition_fsm).
@@ -42,6 +43,7 @@
 -define(DC_META_UTIL, dc_meta_data_utilities).
 -define(DC_UTIL, dc_utilities).
 -define(VECTORCLOCK, vectorclock).
+-define(PARTITION_VC, vectorclock_partition).
 -define(LOG_UTIL, log_utilities).
 -define(CLOCKSI_VNODE, clocksi_vnode).
 -define(CLOCKSI_DOWNSTREAM, clocksi_downstream).
@@ -209,8 +211,9 @@ create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic, 
         clocksi ->
             create_cure_gr_tx_record(Name, ClientClock, UpdateClock);
         gr ->
-            create_cure_gr_tx_record(Name, ClientClock, UpdateClock)
-        %% TODO: Support other protocols
+            create_cure_gr_tx_record(Name, ClientClock, UpdateClock);
+        pvc ->
+            create_pvc_tx_record(Name)
     end.
 
 -spec create_cure_gr_tx_record(atom(), snapshot_time() | ignore,
@@ -234,6 +237,24 @@ create_cure_gr_tx_record(Name, ClientClock, UpdateClock) ->
     Transaction = #transaction{
         snapshot_time=LocalClock,
         vec_snapshot_time=SnapshotTime,
+        txn_id=TransactionId
+    },
+    {Transaction, TransactionId}.
+
+-spec create_pvc_tx_record(atom()) -> {tx(), txid()}.
+create_pvc_tx_record(Name) ->
+    CompatibilityTime = ?VECTORCLOCK:new(),
+    PVCTime = ?PARTITION_VC:new(),
+    TransactionId = #tx_id{local_start_time=0, server_pid=Name},
+    PVCMeta = #pvc_tx_meta{
+        vcdep=PVCTime,
+        vcaggr=PVCTime,
+        hasread=sets:new()
+    },
+    Transaction = #transaction{
+        pvc_meta=PVCMeta,
+        snapshot_time=CompatibilityTime,
+        vec_snapshot_time=CompatibilityTime,
         txn_id=TransactionId
     },
     {Transaction, TransactionId}.

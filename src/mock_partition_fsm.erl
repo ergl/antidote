@@ -57,7 +57,9 @@
          abort/2,
          commit/3,
          single_commit/2,
-         get_stable_snapshot/0]).
+         get_stable_snapshot/0,
+         get_partition_time/2,
+         set_partition_time/3]).
 
 -record(state, {
         key :: atom()}).
@@ -89,6 +91,12 @@ get_clock_of_dc(_DcId, _SnapshotTime) ->
 get_key_partition(_Key) ->
     {ok, Pid} = mock_partition_fsm:start_link(),
     Pid.
+
+get_partition_time(_PartitionId, _Time) ->
+    0.
+
+set_partition_time(_, _, Time) ->
+    Time.
 
 get_preflist_from_key(_Key) ->
     {ok, Pid} = mock_partition_fsm:start_link(),

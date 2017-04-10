@@ -160,9 +160,9 @@
 
 -record(pvc_tx_meta, {
     %% VC representing the causal dependencies picked up during execution
-    vcdep :: snapshot_time(),
+    vcdep :: vectorclock_partition:partition_vc(),
     %% VC representing the minimum snapshot version that must be read
-    vcaggr :: snapshot_time(),
+    vcaggr :: vectorclock_partition:partition_vc(),
     %% Represents the partitions where the transaction has fixed a snapshot
     hasread :: sets:set(partition_id())
 }).
