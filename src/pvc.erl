@@ -37,7 +37,7 @@
 ]).
 
 start_transaction(Clock, Properties) ->
-    cure:start_transaction(Clock, Properties).
+    start_transaction(Clock, Properties, false).
 
 start_transaction(Clock, Properties, KeepAlive) ->
     cure:start_transaction(Clock, Properties, KeepAlive).

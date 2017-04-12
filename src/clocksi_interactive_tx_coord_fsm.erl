@@ -265,7 +265,7 @@ create_pvc_tx_record(Name) ->
 %%      transaction fsm and directly in the calling thread.
 -spec perform_singleitem_read(key(), type()) -> {ok, val(), snapshot_time()} | {error, reason()}.
 perform_singleitem_read(Key, Type) ->
-    {ok, TransactionalProtocol} = antidote_config:get(?TRANSACTION_CONFIG, cure),
+    TransactionalProtocol = transactional_protocol:get_protocol(),
     {Transaction, _TransactionId} = create_transaction_record(ignore, update_clock, false, undefined, true, TransactionalProtocol),
     Partition = ?LOG_UTIL:get_key_partition(Key),
     case clocksi_readitem_server:read_data_item(Partition, Key, Type, Transaction) of
