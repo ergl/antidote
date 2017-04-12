@@ -164,6 +164,7 @@
     %% VC representing the minimum snapshot version that must be read
     vcaggr :: vectorclock_partition:partition_vc(),
     %% Represents the partitions where the transaction has fixed a snapshot
+    %% TODO: Can reuse tx_coord_state#updated_partitions for this
     hasread :: sets:set(partition_id())
 }).
 
@@ -198,6 +199,7 @@
 -type dc_and_commit_time() :: {dcid(), clock_time()}.
 
 -record(tx_id, {
+    %% TODO: Check if this is important for pvc (right now we ignore it)
     local_start_time :: clock_time(),
     server_pid :: atom() | pid()
 }).
@@ -278,9 +280,11 @@
     transactional_protocol :: transactional_protocol(),
     from :: undefined | {pid(), term()} | pid(),
     transaction :: undefined | tx(),
+    %% TODO: Might be able to reuse this for hasRead?
     updated_partitions :: list(),
     client_ops :: list(), % list of upstream updates, used for post commit hooks
     num_to_ack :: non_neg_integer(),
+    %% TODO: ?
     num_to_read :: non_neg_integer(),
     prepare_time :: clock_time(),
     commit_time :: undefined | clock_time(),
