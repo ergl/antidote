@@ -375,6 +375,8 @@ perform_update(Op, UpdatedPartitions, Transaction, _Sender, ClientOps, InternalR
             WS
     end,
 
+    %% TODO: Wouldn't this execute every time an object is updated?
+    %% TODO: Maybe move to prepare?
     %% Execute pre_commit_hook if any
     case antidote_hooks:execute_pre_commit_hook(Key, Type, Update) of
         {error, Reason} ->

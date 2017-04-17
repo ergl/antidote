@@ -199,7 +199,7 @@
 -type dc_and_commit_time() :: {dcid(), clock_time()}.
 
 -record(tx_id, {
-    %% TODO: Check if this is important for pvc (right now we ignore it)
+    %% TODO: Check if this is important for pvc (right now we use a default value of 0)
     local_start_time :: clock_time(),
     server_pid :: atom() | pid()
 }).
@@ -284,7 +284,6 @@
     updated_partitions :: list(),
     client_ops :: list(), % list of upstream updates, used for post commit hooks
     num_to_ack :: non_neg_integer(),
-    %% TODO: ?
     num_to_read :: non_neg_integer(),
     prepare_time :: clock_time(),
     commit_time :: undefined | clock_time(),
