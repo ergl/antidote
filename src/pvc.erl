@@ -39,8 +39,8 @@
 start_transaction(Clock, Properties) ->
     start_transaction(Clock, Properties, false).
 
-start_transaction(Clock, Properties, KeepAlive) ->
-    cure:start_transaction(Clock, Properties, KeepAlive).
+start_transaction(_Clock, _Properties, _KeepAlive) ->
+    pvc_istart_tx().
 
 commit_transaction(TxId) ->
     cure:commit_transaction(TxId).
@@ -69,3 +69,14 @@ update_objects(_Clock, _Properties, _Updates) ->
 update_objects(_Clock, _Properties, _Updates, _StayAlive) ->
     %% TODO: Support static transactions
     {error, operation_not_implemented}.
+
+pvc_istart_tx() ->
+    {ok, _} = clocksi_interactive_tx_coord_sup:start_fsm([self() | compat_args()]),
+    receive
+        {ok, TxId} -> {ok, TxId};
+        Err -> {error, Err}
+    end.
+
+compat_args() ->
+    %% This feels hacky
+    [ignore, update_clock, false].
