@@ -51,17 +51,21 @@ abort_transaction(TxId) ->
 read_objects(Objects, TxId) ->
     cure:read_objects(Objects, TxId).
 
-read_objects(Clock, Properterties, Objects) ->
-    cure:read_objects(Clock, Properterties, Objects).
+read_objects(_Clock, _Properterties, _Objects) ->
+    %% TODO: Support static transactions
+    {error, operation_not_implemented}.
 
-read_objects(Clock, Properterties, Objects, StayAlive) ->
-    cure:read_objects(Clock, Properterties, Objects, StayAlive).
+read_objects(_Clock, _Properterties, _Objects, _StayAlive) ->
+    %% TODO: Support static transactions
+    {error, operation_not_implemented}.
 
 update_objects(Updates, TxId) ->
     cure:update_objects(Updates, TxId).
 
-update_objects(Clock, Properties, Updates) ->
-    cure:update_objects(Clock, Properties, Updates).
+update_objects(_Clock, _Properties, _Updates) ->
+    %% TODO: Support static transactions
+    {error, operation_not_implemented}.
 
-update_objects(Clock, Properties, Updates, StayAlive) ->
-    cure:update_objects(Clock, Properties, Updates, StayAlive).
+update_objects(_Clock, _Properties, _Updates, _StayAlive) ->
+    %% TODO: Support static transactions
+    {error, operation_not_implemented}.
