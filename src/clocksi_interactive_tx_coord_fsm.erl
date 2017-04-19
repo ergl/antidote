@@ -243,9 +243,11 @@ create_cure_gr_tx_record(Name, ClientClock, UpdateClock) ->
 
 -spec create_pvc_tx_record(atom()) -> {tx(), txid()}.
 create_pvc_tx_record(Name) ->
-    CompatibilityTime = ?VECTORCLOCK:new(),
+    Now = ?DC_UTIL:now_microsec(),
     PVCTime = ?PARTITION_VC:new(),
-    TransactionId = #tx_id{local_start_time=0, server_pid=Name},
+    CompatibilityTime = ?VECTORCLOCK:new(),
+
+    TransactionId = #tx_id{local_start_time=Now, server_pid=Name},
     PVCMeta = #pvc_tx_meta{
         vcdep=PVCTime,
         vcaggr=PVCTime,

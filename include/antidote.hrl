@@ -199,7 +199,7 @@
 -type dc_and_commit_time() :: {dcid(), clock_time()}.
 
 -record(tx_id, {
-    %% TODO: Check if this is important for pvc (right now we use a default value of 0)
+    %% TODO: Check if this is important for pvc (right now we use the node's local time in micros)
     local_start_time :: clock_time(),
     server_pid :: atom() | pid()
 }).
