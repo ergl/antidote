@@ -248,9 +248,12 @@ create_pvc_tx_record(Name) ->
     CompatibilityTime = ?VECTORCLOCK:new(),
 
     TransactionId = #tx_id{local_start_time=Now, server_pid=Name},
-    PVCMeta = #pvc_tx_meta{
+    PVCTime = #pvc_time{
         vcdep=PVCTime,
-        vcaggr=PVCTime,
+        vcaggr=PVCTime
+    },
+    PVCMeta = #pvc_tx_meta{
+        time=PVCTime,
         hasread=sets:new()
     },
     Transaction = #transaction{

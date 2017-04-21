@@ -99,8 +99,37 @@
 
 -record(commit_log_payload, {
     commit_time :: dc_and_commit_time(),
-    snapshot_time :: snapshot_time()
+    snapshot_time :: snapshot_time(),
+
+    %% PVC-related commit metadata
+    pvc_metadata :: pvc_commit_payload()
 }).
+
+%% PVC
+-record(pvc_time, {
+    %% VC representing the causal dependencies picked up during execution
+    vcdep :: vectorclock_partition:partition_vc(),
+    %% VC representing the minimum snapshot version that must be read
+    vcaggr :: vectorclock_partition:partition_vc()
+}).
+
+%% Commit time of a transaction at the given partition
+-record(pvc_commit_payload, {
+    partition :: partition_id(),
+    time :: #pvc_time{}
+}).
+
+-type pvc_commit_payload() :: #pvc_commit_payload{} | undefined.
+
+-record(pvc_tx_meta, {
+    %% VC metadata
+    time :: #pvc_time{},
+    %% Represents the partitions where the transaction has fixed a snapshot
+    %% TODO: Can reuse tx_coord_state#updated_partitions for this
+    hasread :: sets:set(partition_id())
+}).
+
+-type pvc_metadata() :: #pvc_tx_meta{} | undefined.
 
 -record(update_log_payload, {
     key :: key(),
@@ -111,7 +140,14 @@
 
 -record(abort_log_payload, {}).
 
--record(prepare_log_payload, {prepare_time :: non_neg_integer()}).
+-record(prepare_log_payload, {
+    prepare_time :: non_neg_integer(),
+
+    %% Tentative commit time for the transaction
+    %% TODO: Is this strictly necessary?
+    pvc_prepare_clock :: vectorclock_partition:partition_vc()
+                       | undefined
+}).
 
 -type any_log_payload() :: #update_log_payload{}
                          | #commit_log_payload{}
@@ -157,18 +193,6 @@
 -define(DELTA, 10000).
 
 -define(CLOCKSI_TIMEOUT, 1000).
-
--record(pvc_tx_meta, {
-    %% VC representing the causal dependencies picked up during execution
-    vcdep :: vectorclock_partition:partition_vc(),
-    %% VC representing the minimum snapshot version that must be read
-    vcaggr :: vectorclock_partition:partition_vc(),
-    %% Represents the partitions where the transaction has fixed a snapshot
-    %% TODO: Can reuse tx_coord_state#updated_partitions for this
-    hasread :: sets:set(partition_id())
-}).
-
--type pvc_metadata() :: undefined | #pvc_tx_meta{}.
 
 -record(transaction, {
     pvc_meta :: pvc_metadata(),
