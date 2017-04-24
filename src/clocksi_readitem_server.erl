@@ -211,22 +211,24 @@ handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     {noreply, SD0}.
 
 -spec perform_read_internal(pid(), key(), type(), #transaction{}, [], #state{}) -> ok.
-perform_read_internal(Coordinator, Key, Type, Transaction, PropertyList, SD0 = #state{
-    prepared_cache=PreparedCache,
-    partition=Partition
-}) ->
+perform_read_internal(_Coordinator, _Key, _Type, _Tx = #transaction{transactional_protocol=pvc}, _PropList, _State) ->
+    %% TODO(borja): This is where we perform PVC's read logic, don't wait like cure/gr
+    ok;
 
+perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
+    partition=Partition,
+    prepared_cache=PreparedCache
+}) ->
     %% TODO: Add support for read properties
     PropertyList = [],
-    TxId = Transaction#transaction.txn_id,
+    TxId = Tx#transaction.txn_id,
     TxLocalStartTime = TxId#tx_id.local_start_time,
     case check_clock(Key, TxLocalStartTime, PreparedCache, Partition) of
         {not_ready, Time} ->
-            %% spin_wait(Coordinator, Key, Type, Transaction, OpsCache, SnapshotCache, PreparedCache, Self);
-            _Tref = erlang:send_after(Time, self(), {perform_read_cast, Coordinator, Key, Type, Transaction}),
+            erlang:send_after(Time, self(), {perform_read_cast, Coordinator, Key, Type, Tx}),
             ok;
         ready ->
-            return(Coordinator, Key, Type, Transaction, PropertyList, SD0)
+            return(Coordinator, Key, Type, Tx, PropertyList, State)
     end.
 
 %% @doc check_clock: Compares its local clock with the tx timestamp.
