@@ -196,6 +196,7 @@
 
 -record(transaction, {
     pvc_meta :: pvc_metadata(),
+    transactional_protocol :: transactional_protocol(),
     snapshot_time :: snapshot_time(),
     vec_snapshot_time :: snapshot_time(),
     txn_id :: txid()

@@ -209,17 +209,17 @@ create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic, 
     end,
     case Protocol of
         clocksi ->
-            create_cure_gr_tx_record(Name, ClientClock, UpdateClock);
+            create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol);
         gr ->
-            create_cure_gr_tx_record(Name, ClientClock, UpdateClock);
+            create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol);
         pvc ->
-            create_pvc_tx_record(Name)
+            create_pvc_tx_record(Name, Protocol)
     end.
 
 -spec create_cure_gr_tx_record(atom(), snapshot_time() | ignore,
-                               update_clock | no_update_clock) -> {tx(), txid()}.
+                               update_clock | no_update_clock, transactional_protocol()) -> {tx(), txid()}.
 
-create_cure_gr_tx_record(Name, ClientClock, UpdateClock) ->
+create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol) ->
     {ok, SnapshotTime} = case ClientClock of
         ignore ->
             get_snapshot_time();
@@ -235,14 +235,15 @@ create_cure_gr_tx_record(Name, ClientClock, UpdateClock) ->
 
     TransactionId = #tx_id{local_start_time=LocalClock, server_pid=Name},
     Transaction = #transaction{
+        transactional_protocol=Protocol,
         snapshot_time=LocalClock,
         vec_snapshot_time=SnapshotTime,
         txn_id=TransactionId
     },
     {Transaction, TransactionId}.
 
--spec create_pvc_tx_record(atom()) -> {tx(), txid()}.
-create_pvc_tx_record(Name) ->
+-spec create_pvc_tx_record(atom(), transactional_protocol()) -> {tx(), txid()}.
+create_pvc_tx_record(Name, Protocol) ->
     Now = ?DC_UTIL:now_microsec(),
     PVCTime = ?PARTITION_VC:new(),
     CompatibilityTime = ?VECTORCLOCK:new(),
@@ -258,6 +259,7 @@ create_pvc_tx_record(Name) ->
     },
     Transaction = #transaction{
         pvc_meta=PVCMeta,
+        transactional_protocol=Protocol,
         snapshot_time=CompatibilityTime,
         vec_snapshot_time=CompatibilityTime,
         txn_id=TransactionId
