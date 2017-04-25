@@ -76,8 +76,9 @@ start_vnode(I) ->
 %% @doc Read state of key at given snapshot time, this does not touch the vnode process
 %%      directly, instead it just reads from the operations and snapshot tables that
 %%      are in shared memory, allowing concurrent reads.
--spec read(key(), type(), snapshot_time(), txid(), #mat_state{}) -> {ok, snapshot()} | {error, reason()}.
-read(Key, Type, SnapshotTime, TxId, MatState = #mat_state{ops_cache = OpsCache}) ->
+-spec read(key(), type(), snapshot_time(), #transaction{}, #mat_state{}) -> {ok, snapshot()} | {error, reason()}.
+read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = OpsCache}) ->
+    TxId = Transaction#transaction.txn_id,
     case ets:info(OpsCache) of
         undefined ->
             riak_core_vnode_master:sync_command(

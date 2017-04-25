@@ -275,8 +275,7 @@ return(Coordinator, Key, Type, Transaction, PropertyList,
     %% TODO: Add support for read properties
     PropertyList = [],
     VecSnapshotTime = Transaction#transaction.vec_snapshot_time,
-    TxId = Transaction#transaction.txn_id,
-    case materializer_vnode:read(Key, Type, VecSnapshotTime, TxId, MatState) of
+    case materializer_vnode:read(Key, Type, VecSnapshotTime, Transaction, MatState) of
         {ok, Snapshot} ->
             case Coordinator of
                 {fsm, Sender} -> %% Return Type and Value directly here.
