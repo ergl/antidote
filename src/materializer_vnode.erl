@@ -315,7 +315,6 @@ terminate(_Reason, _State=#mat_state{ops_cache=OpsCache, snapshot_cache=Snapshot
     ok.
 
 
-
 %%---------------- Internal Functions -------------------%%
 
 -spec internal_store_ss(key(), #materialized_snapshot{}, snapshot_time(), boolean(), #mat_state{}) -> boolean().
@@ -345,7 +344,7 @@ internal_store_ss(Key, Snapshot = #materialized_snapshot{last_op_id = NewOpId}, 
 
 %% @doc This function takes care of reading. It is implemented here for not blocking the
 %% vnode when the write function calls it. That is done for garbage collection.
--spec internal_read(key(), type(), snapshot_time(), txid() | ignore, #mat_state{}) -> {ok, snapshot()} | {error, no_snapshot}.
+-spec internal_read(key(), type(), snapshot_time(), txid() | ignore, #mat_state{}) -> {ok, snapshot()} | {error, reason()}.
 internal_read(Key, Type, MinSnapshotTime, TxId, State) ->
     internal_read(Key, Type, MinSnapshotTime, TxId, false, State).
 
