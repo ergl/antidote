@@ -504,7 +504,13 @@ execute_command(read_objects, Objects, Sender, State = #tx_coord_state{transacti
     {next_state, receive_read_objects_result, NewCoordState#tx_coord_state{from=Sender}};
 
 %% @doc Perform update operations on a batch of Objects
-execute_command(update_objects, UpdateOps, Sender, State = #tx_coord_state{transaction=Transaction}) ->
+execute_command(update_objects, UpdateOps, Sender, State = #tx_coord_state{transactional_protocol=pvc}) ->
+    pvc_update(UpdateOps, Sender, State);
+
+execute_command(update_objects, UpdateOps, Sender, State) ->
+    clocksi_update(UpdateOps, Sender, State).
+
+clocksi_update(UpdateOps, Sender, State = #tx_coord_state{transaction=Transaction}) ->
     ExecuteUpdates = fun(Op, AccState=#tx_coord_state{
         client_ops=ClientOps0,
         internal_read_set=ReadSet,
@@ -536,6 +542,79 @@ execute_command(update_objects, UpdateOps, Sender, State = #tx_coord_state{trans
             {next_state, receive_logging_responses, LoggingState};
         false ->
             {next_state, receive_logging_responses, LoggingState, 0}
+    end.
+
+pvc_update(UpdateOps, Sender, State = #tx_coord_state{transaction=_Transaction}) ->
+    PerformUpdates = fun(Op, AccState=#tx_coord_state{
+        client_ops=ClientOps,
+        updated_partitions=UpdatedPartitions
+    }) ->
+        case pvc_perform_update(Op, UpdatedPartitions, ClientOps) of
+            {error, _Reason}=Err ->
+                AccState#tx_coord_state{return_accumulator=Err};
+
+            {NewUpdatedPartitions, NewClientOps} ->
+                AccState#tx_coord_state{
+                    client_ops=NewClientOps,
+                    updated_partitions=NewUpdatedPartitions
+                }
+        end
+    end,
+
+    NewCoordState = lists:foldl(PerformUpdates, State, UpdateOps),
+    AccRes = NewCoordState#tx_coord_state.return_accumulator,
+    case AccRes of
+        {error, _} ->
+            abort(NewCoordState);
+
+        _ ->
+            IsStatic = NewCoordState#tx_coord_state.is_static,
+            case IsStatic of
+                true ->
+                    %% Shouldn't happen anyway, static transactions are unsupported for PVC
+                    prepare(NewCoordState);
+                false ->
+                    gen_fsm:reply(Sender, ok),
+                    {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}
+            end
+    end.
+
+pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
+    %% Might want to check this before, error on the user if using a CRDT object
+    {Key, Type=antidote_crdt_lwwreg, Update} = Op,
+
+    case antidote_hooks:execute_pre_commit_hook(Key, Type, Update) of
+        {error, Reason} ->
+            lager:debug("Execute pre-commit hook failed ~p", [Reason]),
+            {error, Reason};
+
+        {Key, Type, _PostHookUpdate}=GeneratedUpdate ->
+
+            %% Don't read snapshot, will do that at commit time
+            %% As we only allow lww-registers, we don't need to keep track of all
+            %% generated updates, so we just keep the most recent one.
+            NewUpdatedPartitions = pvc_swap_writeset(UpdatedPartitions, GeneratedUpdate),
+            UpdatedOps = pvc_swap_operations(ClientOps, GeneratedUpdate),
+
+            {NewUpdatedPartitions, UpdatedOps}
+    end.
+
+pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
+    Partition = ?LOG_UTIL:get_key_partition(Key),
+    case lists:keyfind(Partition, 1, UpdatedPartitions) of
+        false ->
+            [{Partition, [Update]} | UpdatedPartitions];
+        {Partition, WS} ->
+            NewWS = lists:keyreplace(Key, 1, WS, Update),
+            lists:keyreplace(Partition, 1, UpdatedPartitions, {Partition, NewWS})
+    end.
+
+pvc_swap_operations(ClientOps, {Key, _, _}=Update) ->
+    case lists:keyfind(Key, 1, ClientOps) of
+        false ->
+            [Update | ClientOps];
+        _ ->
+            lists:keyreplace(Key, 1, ClientOps, Update)
     end.
 
 %% @doc This state reached after an execute_op(update_objects[Params]).
