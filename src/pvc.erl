@@ -59,8 +59,19 @@ read_objects(_Clock, _Properterties, _Objects, _StayAlive) ->
     %% TODO: Support static transactions
     {error, operation_not_implemented}.
 
+-spec update_objects([{bound_object(), op_name(), op_param()}], txid()) -> ok | {error, reason()}.
 update_objects(Updates, TxId) ->
-    cure:update_objects(Updates, TxId).
+    FormattedUpdates = format_update_params(Updates),
+    case gen_fsm:sync_send_event(TxId#tx_id.server_pid, {update_objects, FormattedUpdates}, ?OP_TIMEOUT) of
+        ok ->
+            ok;
+
+        {aborted, TxId}=Abort ->
+            {error, Abort};
+
+        {error, _R}=Err ->
+            Err
+    end.
 
 update_objects(_Clock, _Properties, _Updates) ->
     %% TODO: Support static transactions
@@ -80,3 +91,8 @@ pvc_istart_tx() ->
 compat_args() ->
     %% This feels hacky
     [ignore, update_clock, false].
+
+format_update_params(Updates) ->
+    lists:map(fun({{Key, Type, Bucket}, Op, Param}) ->
+        {{Key, Bucket}, Type, {Op, Param}}
+    end, Updates).
