@@ -201,12 +201,7 @@ start_tx_internal(From, ClientClock, UpdateClock, SD = #tx_coord_state{
 create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic, Protocol) ->
     %% Seed the random because you pick a random read server, this is stored in the process state
     _Res = rand_compat:seed(erlang:phash2([node()]), erlang:monotonic_time(), erlang:unique_integer()),
-    Name = case StayAlive of
-        true ->
-            generate_name(From);
-        false ->
-            self()
-    end,
+    Name = generate_server_name(StayAlive, From),
     case Protocol of
         clocksi ->
             create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol);
@@ -215,6 +210,13 @@ create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic, 
         pvc ->
             create_pvc_tx_record(Name, Protocol)
     end.
+
+-spec generate_server_name(boolean(), pid() | undefined) -> atom() | pid().
+generate_server_name(true, From) when is_pid(From) ->
+    generate_name(From);
+
+generate_server_name(false, _) ->
+    self().
 
 -spec create_cure_gr_tx_record(atom(), snapshot_time() | ignore,
                                update_clock | no_update_clock, transactional_protocol()) -> {tx(), txid()}.
