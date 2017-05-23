@@ -38,6 +38,9 @@ start(_StartType, _StartArgs) ->
             ok = riak_core_node_watcher:service_up(logging, self()),
             %%ClockSI layer
 
+            ok = riak_core:register([{vnode_module, basic_logging_vnode}]),
+            ok = riak_core_node_watcher:service_up(basic_logging, self()),
+
             ok = riak_core:register([{vnode_module, clocksi_vnode}]),
             ok = riak_core_node_watcher:service_up(clocksi, self()),
 

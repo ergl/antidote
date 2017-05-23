@@ -60,6 +60,8 @@ init(_Args) ->
                      {riak_core_vnode_master, start_link, [logging_vnode]},
                      permanent, 5000, worker, [riak_core_vnode_master]},
 
+    BasicLoggingMaster = ?VNODE(basic_logging_vnode_master, basic_logging_vnode),
+
     ClockSIMaster = { clocksi_vnode_master,
                       {riak_core_vnode_master, start_link, [clocksi_vnode]},
                       permanent, 5000, worker, [riak_core_vnode_master]},
@@ -112,6 +114,7 @@ init(_Args) ->
     {ok,
      {{one_for_one, 5, 10},
       [LoggingMaster,
+       BasicLoggingMaster,
        ClockSIMaster,
        ClockSIiTxCoordSup,
        ClockSIReadSup,
