@@ -261,10 +261,10 @@ handle_command({append_all, LogId, Ops, ShouldSync}, _Sender, State=#state{
 
                 {ok, OpId} ->
                     Res = case ShouldSync of
-                              true ->
-                                  disk_log:sync(Log);
-                              false ->
-                                  ok
+                        true ->
+                            disk_log:sync(Log);
+                        false ->
+                            ok
                     end,
                     case Res of
                         ok ->
@@ -280,7 +280,6 @@ handle_command({append_all, LogId, Ops, ShouldSync}, _Sender, State=#state{
 build_log_op(LogId, Op, OpIdTable) ->
     SelfId = dc_meta_data_utilities:get_my_dc_id(),
     OpNumber = faa_latest_op_id(OpIdTable, LogId, SelfId),
-
     #log_op{op_id = OpNumber, payload = Op}.
 
 -spec faa_latest_op_id(cache_id(), log_id(), dcid()) -> op_id().
