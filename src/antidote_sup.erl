@@ -56,11 +56,7 @@ start_metrics_collection() ->
 %% ===================================================================
 
 init(_Args) ->
-    LoggingMaster = {logging_vnode_master,
-                     {riak_core_vnode_master, start_link, [logging_vnode]},
-                     permanent, 5000, worker, [riak_core_vnode_master]},
-
-    BasicLoggingMaster = ?VNODE(basic_logging_vnode_master, basic_logging_vnode),
+    LoggingMaster = ?VNODE(log_compat:get_master_node(), log_compat:get_vnode_module()),
 
     ClockSIMaster = { clocksi_vnode_master,
                       {riak_core_vnode_master, start_link, [clocksi_vnode]},
@@ -114,7 +110,6 @@ init(_Args) ->
     {ok,
      {{one_for_one, 5, 10},
       [LoggingMaster,
-       BasicLoggingMaster,
        ClockSIMaster,
        ClockSIiTxCoordSup,
        ClockSIReadSup,

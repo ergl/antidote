@@ -45,7 +45,7 @@
 -define(LOG_UTIL, log_utilities).
 -define(CLOCKSI_VNODE, clocksi_vnode).
 -define(CLOCKSI_DOWNSTREAM, clocksi_downstream).
--define(LOGGING_VNODE, logging_vnode).
+-define(LOGGING_VNODE, log_compat).
 -endif.
 
 

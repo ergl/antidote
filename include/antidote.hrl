@@ -1,7 +1,7 @@
 
 -define(BUCKET, <<"antidote">>).
 -define(MASTER, antidote_vnode_master).
--define(LOGGING_MASTER, logging_vnode_master).
+-define(LOGGING_MASTER, (log_compat:get_master_node())).
 -define(CLOCKSI_MASTER, clocksi_vnode_master).
 -define(CLOCKSI_GENERATOR_MASTER, clocksi_downstream_generator_vnode_master).
 -define(CLOCKSI, clocksi).
