@@ -252,7 +252,7 @@ connect_cluster(Nodes) ->
               wait_until_registered(Node1, meta_data_sender_sup),
               wait_until_registered(Node1, meta_data_manager_sup),
               ok = rpc:call(Node1, inter_dc_manager, start_bg_processes, [stable]),
-              ok = rpc:call(Node1, logging_vnode, set_sync_log, [true])
+              ok = rpc:call(Node1, log_compat, set_sync_log, [true])
           end, Clusters),
     Descriptors = descriptors(Clusters),
     ct:print("the clusters ~w", [Clusters]),

@@ -132,7 +132,7 @@ load_from_log_to_tables(Partition, State) ->
 
 -spec loop_until_loaded({partition_id(), node()}, log_id(), start | disk_log:continuation(), dict:dict(), #mat_state{}) -> ok | {error, reason()}.
 loop_until_loaded(Node, LogId, Continuation, Ops, State) ->
-    case logging_vnode:get_all(Node, LogId, Continuation, Ops) of
+    case log_compat:get_all(Node, LogId, Continuation, Ops) of
         {error, Reason} ->
             {error, Reason};
         {NewContinuation, NewOps, OpsDict} ->
@@ -402,7 +402,7 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
 get_from_snapshot_log(Key, Type, SnapshotTime) ->
     LogId = log_utilities:get_logid_from_key(Key),
     Partition = log_utilities:get_key_partition(Key),
-    logging_vnode:get(Partition, LogId, SnapshotTime, Type, Key).
+    log_compat:get(Partition, LogId, SnapshotTime, Type, Key).
 
 %% @doc Store a new key snapshot in the in-memory cache at the given commit time.
 %%

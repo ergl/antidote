@@ -105,7 +105,7 @@ get_entries_internal(Partition, From, To) ->
 %% TODO: also fix the method to provide complete snapshots if the log was trimmed
 -spec log_read_range(partition_id(), node(), log_opid(), log_opid()) -> [#log_record{}].
 log_read_range(Partition, Node, From, To) ->
-  {ok, RawOpList} = logging_vnode:read({Partition, Node}, [Partition]),
+  {ok, RawOpList} = log_compat:read({Partition, Node}, [Partition]),
   OpList = lists:map(fun({_Partition, Op}) -> Op end, RawOpList),
   filter_operations(OpList, From, To).
 

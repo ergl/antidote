@@ -122,7 +122,7 @@ start_bg_processes(MetaDataName) ->
     ok = dc_meta_data_utilities:store_meta_data_name(MetaDataName),
     %% Start the timers sending the heartbeats
     lager:info("Starting heartbeat sender timers"),
-    Responses = dc_utilities:bcast_vnode_sync(logging_vnode_master, {start_timer, undefined}),
+    Responses = dc_utilities:bcast_vnode_sync(log_compat:get_master_node(), {start_timer, undefined}),
     %% Be sure they all started ok, crash otherwise
     ok = lists:foreach(fun({_, ok}) ->
                            ok
@@ -156,7 +156,7 @@ check_node_restart() ->
             %% Ensure vnodes are running and meta_data
             ok = dc_utilities:ensure_local_vnodes_running_master(inter_dc_log_sender_vnode_master),
             ok = dc_utilities:ensure_local_vnodes_running_master(clocksi_vnode_master),
-            ok = dc_utilities:ensure_local_vnodes_running_master(logging_vnode_master),
+            ok = dc_utilities:ensure_local_vnodes_running_master(log_compat:get_master_node()),
             ok = dc_utilities:ensure_local_vnodes_running_master(materializer_vnode_master),
             wait_init:wait_ready(MyNode),
             ok = dc_utilities:check_registered(meta_data_sender_sup),
@@ -170,7 +170,7 @@ check_node_restart() ->
             ok = meta_data_sender:start(MetaDataName),
             %% Start the timers sending the heartbeats
             lager:info("Starting heartbeat sender timers"),
-            Responses = dc_utilities:bcast_my_vnode_sync(logging_vnode_master, {start_timer, undefined}),
+            Responses = dc_utilities:bcast_my_vnode_sync(log_compat:get_master_node(), {start_timer, undefined}),
             %% Be sure they all started ok, crash otherwise
             ok = lists:foreach(fun({_, ok}) ->
                                    ok

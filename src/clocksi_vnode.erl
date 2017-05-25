@@ -277,7 +277,7 @@ handle_command({check_tables_ready}, _Sender, SD0 = #state{partition = Partition
 handle_command({send_min_prepared}, _Sender,
            State = #state{partition = Partition, prepared_dict = PreparedDict}) ->
     {ok, Time} = get_min_prep(PreparedDict),
-    dc_utilities:call_local_vnode(Partition, logging_vnode_master, {send_min_prepared, Time}),
+    dc_utilities:call_local_vnode(Partition, log_compat:get_master_node(), {send_min_prepared, Time}),
     {noreply, State};
 
 handle_command({check_servers_ready}, _Sender, SD0 = #state{partition = Partition, read_servers = Serv}) ->
@@ -366,7 +366,7 @@ handle_command({abort, Transaction, Updates}, _Sender,
             LogId = log_utilities:get_logid_from_key(Key),
             Node = log_utilities:get_key_partition(Key),
             LogRecord = #log_operation{tx_id = TxId, op_type = abort, log_payload = #abort_log_payload{}},
-            Result = logging_vnode:append(Node, LogId, LogRecord),
+            Result = log_compat:append(Node, LogId, LogRecord),
             %% Result = logging_vnode:append(Node, LogId, {TxId, aborted}),
             NewPreparedDict = case Result of
                   {ok, _} ->
@@ -445,7 +445,7 @@ prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedD
                         log_payload = #prepare_log_payload{prepare_time = NewPrepare}},
                     LogId = log_utilities:get_logid_from_key(Key),
                     Node = log_utilities:get_key_partition(Key),
-                    Result = logging_vnode:append(Node, LogId, LogRecord),
+                    Result = log_compat:append(Node, LogId, LogRecord),
                     {Result, NewPrepare, NewPreparedDict};
                 _ ->
                     {{error, no_updates}, 0, PreparedDict}
@@ -497,7 +497,7 @@ commit(Transaction, TxCommitTime, Updates, CommittedTx, State) ->
         end,
             LogId = log_utilities:get_logid_from_key(Key),
             Node = log_utilities:get_key_partition(Key),
-            case logging_vnode:append_commit(Node, LogId, LogRecord) of
+            case log_compat:append_commit(Node, LogId, LogRecord) of
                 {ok, _} ->
                     case update_materializer(Updates, Transaction, TxCommitTime) of
                         ok ->

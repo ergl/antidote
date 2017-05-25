@@ -133,7 +133,7 @@ try_store(State, Txn=#interdc_txn{dcid = DCID, partition = Partition, timestamp 
     %% If so, store the transaction
     true ->
       %% Put the operations in the log
-      {ok, _} = logging_vnode:append_group({Partition, node()},
+      {ok, _} = log_compat:append_group({Partition, node()},
                                            [Partition], Ops, false),
 
       %% Update the materializer (send only the update operations)

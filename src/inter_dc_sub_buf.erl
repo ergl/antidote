@@ -61,7 +61,7 @@ process({txn, Txn}, State = #state{last_observed_opid = init, pdcid = {DCID, Par
     %% to see if there was a previous op received (i.e. in the case of fail and restart) so that
     %% you can check for duplocates or lost messages
     Result = try
-                 logging_vnode:request_op_id(dc_utilities:partition_to_indexnode(Partition),
+                 log_compat:request_op_id(dc_utilities:partition_to_indexnode(Partition),
                          DCID, Partition)
              catch
                  _:Reason ->
