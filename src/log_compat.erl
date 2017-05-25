@@ -41,7 +41,7 @@
 get_logging_module() ->
     case application:get_env(antidote, log_version) of
         {ok, basic} ->
-            operation_log;
+            clocksi_operation_log;
         {ok, legacy} ->
             logging_vnode
     end.

@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 
--module(operation_log).
+-module(clocksi_operation_log).
 
 -include("antidote.hrl").
 
