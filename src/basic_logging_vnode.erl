@@ -37,6 +37,7 @@
 %% TODO(borja): Remove, just for testing purposes
 -export([get_logmap/1]).
 
+%% Basic log operations
 -export([read/2,
          async_read/3,
          read_from/3,
@@ -47,6 +48,9 @@
          async_append_commit/4,
          append_all/3,
          async_append_all/4]).
+
+%% Utility functions
+-export([last_op_id/3]).
 
 %% riak_core_vnode callbacks
 -export([init/1,
@@ -104,6 +108,11 @@ set_sync_log(Value) ->
 -spec get_logmap(index_node()) -> {ok, dict:dict()}.
 get_logmap(Node) ->
     sync_command(Node, get_logmap).
+
+%% @doc Gets the last id of operations stored in the log for the given DCID
+-spec last_op_id(index_node(), log_id(), dcid()) -> {ok, non_neg_integer()}.
+last_op_id(Node, LogId, DCId) ->
+    sync_command(Node, {get_latest_op_id, LogId, DCId}).
 
 %% @doc Sends a `read' synchronous command to the Logs in `Node'
 -spec read(index_node(), key()) -> {ok, [term()]} | {error, reason()}.
@@ -182,6 +191,10 @@ handle_command({hello}, _Sender, State) ->
 
 handle_command(get_logmap, _Sender, State) ->
     {reply, {ok, State#state.logs_map}, State};
+
+handle_command({get_latest_op_id, LogId, DCId}, _Sender, State = #state{op_id_table=OpIdTable}) ->
+    {OpCount, _} = get_latest_op_id(OpIdTable, LogId, DCId),
+    {reply, {ok, OpCount}, State};
 
 handle_command({read, LogId}, _Sender, State=#state{
     logs_map=LogMap

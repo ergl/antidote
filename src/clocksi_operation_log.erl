@@ -23,13 +23,8 @@
 -include("antidote.hrl").
 
 %% Compat layer
--export([request_op_id/3,
-         get/5,
+-export([get/5,
          get_all/4]).
-
-
-request_op_id(_Arg0, _Arg1, _Arg2) ->
-    erlang:error(not_implemented).
 
 get(_Arg0, _Arg1, _Arg2, _Arg3, _Arg4) ->
     erlang:error(not_implemented).

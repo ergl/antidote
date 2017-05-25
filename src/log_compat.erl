@@ -91,10 +91,17 @@ append_commit(Node, LogId, Op) ->
     Module = get_vnode_module(),
     Module:append_commit(Node, LogId, Op).
 
-%% Clock-SI specific
-request_op_id(IndexNode, DCID, Partition) ->
-    Module = get_logging_module(),
-    Module:request_op_id(IndexNode, DCID, Partition).
+%% VNode, generic, different op_id handling
+request_op_id(IndexNode, DCId, Partition) ->
+    case get_vnode_module() of
+        basic_logging_vnode ->
+            %% TODO(borja): Move boxing to clients
+            LogId = [Partition],
+            basic_logging_vnode:last_op_id(IndexNode, LogId, DCId);
+
+        Module ->
+            Module:request_op_id(IndexNode, DCId, Partition)
+    end.
 
 %% VNode, generic
 append_group(Node, LogId, Ops, _IgnoredInClockSI=false) ->
