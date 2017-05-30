@@ -69,11 +69,14 @@ set_sync_log(Value) ->
 
 %% VNode, generic
 read(Node, Log) ->
+    %% TODO(borja): Not a problem as long as append is implemented correctly for clocksi_operation_log
     Module = get_vnode_module(),
     Module:read(Node, Log).
 
 %% VNode, generic
 append(Node, Log, Op) ->
+    %% TODO(borja): Override clocksi_operation_log append to create log records
+    %% This means that the clocksi log can't be a regular module anymore, needs state
     Module = get_vnode_module(),
     Module:append(Node, Log, Op).
 
