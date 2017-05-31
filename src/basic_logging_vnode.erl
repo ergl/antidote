@@ -212,7 +212,7 @@ handle_command({append, LogId, Op, ShouldSync}, _Sender, State=#state{
             {reply, {error, no_log}, State};
 
         {ok, Log} ->
-            case insert_log_record(Log, LogId, Op, OpIdTable, ShouldWrite) of
+            case insert_log_op(Log, LogId, Op, OpIdTable, ShouldWrite) of
                 {error, Reason} ->
                     {reply, {error, Reason}, State};
 
@@ -321,7 +321,7 @@ handle_handoff_data(Data, State=#state{
 
         {ok, Log} ->
             %% Optimistic handling; crash otherwise.
-            {ok, _OpId} = insert_log_record(Log, LogId, Operation, OpIdTable, ShouldWrite),
+            {ok, _OpId} = insert_log_op(Log, LogId, Operation, OpIdTable, ShouldWrite),
             ok = disk_log:sync(Log),
             {reply, ok, State}
     end.
@@ -458,8 +458,8 @@ get_log_from_map(Map, LogId) ->
             no_log
     end.
 
--spec insert_log_record(disk_log:log(), log_id(), term(), cache_id(), boolean()) -> {ok, log_op_num()} | {error, reason()}.
-insert_log_record(Log, LogId, Op, OpIdTable, ShouldWrite) ->
+-spec insert_log_op(disk_log:log(), log_id(), term(), cache_id(), boolean()) -> {ok, log_op_num()} | {error, reason()}.
+insert_log_op(Log, LogId, Op, OpIdTable, ShouldWrite) ->
     LogOp = build_log_op(LogId, Op, OpIdTable),
     Res = case ShouldWrite of
         true ->
