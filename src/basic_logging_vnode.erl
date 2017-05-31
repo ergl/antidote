@@ -40,8 +40,6 @@
 %% Basic log operations
 -export([read/2,
          async_read/3,
-         read_from/3,
-         async_read_from/4,
          append/3,
          async_append/4,
          append_commit/3,
@@ -119,14 +117,6 @@ last_op_id(Node, LogId, DCId) ->
 read(Node, LogId) ->
     sync_command(Node, {read, LogId}).
 
--spec read_from(index_node(), key(), op_id()) -> {ok, [term()]} | {error, reason()}.
-read_from(Node, LogId, OpId) ->
-    sync_command(Node, {read_from, LogId, OpId}).
-
--spec async_read_from(index_node(), key(), op_id(), sender()) -> ok.
-async_read_from(Node, LogId, OpId, ReplyTo) ->
-    async_command(Node, {read_from, LogId, OpId}, ReplyTo).
-
 %% @doc Sends a `read' asynchronous command to the Logs in `Preflist'
 -spec async_read(index_node(), key(), sender()) -> ok.
 async_read(Node, LogId, ReplyTo) ->
@@ -165,7 +155,6 @@ sync_command(To, Message) ->
 
 async_command(To, Message, From) ->
     riak_core_vnode_master:command(To, Message, From, basic_logging_vnode_master).
-
 
 init([Partition]) ->
     PrefLists = preflists_with_partition(Partition),
@@ -207,23 +196,6 @@ handle_command({read, LogId}, _Sender, State=#state{
             %% Wait until all pending writes are written
             ok = disk_log:sync(Log),
             Ops = read_all(Log),
-            {reply, {ok, Ops}, State}
-    end;
-
-handle_command({read_from, LogId, OpId}, _Sender, State=#state{
-    logs_map=LogMap,
-    op_id_table=OpIdTable
-}) ->
-    case get_log_from_map(LogMap, LogId) of
-        no_log ->
-            {reply, {error, no_log}, State};
-
-        {ok, Log} ->
-            %% Wait until all pending writes are written
-            ok = disk_log:sync(Log),
-            MyDC = dc_meta_data_utilities:get_my_dc_id(),
-            MaxOpId = get_latest_op_id(OpIdTable, LogId, MyDC),
-            Ops = read_from_internal(Log, OpId, MaxOpId),
             {reply, {ok, Ops}, State}
     end;
 
@@ -553,33 +525,6 @@ read_all(Log, Cont, Ops) ->
             {eof, []}
     end,
     read_all(Log, Next, Terms ++ Ops).
-
--spec read_from_internal(disk_log:log(), term(), term()) -> [term()].
-read_from_internal(_, {Count, _}, {MaxCount, _}) when Count > MaxCount ->
-    [];
-
-read_from_internal(Log, {Count, _}, _) ->
-    read_from_internal(Log, Count, start, []).
-
--spec read_from_internal(disk_log:log(), term(), start | disk_log:continuation(), [term()]) -> [term()].
-read_from_internal(_Log, _, eof, Ops) ->
-    Ops;
-
-read_from_internal(Log, OpId, Continuation, Ops) ->
-    {NextCont, NewTerms} = case disk_log:chunk(Log, Continuation) of
-        {NewCont, Terms} ->
-            {NewCont, get_greater_than(OpId, Terms)};
-        {NewCont, Terms, _} ->
-            {NewCont, get_greater_than(OpId, Terms)};
-        eof ->
-            {eof, []}
-    end,
-    read_from_internal(Log, OpId, NextCont, Ops ++ NewTerms).
-
--spec get_greater_than(non_neg_integer(), [term()]) -> [term()].
-get_greater_than(OpId, Terms) ->
-    {Greater, _} = lists:partition(fun({_Key, #log_op{op_id={Count, _}}}) -> Count >= OpId end, Terms),
-    Greater.
 
 %% @doc join_logs: Recursive fold of all the logs stored in the vnode
 %%      Input:  Logs: A list of pairs {Preflist, Log}
