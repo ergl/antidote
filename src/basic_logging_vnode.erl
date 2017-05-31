@@ -76,13 +76,16 @@
 }).
 
 -record(log_op, {
-    op_id :: op_id(),
+    op_num :: #op_number{},
     payload :: term()
 }).
 
+-opaque log_op_num() :: #op_number{}.
+
 -opaque log_op() :: #log_op{}.
 
--export_type([log_op/0]).
+-export_type([log_op/0,
+              log_op_num/0]).
 
 start_vnode(Index) ->
     riak_core_vnode_master:get_vnode_pid(Index, ?MODULE).
@@ -123,7 +126,7 @@ async_read(Node, LogId, ReplyTo) ->
     async_command(Node, {read, LogId}, ReplyTo).
 
 %% @doc Sends an `append' synchronous command to the Logs in `Node'
--spec append(index_node(), key(), term()) -> {ok, op_id()} | {error, reason()}.
+-spec append(index_node(), key(), term()) -> {ok, log_op_num()} | {error, reason()}.
 append(Node, LogId, Op) ->
     sync_command(Node, {append, LogId, Op, false}).
 
@@ -133,7 +136,7 @@ async_append(Node, LogId, Op, ReplyTo) ->
     async_command(Node, {append, LogId, Op, false}, ReplyTo).
 
 %% Same as append, but, if enabled, will ensure items are written to disk.
--spec append_commit(index_node(), key(), term()) -> {ok, op_id()} | {error, reason()}.
+-spec append_commit(index_node(), key(), term()) -> {ok, log_op_num()} | {error, reason()}.
 append_commit(Node, LogId, Op) ->
     sync_command(Node, {append, LogId, Op, is_sync_log()}).
 
@@ -142,7 +145,7 @@ append_commit(Node, LogId, Op) ->
 async_append_commit(Node, LogId, Op, ReplyTo) ->
     async_command(Node, {append, LogId, Op, is_sync_log()}, ReplyTo).
 
--spec append_all(index_node(), key(), [term()]) -> {ok, op_id()} | {error, reason()}.
+-spec append_all(index_node(), key(), [term()]) -> {ok, log_op_num()} | {error, reason()}.
 append_all(Node, LogId, Ops) ->
     sync_command(Node, {append_all, LogId, Ops, is_sync_log()}).
 
@@ -182,8 +185,8 @@ handle_command(get_logmap, _Sender, State) ->
     {reply, {ok, State#state.logs_map}, State};
 
 handle_command({get_latest_op_id, LogId, DCId}, _Sender, State = #state{op_id_table=OpIdTable}) ->
-    {OpCount, _} = get_latest_op_id(OpIdTable, LogId, DCId),
-    {reply, {ok, OpCount}, State};
+    OpNum = get_latest_op_id(OpIdTable, LogId, DCId),
+    {reply, {ok, OpNum#op_number.local}, State};
 
 handle_command({read, LogId}, _Sender, State=#state{
     logs_map=LogMap
@@ -265,21 +268,21 @@ handle_command({append_all, LogId, Ops, ShouldSync}, _Sender, State=#state{
 build_log_op(LogId, Op, OpIdTable) ->
     SelfId = dc_meta_data_utilities:get_my_dc_id(),
     OpNumber = faa_latest_op_id(OpIdTable, LogId, SelfId),
-    #log_op{op_id = OpNumber, payload = Op}.
+    #log_op{op_num = OpNumber, payload = Op}.
 
--spec faa_latest_op_id(cache_id(), log_id(), dcid()) -> op_id().
+-spec faa_latest_op_id(cache_id(), log_id(), dcid()) -> log_op_num().
 faa_latest_op_id(OpIdTable, LogId, DCId) ->
-    {Count, Node} = get_latest_op_id(OpIdTable, LogId, DCId),
-    NewId = {Count + 1, Node},
-    ok = store_latest_op_id(OpIdTable, LogId, DCId, NewId),
-    NewId.
+    OpNum = #op_number{local = Local, global = Global} = get_latest_op_id(OpIdTable, LogId, DCId),
+    NewNum = OpNum#op_number{local = Local + 1, global = Global + 1},
+    ok = store_latest_op_id(OpIdTable, LogId, DCId, NewNum),
+    NewNum.
 
--spec get_latest_op_id(cache_id(), log_id(), dcid()) -> op_id().
+-spec get_latest_op_id(cache_id(), log_id(), dcid()) -> log_op_num().
 get_latest_op_id(OpIdTable, LogId, DCId) ->
     Key = {LogId, DCId},
     case ets:lookup(OpIdTable, Key) of
         [] ->
-            {0, node()};
+            #op_number{node = {node(), DCId}, global = 0, local = 0};
         [{Key, LatestOpId}] ->
             LatestOpId
     end.
@@ -405,7 +408,7 @@ replay_old_op_ids(LogId, DCId, Log, OpIdTable, Continuation) ->
         {NewContinuation, Terms} ->
             %% Find the greatest op number in the recovered, and store it
             MaxNumber = max_op_number(Terms),
-            ok = store_latest_op_id(OpIdTable, LogId, DCId, {MaxNumber, node()}),
+            ok = store_latest_op_id(OpIdTable, LogId, DCId, MaxNumber),
             replay_old_op_ids(LogId, DCId, Log, OpIdTable, NewContinuation);
 
         {NewContinuation, Terms, BadBytes} ->
@@ -415,40 +418,31 @@ replay_old_op_ids(LogId, DCId, Log, OpIdTable, Continuation) ->
                 false ->
                     %% Find the greatest op number in the recovered, and store it
                     MaxNumber = max_op_number(Terms),
-                    ok = store_latest_op_id(OpIdTable, LogId, DCId, {MaxNumber, node()}),
+                    ok = store_latest_op_id(OpIdTable, LogId, DCId, MaxNumber),
                     replay_old_op_ids(LogId, DCId, Log, OpIdTable, NewContinuation)
             end
     end.
 
--spec max_op_number([term()]) -> non_neg_integer().
+-spec max_op_number([term()]) -> log_op_num().
 max_op_number(Terms) ->
-    max_op_number(Terms, 0).
+    %% Operations are already ordered on the log
+    {_Key, #log_op{op_num = OpNum}} = lists:last(Terms),
+    OpNum.
 
--spec max_op_number([term()], non_neg_integer()) -> non_neg_integer().
-max_op_number([], OpId) ->
-    OpId;
-
-max_op_number([{_Key, #log_op{op_id={Count, _Node}}} | Rest], OpId) ->
-    case Count > OpId of
-        true ->
-            max_op_number(Rest, Count);
-        false ->
-            max(Rest, OpId)
-    end.
-
--spec store_latest_op_id(cache_id(), log_id(), dcid(), op_id()) -> ok.
-store_latest_op_id(OpIdTable, LogId, DCId, OpId={Count, _}) ->
+-spec store_latest_op_id(cache_id(), log_id(), dcid(), log_op_num()) -> ok.
+store_latest_op_id(OpIdTable, LogId, DCId, OpNum) ->
     Key = {LogId, DCId},
     case ets:lookup(OpIdTable, Key) of
         [] ->
-            true = ets:insert(OpIdTable, {Key, OpId}),
+            true = ets:insert(OpIdTable, {Key, OpNum}),
             ok;
 
-        [{Key, {PrevCount, _}}] ->
+        [{Key, #op_number{local = PrevLocal, global = PrevGlobal}}] ->
+            #op_number{local = Local, global = Global} = OpNum,
             %% Only store if the count was greater
-            case Count > PrevCount of
+            case (Local > PrevLocal) or (Global > PrevGlobal) of
                 true ->
-                    true = ets:insert(OpIdTable, {Key, OpId}),
+                    true = ets:insert(OpIdTable, {Key, OpNum}),
                     ok;
                 false ->
                     ok
@@ -464,7 +458,7 @@ get_log_from_map(Map, LogId) ->
             no_log
     end.
 
--spec insert_log_record(disk_log:log(), log_id(), term(), cache_id(), boolean()) -> {ok, op_id()} | {error, reason()}.
+-spec insert_log_record(disk_log:log(), log_id(), term(), cache_id(), boolean()) -> {ok, log_op_num()} | {error, reason()}.
 insert_log_record(Log, LogId, Op, OpIdTable, ShouldWrite) ->
     LogOp = build_log_op(LogId, Op, OpIdTable),
     Res = case ShouldWrite of
@@ -475,17 +469,18 @@ insert_log_record(Log, LogId, Op, OpIdTable, ShouldWrite) ->
     end,
     case Res of
         ok ->
-            {ok, LogOp#log_op.op_id};
+            {ok, LogOp#log_op.op_num};
         {error, Reason} ->
             {error, Reason}
 
     end.
 
--spec insert_all_log_record(disk_log:log(), log_id(), [term()], cache_id(), boolean()) -> {ok, op_id()} | {error, reason()}.
+-spec insert_all_log_record(disk_log:log(), log_id(), [term()], cache_id(), boolean()) -> {ok, log_op_num()} | {error, reason()}.
 insert_all_log_record(Log, LogId, Ops, OpIdTable, ShouldWrite) ->
     {Records, LastOpId} = lists:foldl(fun(Op, {AccOps, _}) ->
+        %% TODO(borja): Update only the global num here
         LogOp = build_log_op(LogId, Op, OpIdTable),
-        {[{LogId, LogOp} | AccOps], LogOp#log_op.op_id}
+        {[{LogId, LogOp} | AccOps], LogOp#log_op.op_num}
     end, {[], ignore}, Ops),
 
     Res = case ShouldWrite of
