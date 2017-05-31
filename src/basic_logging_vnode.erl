@@ -233,7 +233,7 @@ handle_command({append, LogId, Op, ShouldSync}, _Sender, State=#state{
             end
     end;
 
-handle_command({append_all, LogId, Ops, ShouldSync}, _Sender, State=#state{
+handle_command({append_all, LogId, ExternalOps, ShouldSync}, _Sender, State=#state{
     logs_map=LogMap,
     op_id_table=OpIdTable,
     enable_log_to_disk=ShouldWrite
@@ -243,7 +243,7 @@ handle_command({append_all, LogId, Ops, ShouldSync}, _Sender, State=#state{
             {reply, {error, no_log}, State};
 
         {ok, Log} ->
-            case insert_all_log_record(Log, LogId, Ops, OpIdTable, ShouldWrite) of
+            case insert_external_log_ops(Log, LogId, ExternalOps, OpIdTable, ShouldWrite) of
                 {error, Reason} ->
                     {reply, {error, Reason}, State};
 
@@ -274,6 +274,13 @@ build_log_op(LogId, Op, OpIdTable) ->
 faa_latest_op_id(OpIdTable, LogId, DCId) ->
     OpNum = #op_number{local = Local, global = Global} = get_latest_op_id(OpIdTable, LogId, DCId),
     NewNum = OpNum#op_number{local = Local + 1, global = Global + 1},
+    ok = store_latest_op_id(OpIdTable, LogId, DCId, NewNum),
+    NewNum.
+
+-spec faa_latest_global_op_id(cache_id(), log_id(), dcid()) -> log_op_num().
+faa_latest_global_op_id(OpIdTable, LogId, DCId) ->
+    OpNum = #op_number{global = Global} = get_latest_op_id(OpIdTable, LogId, DCId),
+    NewNum = OpNum#op_number{global = Global + 1},
     ok = store_latest_op_id(OpIdTable, LogId, DCId, NewNum),
     NewNum.
 
@@ -475,25 +482,27 @@ insert_log_op(Log, LogId, Op, OpIdTable, ShouldWrite) ->
 
     end.
 
--spec insert_all_log_record(disk_log:log(), log_id(), [term()], cache_id(), boolean()) -> {ok, log_op_num()} | {error, reason()}.
-insert_all_log_record(Log, LogId, Ops, OpIdTable, ShouldWrite) ->
-    {Records, LastOpId} = lists:foldl(fun(Op, {AccOps, _}) ->
-        %% TODO(borja): Update only the global num here
-        LogOp = build_log_op(LogId, Op, OpIdTable),
+-spec insert_external_log_ops(disk_log:log(), log_id(), [term()], cache_id(), boolean()) -> {ok, log_op_num()} | {error, reason()}.
+insert_external_log_ops(Log, LogId, LogOps, OpIdTable, ShouldWrite) ->
+    SelfId = dc_meta_data_utilities:get_my_dc_id(),
+    %% Go through all given operations, and for each one, increment the current
+    %% maximum global op id.
+    {AllOps, LastOpNum} = lists:foldl(fun(LogOp, {AccOps, _}) ->
+        faa_latest_global_op_id(OpIdTable, LogId, SelfId),
         {[{LogId, LogOp} | AccOps], LogOp#log_op.op_num}
-    end, {[], ignore}, Ops),
+    end, {[], ignore}, LogOps),
 
     Res = case ShouldWrite of
-              true ->
-                  disk_log:log_terms(Log, lists:reverse(Records));
+        true ->
+            disk_log:log_terms(Log, lists:reverse(AllOps));
 
-              false ->
-                  ok
+        false ->
+            ok
     end,
 
     case Res of
         ok ->
-            {ok, LastOpId};
+            {ok, LastOpNum};
 
         {error, Reason} ->
             {error, Reason}
