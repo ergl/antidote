@@ -61,16 +61,22 @@ read_objects(_Clock, _Properterties, _Objects, _StayAlive) ->
 
 -spec update_objects([{bound_object(), op_name(), op_param()}], txid()) -> ok | {error, reason()}.
 update_objects(Updates, TxId) ->
-    FormattedUpdates = format_update_params(Updates),
-    case gen_fsm:sync_send_event(TxId#tx_id.server_pid, {update_objects, FormattedUpdates}, ?OP_TIMEOUT) of
-        ok ->
-            ok;
+    case valid_updates(Updates) of
+        false ->
+            {error, type_not_supported};
+        true ->
+            FormattedUpdates = format_update_params(Updates),
+            Resp = gen_fsm:sync_send_event(TxId#tx_id.server_pid, {update_objects, FormattedUpdates}, ?OP_TIMEOUT),
+            case Resp of
+                ok ->
+                    ok;
 
-        {aborted, TxId}=Abort ->
-            {error, Abort};
+                {aborted, TxId}=Abort ->
+                    {error, Abort};
 
-        {error, _R}=Err ->
-            Err
+                {error, _R}=Err ->
+                    Err
+            end
     end.
 
 update_objects(_Clock, _Properties, _Updates) ->
@@ -96,3 +102,15 @@ format_update_params(Updates) ->
     lists:map(fun({{Key, Type, Bucket}, Op, Param}) ->
         {{Key, Bucket}, Type, {Op, Param}}
     end, Updates).
+
+valid_updates(Updates) ->
+    lists:all(fun valid_update/1, Updates).
+
+valid_update({Obj, _, _}) ->
+    valid_object(Obj).
+
+valid_object({_, antidote_crdt_lwwreg, _}) ->
+    true;
+
+valid_object(_) ->
+    false.
