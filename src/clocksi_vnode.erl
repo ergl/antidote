@@ -94,9 +94,9 @@ read_data_item(Node, TxId, Key, Type, Updates) ->
             {error, Reason}
     end.
 
-async_read_data_item(Node, TxId, Key, Type) ->
+async_read_data_item(Node, Transaction, Key, Type) ->
     %% TODO(borja): Move Coordinator={fsm, self()} to the caller
-    clocksi_readitem_server:async_read_data_item(Node, Key, Type, TxId, {fsm, self()}).
+    clocksi_readitem_server:async_read_data_item(Node, Key, Type, Transaction, {fsm, self()}).
 
 %% @doc Return active transactions in prepare state with their preparetime for a given key
 %% should be run from same physical node
