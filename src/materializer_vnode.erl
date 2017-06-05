@@ -78,17 +78,17 @@ start_vnode(I) ->
 %%      are in shared memory, allowing concurrent reads.
 -spec read(key(), type(), snapshot_time(), #transaction{}, #mat_state{}) -> {ok, snapshot()} | {error, reason()}.
 read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = OpsCache}) ->
-    TxId = Transaction#transaction.txn_id,
     case ets:info(OpsCache) of
         undefined ->
             riak_core_vnode_master:sync_command(
                 {MatState#mat_state.partition, node()},
-                {read, Key, Type, SnapshotTime, TxId},
+                {read, Key, Type, SnapshotTime, Transaction},
                 materializer_vnode_master,
                 infinity
             );
 
         _ ->
+            TxId = Transaction#transaction.txn_id,
             internal_read(Key, Type, SnapshotTime, TxId, MatState)
     end.
 
@@ -220,8 +220,8 @@ handle_command({check_ready}, _Sender, State = #mat_state{partition=Partition, i
     Result2 = Result and IsReady,
     {reply, Result2, State};
 
-handle_command({read, Key, Type, SnapshotTime, TxId}, _Sender, State) ->
-    {reply, read(Key, Type, SnapshotTime, TxId, State), State};
+handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
+    {reply, read(Key, Type, SnapshotTime, Transaction, State), State};
 
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
