@@ -95,6 +95,7 @@ read_data_item(Node, TxId, Key, Type, Updates) ->
     end.
 
 async_read_data_item(Node, TxId, Key, Type) ->
+    %% TODO(borja): Move Coordinator={fsm, self()} to the caller
     clocksi_readitem_server:async_read_data_item(Node, Key, Type, TxId, {fsm, self()}).
 
 %% @doc Return active transactions in prepare state with their preparetime for a given key
