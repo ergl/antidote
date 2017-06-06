@@ -509,16 +509,23 @@ pvc_read(Objects, Sender, State = #tx_coord_state{
     transaction=Transaction
 }) ->
     PerformReads = fun({Key, Type}, AccState) ->
+        %% If the key has already been updated in this transaction,
+        %% return the last assigned value directly.
+        %% This works because we restrict ourselves to lww-registers,
+        %% so we don't need to depend on previous values.
         UpdatedOp = pvc_key_was_updated(ClientOps, Key),
         ok = case UpdatedOp of
             false ->
                 Partition = ?LOG_UTIL:get_key_partition(Key),
-                %% TODO(borja): Perform PVC's readrequest.
-                %% Right now we're sending the whole transaction, whereas
-                %% in the original spec we send VCaggr and hasRead only
+                %% If the key has never been updated, request the most
+                %% recent compatible version of the key to the holding
+                %% partition.
+                %%
+                %% We will wait for the reply on the next state.
                 clocksi_vnode:async_read_data_item(Partition, Transaction, Key, Type);
 
             Value ->
+                %% If updated, reply to ourselves with the last value.
                 gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
         end,
         ReadKeys = AccState#tx_coord_state.return_accumulator,
