@@ -753,6 +753,30 @@ receive_read_objects_result({ok, {Key, Type, Snapshot}}, CoordState = #tx_coord_
             {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0, internal_read_set=NewReadSet}}
     end;
 
+receive_read_objects_result({pvc_readreturn, Msg}, CoordState = #tx_coord_state{
+    num_to_read=NumToRead,
+    transaction=Transaction,
+    return_accumulator=ReadKeys
+}) ->
+
+    {Key, Value, VCdep, VCaggr} = Msg,
+
+    UpdatedTransaction = pvc_update_transaction(Key, VCdep, VCaggr, Transaction),
+
+    ReadValues = replace_first(ReadKeys, Key, Value),
+    case NumToRead > 1 of
+        true ->
+            {next_state, receive_read_objects_result, CoordState#tx_coord_state{
+                num_to_read=NumToRead - 1,
+                return_accumulator=ReadValues,
+                transaction=UpdatedTransaction
+            }};
+
+        false ->
+            gen_fsm:reply(CoordState#tx_coord_state.from, {ok, lists:reverse(ReadValues)}),
+            {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0, transaction=UpdatedTransaction}}
+    end;
+
 receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_coord_state{
     num_to_read=NumToRead,
     return_accumulator=ReadKeys,
@@ -771,7 +795,30 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
         false ->
             gen_fsm:reply(CoordState#tx_coord_state.from, {ok, lists:reverse(ReadValues)}),
             {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0}}
-    end.
+    end;
+
+receive_read_objects_result({error, abort}, _CoordState = #tx_coord_state{transactional_protocol=pvc}) ->
+    ok.
+
+-spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
+pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{pvc_meta=PVCMeta=#pvc_tx_meta{
+    hasread=HasRead,
+    time=PVCTime=#pvc_time{
+        vcdep=TVCdep,
+        vcaggr=TVCaggr
+    }
+}}) ->
+
+    {Partition, _Node} = ?LOG_UTIL:get_key_partition(Key),
+    NewHasRead = sets:add_element(Partition, HasRead),
+
+    NewVCdep = vectorclock_partition:max([TVCdep, VCdep]),
+    NewVCaggr = vectorclock_partition:max([TVCaggr, VCaggr]),
+
+    Transaction#transaction{pvc_meta=PVCMeta#pvc_tx_meta{
+        hasread=NewHasRead,
+        time=PVCTime#pvc_time{vcdep=NewVCdep, vcaggr=NewVCaggr}
+    }}.
 
 %% The following function is used to apply the updates that were performed by the running
 %% transaction, to the result returned by a read.
