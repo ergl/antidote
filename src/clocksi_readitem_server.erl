@@ -218,14 +218,17 @@ perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_pr
 
     MaxVersion = case sets:is_element(CurrentPartition, HasRead) of
         true ->
+            lager:info("PVC read @ ~p - Key ~p has been read before", [CurrentPartition, Key]),
             Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr;
         false ->
             %% FIXME(borja): Wait for MostCurrentVC_i, need to figure out where this is located
+            lager:info("PVC read @ ~p - Key ~p has not been read before", [CurrentPartition, Key]),
             vectorclock_partition:new()
     end,
     case materializer_vnode:read(Key, Type, MaxVersion, Tx, State#state.mat_state) of
         {ok, Snapshot} ->
             Value = Type:value(Snapshot),
+            lager:info("PVC read @ ~p got snapshot ~p", [CurrentPartition, Snapshot]),
             %% TODO(borja): Get the version of the snapshot, don't send MaxVersion twice
             %% The first is wrong
             CoordReturn = {pvc_readreturn, {Key, Value, MaxVersion, MaxVersion}},

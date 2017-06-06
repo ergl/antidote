@@ -759,6 +759,8 @@ receive_read_objects_result({pvc_readreturn, Msg}, CoordState = #tx_coord_state{
     return_accumulator=ReadKeys
 }) ->
 
+    lager:info("PVC readreturn with message ~p", [Msg]),
+
     {Key, Value, VCdep, VCaggr} = Msg,
 
     UpdatedTransaction = pvc_update_transaction(Key, VCdep, VCaggr, Transaction),
@@ -783,6 +785,8 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
     transactional_protocol=pvc
 }) ->
 
+    lager:info("PVC read on updated key with cached value ~p", [Value]),
+
     %% No need to update any pvc-related state here
     ReadValues = replace_first(ReadKeys, Key, Value),
     case NumToRead > 1 of
@@ -798,6 +802,7 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
     end;
 
 receive_read_objects_result({error, abort}, _CoordState = #tx_coord_state{transactional_protocol=pvc}) ->
+    lager:info("PVC read received abort"),
     ok.
 
 -spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
