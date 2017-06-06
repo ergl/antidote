@@ -491,7 +491,67 @@ execute_command(read, {Key, Type}, Sender, State = #tx_coord_state{
     end;
 
 %% @doc Read a batch of objects, asynchronous
-execute_command(read_objects, Objects, Sender, State = #tx_coord_state{transaction=Transaction}) ->
+execute_command(read_objects, Objects, Sender, State = #tx_coord_state{transactional_protocol=pvc}) ->
+    pvc_read(Objects, Sender, State);
+
+execute_command(read_objects, Objects, Sender, State) ->
+    clocksi_read(Objects, Sender, State);
+
+%% @doc Perform update operations on a batch of Objects
+execute_command(update_objects, UpdateOps, Sender, State = #tx_coord_state{transactional_protocol=pvc}) ->
+    pvc_update(UpdateOps, Sender, State);
+
+execute_command(update_objects, UpdateOps, Sender, State) ->
+    clocksi_update(UpdateOps, Sender, State).
+
+pvc_read(Objects, Sender, State = #tx_coord_state{
+    client_ops=ClientOps,
+    transaction=Transaction
+}) ->
+    PerformReads = fun({Key, Type}, AccState) ->
+        UpdatedOp = pvc_key_was_updated(ClientOps, Key),
+        ok = case UpdatedOp of
+            false ->
+                Partition = ?LOG_UTIL:get_key_partition(Key),
+                %% TODO(borja): Perform PVC's readrequest.
+                %% Right now we're sending the whole transaction, whereas
+                %% in the original spec we send VCaggr and hasRead only
+                clocksi_vnode:async_read_data_item(Partition, Transaction, Key, Type);
+
+            Value ->
+                gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
+        end,
+        ReadKeys = AccState#tx_coord_state.return_accumulator,
+        AccState#tx_coord_state{return_accumulator=[Key | ReadKeys]}
+    end,
+
+    NewCoordState = lists:foldl(
+        PerformReads,
+        State#tx_coord_state{num_to_read=length(Objects), return_accumulator=[]},
+        Objects
+    ),
+
+    {next_state, receive_read_objects_result, NewCoordState#tx_coord_state{from=Sender}}.
+
+%% @doc Check if a key was updated by the client.
+%%
+%%      If it was, return the assigned value, returns false otherwise
+%%
+%%      Note that this function assumes that only lww-registers are being used,
+%%      and that the client operations only contain one entry per key (we discard
+%%      the rest when a new one is issued, see pvc_perform_update/3.
+%%
+-spec pvc_key_was_updated(list(), key()) -> op_param() | false.
+pvc_key_was_updated(ClientOps, Key) ->
+    case lists:keyfind(Key, 1, ClientOps) of
+        {Key, _, {assign, Value}} ->
+            Value;
+
+        false ->
+            false
+    end.
+
+clocksi_read(Objects, Sender, State = #tx_coord_state{transaction=Transaction}) ->
     ExecuteReads = fun({Key, Type}, AccState) ->
         Partition = ?LOG_UTIL:get_key_partition(Key),
         ok = clocksi_vnode:async_read_data_item(Partition, Transaction, Key, Type),
@@ -505,14 +565,7 @@ execute_command(read_objects, Objects, Sender, State = #tx_coord_state{transacti
         Objects
     ),
 
-    {next_state, receive_read_objects_result, NewCoordState#tx_coord_state{from=Sender}};
-
-%% @doc Perform update operations on a batch of Objects
-execute_command(update_objects, UpdateOps, Sender, State = #tx_coord_state{transactional_protocol=pvc}) ->
-    pvc_update(UpdateOps, Sender, State);
-
-execute_command(update_objects, UpdateOps, Sender, State) ->
-    clocksi_update(UpdateOps, Sender, State).
+    {next_state, receive_read_objects_result, NewCoordState#tx_coord_state{from=Sender}}.
 
 clocksi_update(UpdateOps, Sender, State = #tx_coord_state{transaction=Transaction}) ->
     ExecuteUpdates = fun(Op, AccState=#tx_coord_state{
@@ -691,6 +744,26 @@ receive_read_objects_result({ok, {Key, Type, Snapshot}}, CoordState = #tx_coord_
         false ->
             gen_fsm:reply(CoordState#tx_coord_state.from, {ok, lists:reverse(ReadValues)}),
             {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0, internal_read_set=NewReadSet}}
+    end;
+
+receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_coord_state{
+    num_to_read=NumToRead,
+    return_accumulator=ReadKeys,
+    transactional_protocol=pvc
+}) ->
+
+    %% No need to update any pvc-related state here
+    ReadValues = replace_first(ReadKeys, Key, Value),
+    case NumToRead > 1 of
+        true ->
+            {next_state, receive_read_objects_result, CoordState#tx_coord_state{
+                num_to_read=NumToRead - 1,
+                return_accumulator=ReadValues
+            }};
+
+        false ->
+            gen_fsm:reply(CoordState#tx_coord_state.from, {ok, lists:reverse(ReadValues)}),
+            {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0}}
     end.
 
 %% The following function is used to apply the updates that were performed by the running
