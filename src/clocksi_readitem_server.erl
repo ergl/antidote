@@ -211,9 +211,31 @@ handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     {noreply, SD0}.
 
 -spec perform_read_internal(pid(), key(), type(), #transaction{}, [], #state{}) -> ok.
-perform_read_internal(_Coordinator, _Key, _Type, _Tx = #transaction{transactional_protocol=pvc}, _PropList, _State) ->
+perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_protocol=pvc}, _PropList, State) ->
     %% TODO(borja): This is where we perform PVC's read logic, don't wait like cure/gr
-    ok;
+    CurrentPartition = State#state.partition,
+    HasRead = Tx#transaction.pvc_meta#pvc_tx_meta.hasread,
+
+    MaxVersion = case sets:is_element(CurrentPartition, HasRead) of
+        true ->
+            Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr;
+        false ->
+            %% FIXME(borja): Wait for MostCurrentVC_i, need to figure out where this is located
+            vectorclock_partition:new()
+    end,
+    case materializer_vnode:read(Key, Type, MaxVersion, Tx, State#state.mat_state) of
+        {ok, Snapshot} ->
+            Value = Type:value(Snapshot),
+            %% TODO(borja): Get the version of the snapshot, don't send MaxVersion twice
+            %% The first is wrong
+            CoordReturn = {pvc_readreturn, {Key, Value, MaxVersion, MaxVersion}},
+            %% TODO(borja): Check when is this triggered
+            ServerReturn = {ok, Value},
+            reply_to_coordinator(Coordinator, CoordReturn, ServerReturn);
+
+        {error, Reason} ->
+            reply_to_coordinator(Coordinator, {error, Reason})
+    end;
 
 perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
     partition=Partition,
