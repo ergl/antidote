@@ -277,19 +277,12 @@ return(Coordinator, Key, Type, Transaction, PropertyList,
     VecSnapshotTime = Transaction#transaction.vec_snapshot_time,
     case materializer_vnode:read(Key, Type, VecSnapshotTime, Transaction, MatState) of
         {ok, Snapshot} ->
-            case Coordinator of
-                {fsm, Sender} -> %% Return Type and Value directly here.
-                    gen_fsm:send_event(Sender, {ok, {Key, Type, Snapshot}});
-                _ ->
-                    _Ignore=gen_server:reply(Coordinator, {ok, Snapshot})
-            end;
+            ReadReturn = {ok, {Key, Type, Snapshot}},
+            Fallback = {ok, Snapshot},
+            reply_to_coordinator(Coordinator, ReadReturn, Fallback);
+
         {error, Reason} ->
-            case Coordinator of
-                {fsm, Sender} -> %% Return Type and Value directly here.
-                    gen_fsm:send_event(Sender, {error, Reason});
-                _ ->
-                    _Ignore=gen_server:reply(Coordinator, {error, Reason})
-            end
+            reply_to_coordinator(Coordinator, {error, Reason})
     end,
     ok.
 
@@ -309,4 +302,22 @@ handle_sync_event(_Event, _From, _StateName, StateData) ->
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
 terminate(_Reason, _SD) ->
+    ok.
+
+%% @doc Send a message back to the transaction coordinator.
+-spec reply_to_coordinator({fsm, pid()} | pid(), any()) -> ok.
+reply_to_coordinator(Coordinator, Msg) ->
+    reply_to_coordinator(Coordinator, Msg, Msg).
+
+%% @doc Send a message back to the transaction coordinator.
+%%
+%%      Allows to specify a simple message if the coordinator is a simple
+%%      server instead of the full-fsm coordinator.
+%%
+-spec reply_to_coordinator({fsm, pid()} | pid(), any(), any()) -> ok.
+reply_to_coordinator({fsm, Sender}, Msg, _FallbackMsg) ->
+    gen_fsm:send_event(Sender, Msg);
+
+reply_to_coordinator(Coordinator, _Msg, FallbackMsg) ->
+    gen_server:reply(Coordinator, FallbackMsg),
     ok.
