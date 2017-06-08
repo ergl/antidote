@@ -303,64 +303,14 @@ handle_command({check_servers_ready}, _Sender, SD0 = #state{partition = Partitio
     Result = clocksi_readitem_server:check_partition_ready(Node, Partition, ?READ_CONCURRENCY),
     {reply, Result, SD0};
 
-handle_command({prepare, Transaction, WriteSet}, _Sender, State = #state{
-    prepared_tx = PreparedTx,
-    committed_tx = CommittedTx,
-    prepared_dict = PreparedDict
-}) ->
-
-    PrepareTime = dc_utilities:now_microsec(),
-    {Result, NewPrepare, NewPreparedDict} = prepare(Transaction, WriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict),
-    NewState = State#state{prepared_dict = NewPreparedDict},
-    case Result of
-        {error, timeout} ->
-            {reply, {error, timeout}, NewState};
-
-        {error, no_updates} ->
-            {reply, {error, no_tx_record}, NewState};
-
-        {error, write_conflict} ->
-            {reply, abort, NewState};
-
-        {ok, _} ->
-            {reply, {prepared, NewPrepare}, NewState}
-    end;
+handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
+    do_prepare(prepare_commit, Transaction, WriteSet, State);
 
 %% @doc This is the only partition being updated by a transaction,
 %%      thus this function performs both the prepare and commit for the
 %%      coordinator that sent the request.
-handle_command({single_commit, Transaction, WriteSet}, _Sender, State = #state{
-    prepared_tx = PreparedTx,
-    committed_tx = CommittedTx,
-    prepared_dict = PreparedDict
-}) ->
-
-    PrepareTime = dc_utilities:now_microsec(),
-    {Result, NewPrepare, NewPreparedDict} = prepare(Transaction, WriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict),
-    NewState = State#state{prepared_dict = NewPreparedDict},
-    case Result of
-        {error, timeout} ->
-            {reply, {error, timeout}, NewState};
-
-        {error, no_updates} ->
-            {reply, {error, no_tx_record}, NewState};
-
-        {error, write_conflict} ->
-            {reply, abort, State};
-
-        {ok, _} ->
-            ResultCommit = commit(Transaction, NewPrepare, WriteSet, NewState),
-            case ResultCommit of
-                {ok, committed, NewPreparedDict2} ->
-                    {reply, {committed, NewPrepare}, NewState#state{prepared_dict = NewPreparedDict2}};
-
-                {error, no_updates} ->
-                    {reply, no_tx_record, NewState};
-
-                {error, Reason} ->
-                    {reply, {error, Reason}, NewState}
-            end
-    end;
+handle_command({single_commit, Transaction, WriteSet}, _Sender, State) ->
+    do_prepare(single_commit, Transaction, WriteSet, State);
 
 %% TODO: sending empty writeset to clocksi_downstream_generatro
 %% Just a workaround, need to delete downstream_generator_vnode
@@ -442,6 +392,58 @@ terminate(_Reason, #state{partition = Partition} = _State) ->
 %%%===================================================================
 %%% Internal Functions
 %%%===================================================================
+
+do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
+    prepared_dict = PreparedTimes,
+    prepared_tx = PreparedTransactions,
+    committed_tx = CommittedTransactions
+}) ->
+    PrepareTime = dc_utilities:now_microsec(),
+    {Result, NewPrepareTime, NewPreparedTimes} = prepare(
+        Transaction,
+        WriteSet,
+        CommittedTransactions,
+        PreparedTransactions,
+        PrepareTime,
+        PreparedTimes
+    ),
+
+    NewState = State#state{prepared_dict = NewPreparedTimes},
+    case Result of
+        {error, timeout} ->
+            {reply, {error, timeout}, NewState};
+
+        {error, no_updates} ->
+            {reply, {error, no_tx_record}, NewState};
+
+        {error, write_conflict} ->
+            {reply, abort, State};
+
+        {ok, _} ->
+            case SingleCommit of
+                prepare_commit ->
+                    {reply, {prepared, NewPrepareTime}, NewState};
+
+                single_commit ->
+                    ResultCommit = commit(
+                        Transaction,
+                        NewPrepareTime,
+                        WriteSet,
+                        NewState
+                    ),
+
+                    case ResultCommit of
+                        {ok, committed, FinalPreparedTimes} ->
+                            {reply, {committed, NewPrepareTime}, NewState#state{prepared_dict = FinalPreparedTimes}};
+
+                        {error, no_updates} ->
+                            {reply, no_tx_record, NewState};
+
+                        {error, Reason} ->
+                            {reply, {error, Reason}, NewState}
+                    end
+            end
+    end.
 
 prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict) ->
     TxId = Transaction#transaction.txn_id,
