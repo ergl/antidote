@@ -349,7 +349,7 @@ handle_command({single_commit, Transaction, WriteSet}, _Sender, State = #state{
             {reply, abort, State};
 
         {ok, _} ->
-            ResultCommit = commit(Transaction, NewPrepare, WriteSet, CommittedTx, NewState),
+            ResultCommit = commit(Transaction, NewPrepare, WriteSet, NewState),
             case ResultCommit of
                 {ok, committed, NewPreparedDict2} ->
                     {reply, {committed, NewPrepare}, NewState#state{prepared_dict = NewPreparedDict2}};
@@ -365,11 +365,8 @@ handle_command({single_commit, Transaction, WriteSet}, _Sender, State = #state{
 %% TODO: sending empty writeset to clocksi_downstream_generatro
 %% Just a workaround, need to delete downstream_generator_vnode
 %% eventually.
-handle_command({commit, Transaction, TxCommitTime, Updates}, _Sender, State = #state{
-    committed_tx = CommittedTx
-}) ->
-
-    Result = commit(Transaction, TxCommitTime, Updates, CommittedTx, State),
+handle_command({commit, Transaction, TxCommitTime, Updates}, _Sender, State) ->
+    Result = commit(Transaction, TxCommitTime, Updates, State),
     case Result of
         {ok, committed, NewPreparedDict} ->
             {reply, committed, State#state{prepared_dict = NewPreparedDict}};
@@ -505,7 +502,9 @@ reset_prepared(PreparedTx, [{Key, _Type, _Update} | Rest], TxId, Time, ActiveTxs
     lager:debug("Inserted preparing txn to PreparedTxns list ~p, [{Key, TxId, Time}]"),
     reset_prepared(PreparedTx, Rest, TxId, Time, ActiveTxs).
 
-commit(Transaction, TxCommitTime, Updates, CommittedTx, State) ->
+commit(Transaction, TxCommitTime, Updates, State = #state{
+    committed_tx = CommittedTx
+}) ->
     TxId = Transaction#transaction.txn_id,
     DcId = dc_meta_data_utilities:get_my_dc_id(),
     LogRecord = #log_operation{tx_id = TxId,
