@@ -304,7 +304,6 @@ handle_command({check_servers_ready}, _Sender, SD0 = #state{partition = Partitio
     {reply, Result, SD0};
 
 handle_command({prepare, Transaction, WriteSet}, _Sender, State = #state{
-    partition = _Partition,
     prepared_tx = PreparedTx,
     committed_tx = CommittedTx,
     prepared_dict = PreparedDict
@@ -312,15 +311,19 @@ handle_command({prepare, Transaction, WriteSet}, _Sender, State = #state{
 
     PrepareTime = dc_utilities:now_microsec(),
     {Result, NewPrepare, NewPreparedDict} = prepare(Transaction, WriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict),
+    NewState = State#state{prepared_dict = NewPreparedDict},
     case Result of
-        {ok, _} ->
-            {reply, {prepared, NewPrepare}, State#state{prepared_dict = NewPreparedDict}};
         {error, timeout} ->
-            {reply, {error, timeout}, State#state{prepared_dict = NewPreparedDict}};
+            {reply, {error, timeout}, NewState};
+
         {error, no_updates} ->
-            {reply, {error, no_tx_record}, State#state{prepared_dict = NewPreparedDict}};
+            {reply, {error, no_tx_record}, NewState};
+
         {error, write_conflict} ->
-            {reply, abort, State#state{prepared_dict = NewPreparedDict}}
+            {reply, abort, NewState};
+
+        {ok, _} ->
+            {reply, {prepared, NewPrepare}, NewState}
     end;
 
 %% @doc This is the only partition being updated by a transaction,
@@ -560,7 +563,9 @@ commit(Transaction, TxCommitTime, Updates, CommittedTx, State) ->
 %%          remove M's prepare record, so we should not do anything
 %%          either.
 clean_and_notify(TxId, Updates, #state{
-    prepared_tx = PreparedTx, prepared_dict = PreparedDict}) ->
+    prepared_tx = PreparedTx,
+    prepared_dict = PreparedDict
+}) ->
     ok = clean_prepared(PreparedTx, Updates, TxId),
     case get_time(PreparedDict, TxId) of
         error ->
