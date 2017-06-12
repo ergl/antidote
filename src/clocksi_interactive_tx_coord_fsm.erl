@@ -80,6 +80,7 @@
     finish_op/3,
     prepare/1,
     prepare_2pc/1,
+    pvc_receive_votes/2,
     process_prepared/2,
     receive_prepared/2,
     single_committing/2,
@@ -468,6 +469,8 @@ execute_command(prepare, Protocol, Sender, State0) ->
     case Protocol of
         two_phase ->
             prepare_2pc(State);
+        pvc_commit ->
+            pvc_prepare(State);
         _ ->
             prepare(State)
     end;
@@ -710,6 +713,27 @@ apply_tx_updates_to_snapshot(Key, CoordState, Type, Snapshot)->
             clocksi_materializer:materialize_eager(Type, Snapshot, FileteredAndReversedUpdates)
     end.
 
+pvc_prepare(State = #tx_coord_state{
+    from = From,
+    client_ops=ClientOps,
+    transaction=Transaction,
+    updated_partitions=UpdatedPartitions
+}) ->
+    %% Sanity check
+    pvc = State#tx_coord_state.transactional_protocol,
+    case UpdatedPartitions of
+        [] ->
+            %% No need to perform 2pc if read-only
+            ok = execute_post_commit_hooks(ClientOps),
+            gen_fsm:reply(From, ok),
+            {stop, normal, State};
+
+        Partitions ->
+            ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
+            NumToAck = length(Partitions),
+            {next_state, pvc_receive_votes, State#tx_coord_state{num_to_ack = NumToAck, state = prepared}}
+    end.
+
 %% @doc this function sends a prepare message to all updated partitions and goes
 %%      to the "receive_prepared"state.
 prepare(SD0 = #tx_coord_state{
@@ -769,11 +793,16 @@ prepare_2pc(SD0 = #tx_coord_state{
                 SD0#tx_coord_state{num_to_ack = Num_to_ack, state = prepared}}
     end.
 
-process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{num_to_ack = NumToAck,
-    commit_protocol = CommitProtocol, full_commit = FullCommit,
-    from = From, prepare_time = PrepareTime,
+process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
+    from = From,
+    num_to_ack = NumToAck,
+    full_commit = FullCommit,
     transaction = Transaction,
-    updated_partitions = Updated_partitions}) ->
+    prepare_time = PrepareTime,
+    commit_protocol = CommitProtocol,
+    updated_partitions = Updated_partitions
+}) ->
+
     MaxPrepareTime = max(PrepareTime, ReceivedPrepareTime),
     case NumToAck of 1 ->
         case CommitProtocol of
@@ -804,6 +833,39 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{num_to_ack = NumToAck
             {next_state, receive_prepared,
                 S0#tx_coord_state{num_to_ack = NumToAck - 1, prepare_time = MaxPrepareTime}}
     end.
+
+pvc_receive_votes({pvc_vote, Outcome, _SeqNumber}, State = #tx_coord_state{
+    num_to_ack = NumToAck
+}) ->
+    case Outcome of
+        false ->
+            pvc_decide(State#tx_coord_state{return_accumulator = false});
+        true ->
+            case NumToAck > 1 of
+                true ->
+                    %% TODO(borja): Collect the SeqNumbers
+                    {next_state, pvc_receive_votes, State#tx_coord_state{num_to_ack = NumToAck - 1}};
+                false ->
+                    pvc_decide(State)
+            end
+    end.
+
+pvc_decide(State = #tx_coord_state{
+    from = From,
+    client_ops = ClientOps,
+    transaction = Transaction,
+    return_accumulator = ReturnAcc
+}) ->
+    %% TODO(borja): Actually implement decide phase
+    Reply = case ReturnAcc of
+        false ->
+            %% TODO(borja): Send decide(false), so they remove the tx from the queue
+            {aborted, Transaction#transaction.txn_id};
+        _ ->
+            execute_post_commit_hooks(ClientOps)
+    end,
+    gen_fsm:reply(From, Reply),
+    {stop, normal, State}.
 
 
 %% @doc in this state, the fsm waits for prepare_time from each updated
@@ -838,8 +900,9 @@ single_committing(timeout, S0 = #tx_coord_state{from = _From}) ->
 %% @doc There was only a single partition with an update in this transaction
 %%      so the transaction has already been committed
 %%      so just wait for the commit message from the client
-committing_single(commit, Sender, SD0 = #tx_coord_state{transaction = _Transaction,
-    commit_time = Commit_time}) ->
+committing_single(commit, Sender, SD0 = #tx_coord_state{
+    commit_time = Commit_time
+}) ->
     reply_to_client(SD0#tx_coord_state{prepare_time = Commit_time, from = Sender, commit_time = Commit_time, state = committed}).
 
 %% @doc after receiving all prepare_times, send the commit message to all
@@ -863,9 +926,11 @@ committing_2pc(commit, Sender, SD0 = #tx_coord_state{transaction = Transaction,
 %%      updated partitions, and go to the "receive_committed" state.
 %%      This state is used when no commit message from the client is
 %%      expected
-committing(commit, Sender, SD0 = #tx_coord_state{transaction = Transaction,
-    updated_partitions = Updated_partitions,
-    commit_time = Commit_time}) ->
+committing(commit, Sender, SD0 = #tx_coord_state{
+    commit_time = Commit_time,
+    transaction = Transaction,
+    updated_partitions = Updated_partitions
+}) ->
     NumToAck = length(Updated_partitions),
     case NumToAck of
         0 ->

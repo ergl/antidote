@@ -160,6 +160,16 @@ send_min_prepared(Partition) ->
     dc_utilities:call_local_vnode(Partition, clocksi_vnode_master, {send_min_prepared}).
 
 %% @doc Sends a prepare request to a Node involved in a tx identified by TxId
+prepare(UpdatedPartitions, Tx = #transaction{transactional_protocol = pvc}) ->
+    lists:foreach(fun({Node, WriteSet}) ->
+        riak_core_vnode_master:command(
+            Node,
+            {pvc_prepare, Tx, WriteSet},
+            {fsm, undefined, self()},
+            ?CLOCKSI_MASTER
+        )
+    end, UpdatedPartitions);
+
 prepare(ListofNodes, TxId) ->
     lists:foldl(fun({Node, WriteSet}, _Acc) ->
         riak_core_vnode_master:command(
@@ -306,6 +316,10 @@ handle_command({check_servers_ready}, _Sender, SD0 = #state{partition = Partitio
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
+handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
+    {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
+    {reply, VoteMsg, NewState};
+
 %% @doc This is the only partition being updated by a transaction,
 %%      thus this function performs both the prepare and commit for the
 %%      coordinator that sent the request.
@@ -444,6 +458,11 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
                     end
             end
     end.
+
+pvc_prepare(_Transaction, _WriteSet, State) ->
+    %% TODO(borja): Implement this
+    Msg = {pvc_vote, false, 0},
+    {Msg, State}.
 
 prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict) ->
     TxId = Transaction#transaction.txn_id,

@@ -321,7 +321,7 @@
            | committed | committed_read_only
            | undefined | aborted,
     operations :: undefined | list() | {update_objects, list()},
-    return_accumulator :: list() | ok | {error, reason()},
+    return_accumulator :: list() | ok | boolean() | {error, reason()},
     internal_read_set :: orddict:orddict(),
     is_static :: boolean(),
     full_commit :: boolean(),
