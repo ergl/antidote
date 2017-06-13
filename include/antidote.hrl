@@ -106,6 +106,17 @@
 }).
 
 %% PVC
+-record(pvc_decide_meta, {
+    %% The cumulative outcome of the votes.
+    %% Only keep one as we exit as soon as we receive a negative one.
+    outcome :: boolean(),
+    %% The current commit vectorclock.
+    %% We don't care about its value if the outcome was false.
+    commit_vc :: vectorclock_partition:partition_vc() | undefined
+}).
+
+-type pvc_decide_meta() :: #pvc_decide_meta{}.
+
 -record(pvc_time, {
     %% VC representing the causal dependencies picked up during execution
     vcdep :: vectorclock_partition:partition_vc(),
@@ -321,7 +332,7 @@
            | committed | committed_read_only
            | undefined | aborted,
     operations :: undefined | list() | {update_objects, list()},
-    return_accumulator :: list() | ok | boolean() | {error, reason()},
+    return_accumulator :: list() | ok | pvc_decide_meta() | {error, reason()},
     internal_read_set :: orddict:orddict(),
     is_static :: boolean(),
     full_commit :: boolean(),

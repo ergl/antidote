@@ -837,19 +837,25 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
     end.
 
 pvc_receive_votes({pvc_vote, Outcome, SeqNumber}, State = #tx_coord_state{
-    num_to_ack = NumToAck
+    num_to_ack = NumToAck,
+    transaction = #transaction{pvc_meta = PVCMeta}
 }) ->
     io:format("PVC Received vote ~p with SeqNumber ~p~n", [Outcome, SeqNumber]),
+    #pvc_time{vcdep = CommitVC} = PVCMeta#pvc_tx_meta.time,
+    NewState = State#tx_coord_state{return_accumulator = #pvc_decide_meta{
+        outcome = Outcome,
+        commit_vc = CommitVC
+    }},
     case Outcome of
         false ->
-            pvc_decide(State#tx_coord_state{return_accumulator = false});
+            pvc_decide(NewState);
         true ->
             case NumToAck > 1 of
                 true ->
                     %% TODO(borja): Collect the SeqNumbers
-                    {next_state, pvc_receive_votes, State#tx_coord_state{num_to_ack = NumToAck - 1}};
+                    {next_state, pvc_receive_votes, NewState#tx_coord_state{num_to_ack = NumToAck - 1}};
                 false ->
-                    pvc_decide(State)
+                    pvc_decide(NewState)
             end
     end.
 
@@ -860,12 +866,13 @@ pvc_decide(State = #tx_coord_state{
     return_accumulator = ReturnAcc
 }) ->
     %% TODO(borja): Actually implement decide phase
-    Reply = case ReturnAcc of
+    Outcome = ReturnAcc#pvc_decide_meta.outcome,
+    Reply = case Outcome of
         false ->
             io:format("PVC No consensus, aborting~n"),
             %% TODO(borja): Send decide(false), so they remove the tx from the queue
             {aborted, Transaction#transaction.txn_id};
-        _ ->
+        true ->
             io:format("PVC All partitions agree, should start decide phase~n"),
             execute_post_commit_hooks(ClientOps)
     end,
