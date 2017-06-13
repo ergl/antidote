@@ -723,12 +723,14 @@ pvc_prepare(State = #tx_coord_state{
     pvc = State#tx_coord_state.transactional_protocol,
     case UpdatedPartitions of
         [] ->
+            io:format("PVC Read only~n"),
             %% No need to perform 2pc if read-only
             ok = execute_post_commit_hooks(ClientOps),
             gen_fsm:reply(From, ok),
             {stop, normal, State};
 
         Partitions ->
+            io:format("PVC Entering prepare phase~n"),
             ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
             NumToAck = length(Partitions),
             {next_state, pvc_receive_votes, State#tx_coord_state{num_to_ack = NumToAck, state = prepared}}
@@ -834,9 +836,10 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
                 S0#tx_coord_state{num_to_ack = NumToAck - 1, prepare_time = MaxPrepareTime}}
     end.
 
-pvc_receive_votes({pvc_vote, Outcome, _SeqNumber}, State = #tx_coord_state{
+pvc_receive_votes({pvc_vote, Outcome, SeqNumber}, State = #tx_coord_state{
     num_to_ack = NumToAck
 }) ->
+    io:format("PVC Received vote ~p with SeqNumber ~p~n", [Outcome, SeqNumber]),
     case Outcome of
         false ->
             pvc_decide(State#tx_coord_state{return_accumulator = false});
@@ -859,9 +862,11 @@ pvc_decide(State = #tx_coord_state{
     %% TODO(borja): Actually implement decide phase
     Reply = case ReturnAcc of
         false ->
+            io:format("PVC No consensus, aborting~n"),
             %% TODO(borja): Send decide(false), so they remove the tx from the queue
             {aborted, Transaction#transaction.txn_id};
         _ ->
+            io:format("PVC All partitions agree, should start decide phase~n"),
             execute_post_commit_hooks(ClientOps)
     end,
     gen_fsm:reply(From, Reply),
