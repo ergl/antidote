@@ -31,6 +31,7 @@
     get_active_txns_key/3,
     get_active_txns/2,
     prepare/2,
+    decide/4,
     commit/3,
     single_commit/2,
     single_commit_sync/2,
@@ -180,6 +181,20 @@ prepare(ListofNodes, TxId) ->
         )
     end, ok, ListofNodes).
 
+-spec decide(list(), tx(), vectorclock(), boolean()) -> ok.
+decide(UpdatedPartitions, Tx, CommitVC, Outcome) ->
+    %% Sanity check
+    pvc = Tx#transaction.transactional_protocol,
+    lists:foreach(fun({{Partition, _} = Node, _}) ->
+        io:format("PVC Sending decide(~p) to ~p~n", [Outcome, Partition]),
+        riak_core_vnode_master:command(
+            Node,
+            {pvc_decide, Tx, CommitVC, Outcome},
+            {fsm, undefined, self()},
+            ?CLOCKSI_MASTER
+        )
+    end, UpdatedPartitions).
+
 %% @doc Sends prepare+commit to a single partition
 %%      Called by a Tx coordinator when the tx only
 %%      affects one partition
@@ -320,6 +335,11 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
+handle_command({pvc_decide, _Transaction, _CommitVC, Outcome}, _Sender, State) ->
+    Partition = State#state.partition,
+    io:format("PVC decide partition ~p got outcome ~p~n", [Partition, Outcome]),
+    {noreply, State};
+
 %% @doc This is the only partition being updated by a transaction,
 %%      thus this function performs both the prepare and commit for the
 %%      coordinator that sent the request.
@@ -459,9 +479,11 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
-pvc_prepare(_Transaction, _WriteSet, State) ->
+pvc_prepare(_Transaction, _WriteSet, State = #state{
+    partition = Partition
+}) ->
     %% TODO(borja): Implement this
-    Msg = {pvc_vote, false, 0},
+    Msg = {pvc_vote, Partition, true, 0},
     {Msg, State}.
 
 prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict) ->

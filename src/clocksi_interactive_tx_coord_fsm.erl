@@ -733,7 +733,13 @@ pvc_prepare(State = #tx_coord_state{
             io:format("PVC Entering prepare phase~n"),
             ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
             NumToAck = length(Partitions),
-            {next_state, pvc_receive_votes, State#tx_coord_state{num_to_ack = NumToAck, state = prepared}}
+            %% Ew
+            InitialCommitVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
+            VoteState = State#tx_coord_state{
+                num_to_ack = NumToAck,
+                return_accumulator = [InitialCommitVC]
+            },
+            {next_state, pvc_receive_votes, VoteState}
     end.
 
 %% @doc this function sends a prepare message to all updated partitions and goes
@@ -836,23 +842,42 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
                 S0#tx_coord_state{num_to_ack = NumToAck - 1, prepare_time = MaxPrepareTime}}
     end.
 
-pvc_receive_votes({pvc_vote, Outcome, SeqNumber}, State = #tx_coord_state{
+pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
     num_to_ack = NumToAck,
-    transaction = #transaction{pvc_meta = PVCMeta}
+    return_accumulator = Acc
 }) ->
     io:format("PVC Received vote ~p with SeqNumber ~p~n", [Outcome, SeqNumber]),
-    #pvc_time{vcdep = CommitVC} = PVCMeta#pvc_tx_meta.time,
-    NewState = State#tx_coord_state{return_accumulator = #pvc_decide_meta{
-        outcome = Outcome,
-        commit_vc = CommitVC
-    }},
+
     case Outcome of
         false ->
-            pvc_decide(NewState);
+            pvc_decide(State#tx_coord_state{
+                num_to_ack = 0,
+                return_accumulator = #pvc_decide_meta{
+                    outcome = Outcome,
+                    %% Don't care about commit vc if we're aborting
+                    commit_vc = undefined
+                }
+            });
+
         true ->
+            io:format("PVC Updating commit vc from ~p with SeqNumber ~p~n", [From, SeqNumber]),
+            PrevCommitVC = case Acc of
+                %% Will be a list if this is the first vote to arrive.
+                [InitVC] -> InitVC;
+                %% Will be a decide record otherwise, and we know it will be
+                %% defined since we break out of the loop as soon as we receive
+                %% a negative vote.
+                #pvc_decide_meta{commit_vc = PrevVC} -> PrevVC
+            end,
+
+            %% Update the commit vc with the sequence number from the partition.
+            CommitVC = vectorclock_partition:set_partition_time(From, SeqNumber, PrevCommitVC),
+            NewState = State#tx_coord_state{return_accumulator = #pvc_decide_meta{
+                outcome = Outcome,
+                commit_vc = CommitVC
+            }},
             case NumToAck > 1 of
                 true ->
-                    %% TODO(borja): Collect the SeqNumbers
                     {next_state, pvc_receive_votes, NewState#tx_coord_state{num_to_ack = NumToAck - 1}};
                 false ->
                     pvc_decide(NewState)
@@ -863,19 +888,23 @@ pvc_decide(State = #tx_coord_state{
     from = From,
     client_ops = ClientOps,
     transaction = Transaction,
-    return_accumulator = ReturnAcc
+    updated_partitions = UpdatedPartitions,
+    return_accumulator = #pvc_decide_meta{
+        outcome = Outcome,
+        commit_vc = CommitVC
+    }
 }) ->
     %% TODO(borja): Actually implement decide phase
-    Outcome = ReturnAcc#pvc_decide_meta.outcome,
     Reply = case Outcome of
         false ->
             io:format("PVC No consensus, aborting~n"),
             %% TODO(borja): Send decide(false), so they remove the tx from the queue
             {aborted, Transaction#transaction.txn_id};
         true ->
-            io:format("PVC All partitions agree, should start decide phase~n"),
+            io:format("PVC All partitions agree, should start decide phase with commit vc ~p~n", [dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
+    ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
     gen_fsm:reply(From, Reply),
     {stop, normal, State}.
 
