@@ -338,6 +338,10 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
 handle_command({pvc_decide, _Transaction, _CommitVC, Outcome}, _Sender, State) ->
     Partition = State#state.partition,
     io:format("PVC decide partition ~p got outcome ~p~n", [Partition, Outcome]),
+    %% TODO(borja): Implement this
+    %% If the outcome is false, append an abort record to the log
+    %% Otherwise, we append a commit record to the log
+    %% FIXME(borja): Check these assumptions
     {noreply, State};
 
 %% @doc This is the only partition being updated by a transaction,
@@ -483,6 +487,17 @@ pvc_prepare(_Transaction, _WriteSet, State = #state{
     partition = Partition
 }) ->
     %% TODO(borja): Implement this
+    %% Where's the commit queue? Is it the log? Or some in-memory dict?
+    %% If it is the log, look for tx with the prepared record but no commit record,
+    %% as the plan is that the commit record will be inserted when on PVC we move from the
+    %% commit queue to the CLog. Both the CLog and the VLog will be represented as the
+    %% replication log, I think.
+    %% Then get the most recent snapshot for the key, and check if its commit vc
+    %% is greater than the one supplied from the transaction (VCdep).
+    %% If any of these conditions is true, reply with a negative vote.
+    %% Otherwise, increment our sequence number and send that.
+    %% We also append a `prepare` payload in the log for this partition.
+    %% Yes, the log is per-partition.
     Msg = {pvc_vote, Partition, true, 0},
     {Msg, State}.
 

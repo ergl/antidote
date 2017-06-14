@@ -732,6 +732,7 @@ pvc_prepare(State = #tx_coord_state{
 
         Partitions ->
             io:format("PVC Entering prepare phase~n"),
+            %% TODO(borja): Log client update operations here (see pvc_propagate_updates)
             ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
             NumToAck = length(Partitions),
             %% Ew
@@ -742,6 +743,31 @@ pvc_prepare(State = #tx_coord_state{
             },
             {next_state, pvc_receive_votes, VoteState}
     end.
+
+%% FIXME(borja): Figure out how to do this
+%%pvc_propagate_updates([], Acc) ->
+%%    Acc.
+%%
+%%pvc_propagate_updates([{Key, Type=antidote_lww_register, Update} | Ops], Acc) ->
+%%    Partition = ?LOG_UTIL:get_key_partition(Key),
+%%    GenerateResult = ?CLOCKSI_DOWNSTREAM:generate_downstream_op(
+%%        Transaction,
+%%        Partition,
+%%        Key,
+%%        Type,
+%%        Update,
+%%        WriteSet,
+%%        InternalReadSet
+%%    ),
+%%
+%%    Result = case GenerateResult of
+%%        {error, Reason} ->
+%%            {error, Reason};
+%%
+%%        {ok, DownstreamOp} ->
+%%            {Partition, Transaction#transaction.txn_id, Key, Type, DownstreamOp}
+%%    end,
+%%    pvc_propagate_updates(Ops, [Result | Acc])
 
 %% @doc this function sends a prepare message to all updated partitions and goes
 %%      to the "receive_prepared"state.
@@ -906,6 +932,7 @@ pvc_decide(State = #tx_coord_state{
             io:format("PVC All partitions agree, should start decide phase with commit vc ~p~n", [dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
+    %% TODO(borja): Keep doing this
     ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
     gen_fsm:reply(From, Reply),
     {stop, normal, State}.
