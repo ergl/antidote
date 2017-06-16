@@ -385,8 +385,8 @@ perform_update(Op, UpdatedPartitions, Transaction, _Sender, ClientOps, InternalR
             WS
     end,
 
-    %% TODO: Wouldn't this execute every time an object is updated?
-    %% TODO: Maybe move to prepare?
+    %% TODO(borja): Wouldn't this execute every time an object is updated?
+    %% Maybe move to prepare?
     %% Execute pre_commit_hook if any
     case antidote_hooks:execute_pre_commit_hook(Key, Type, Update) of
         {error, Reason} ->
@@ -922,17 +922,15 @@ pvc_decide(State = #tx_coord_state{
         commit_vc = CommitVC
     }
 }) ->
-    %% TODO(borja): Actually implement decide phase
     Reply = case Outcome of
         false ->
             io:format("PVC No consensus, aborting~n"),
-            %% TODO(borja): Send decide(false), so they remove the tx from the queue
             {aborted, Transaction#transaction.txn_id};
         true ->
             io:format("PVC All partitions agree, should start decide phase with commit vc ~p~n", [dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
-    %% TODO(borja): Keep doing this
+    %% TODO(borja): Finish decide phase
     ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
     gen_fsm:reply(From, Reply),
     {stop, normal, State}.
