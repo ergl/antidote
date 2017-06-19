@@ -735,11 +735,13 @@ handle_update(TxId, Key, Ops, OpPayload = #update_log_payload{
             Ops
     end.
 
-%% TODO: upgrade to newer erlang version so can use dict type spec
-%% -spec handle_update(txid(), #commit_log_payload{}, [{non_neg_integer(), #operation{}}], key(), snapshot_time() | undefined,
-%%             dict:dict(txid(), [any_log_payload()]), dict:dict(key(), [#clocksi_payload{}])) ->
-%%                {dict:dict(txid(), [any_log_payload()]), dict:dict(key(), [#clocksi_payload{}])}.
--spec handle_commit(txid(), snapshot_time() | undefined, dict:dict(), dict:dict(), #commit_log_payload{}) -> {dict:dict(), dict:dict()}.
+-spec handle_commit(
+    txid(),
+    snapshot_time() | undefined,
+    dict:dict(txid(), [any_log_payload()]),
+    dict:dict(key(), [clocksi_payload()]),
+    #commit_log_payload{}
+) -> {dict:dict(txid(), [any_log_payload()]), dict:dict(key(), [clocksi_payload()])}.
 handle_commit(TxId, MinSnapshotTime, Ops, CommittedOpsDict, _OpPayload = #commit_log_payload{
     snapshot_time = SnapshotTime,
     commit_time = {DcId, TxCommitTime}
