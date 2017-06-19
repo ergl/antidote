@@ -488,17 +488,11 @@ handle_command({get, LogId, MinSnapshotTime, Type, Key}, _Sender,
     case get_log_from_map(Map, Partition, LogId) of
         {ok, Log} ->
             ok = disk_log:sync(Log),
-            case get_ops_from_log(Log, {key, Key}, start, MinSnapshotTime, dict:new(), dict:new(), load_all) of
+            case get_ops_from_log(Log, Key, MinSnapshotTime, load_all) of
                 {error, Reason} ->
                     {reply, {error, Reason}, State};
-                {eof, CommittedOpsForKeyDict} ->
-                    CommittedOpsForKey =
-                        case dict:find(Key, CommittedOpsForKeyDict) of
-                            {ok, Val} ->
-                            Val;
-                            error ->
-                            []
-                        end,
+
+                {ok, CommittedOpsForKey} ->
                     {reply, #snapshot_get_response{number_of_ops = length(CommittedOpsForKey), ops_list = CommittedOpsForKey,
                                                    materialized_snapshot = #materialized_snapshot{last_op_id = 0, value = clocksi_materializer:new(Type)},
                                                    snapshot_time = vectorclock:new(), is_newest_snapshot = false},
@@ -620,6 +614,22 @@ update_ets_op_id(Key, NewOp, ClockTable) ->
                 false ->
                     true
             end
+    end.
+
+%% @doc Retrieve all the operations for a key with commit time larger than the given one.
+-spec get_ops_from_log(log_id(), {key, key()} | undefined, snapshot_time(), load_all | load_per_chunk) -> {ok, [{op_num(), clocksi_payload()}]} | {error, reason()}.
+get_ops_from_log(Log, {key, Key}, MinSnapshotTime, LoadType) ->
+    Res = get_ops_from_log(Log, Key, start, MinSnapshotTime, dict:new(), dict:new(), LoadType),
+    case Res of
+        {error, Reason} ->
+            {error, Reason};
+
+        {eof, CommittedOpsForKeyDict} ->
+            Ops = case dict:find(Key, CommittedOpsForKeyDict) of
+                {ok, CommittedOps} -> CommittedOps;
+                error -> []
+            end,
+            {ok, Ops}
     end.
 
 %% @doc This method successively calls disk_log:chunk so all the log is read.
