@@ -713,26 +713,24 @@ filter_terms_for_key([{_, LogRecord} | Terms], Key, MinSnapshotTime, Ops, Commit
     #log_operation{tx_id = TxId, op_type = OpType, log_payload = OpPayload} = LogOperation,
     case OpType of
         update ->
-            handle_update(TxId, OpPayload, Terms, Key, MinSnapshotTime, Ops, CommittedOpsDict);
+            OpDict = handle_update(TxId, Key, Ops, OpPayload),
+            filter_terms_for_key(Terms, Key, MinSnapshotTime, OpDict, CommittedOpsDict);
+
         commit ->
             handle_commit(TxId, OpPayload, Terms, Key, MinSnapshotTime, Ops, CommittedOpsDict);
         _ ->
             filter_terms_for_key(Terms, Key, MinSnapshotTime, Ops, CommittedOpsDict)
     end.
 
-%% TODO: upgrade to newer erlang version so can use dict type spec
-%% -spec handle_update(txid(), #update_log_payload{}, [{non_neg_integer(), #operation{}}], key(), snapshot_time() | undefined,
-%%             dict:dict(txid(), [any_log_payload()]), dict:dict(key(), [#clocksi_payload{}])) ->
-%%                {dict:dict(txid(), [any_log_payload()]), dict:dict(key(), [#clocksi_payload{}])}.
--spec handle_update(txid(), #update_log_payload{}, [{non_neg_integer(), #log_record{}}], key(), snapshot_time() | undefined, dict:dict(), dict:dict()) -> {dict:dict(), dict:dict()}.
-handle_update(TxId, OpPayload,  T, Key, MinSnapshotTime, Ops, CommittedOpsDict) ->
-    #update_log_payload{key = Key1} = OpPayload,
-    case (Key == {key, Key1}) or (Key == undefined) of
+-spec handle_update(txid(), key(), dict:dict(txid(), [any_log_payload()]), #update_log_payload{}) -> dict:dict(txid(), [any_log_payload()]).
+handle_update(TxId, Key, Ops, OpPayload = #update_log_payload{
+    key = UpdatedKey
+}) ->
+    case (Key == {key, UpdatedKey}) or (Key == undefined) of
         true ->
-            filter_terms_for_key(T, Key, MinSnapshotTime,
-                dict:append(TxId, OpPayload, Ops), CommittedOpsDict);
+            dict:append(TxId, OpPayload, Ops);
         false ->
-            filter_terms_for_key(T, Key, MinSnapshotTime, Ops, CommittedOpsDict)
+            Ops
     end.
 
 %% TODO: upgrade to newer erlang version so can use dict type spec
