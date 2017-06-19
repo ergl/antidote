@@ -728,7 +728,7 @@ filter_terms_for_key([{_, LogRecord} | Terms], Key, MinSnapshotTime, Ops, Commit
 handle_update(TxId, Key, Ops, OpPayload = #update_log_payload{
     key = UpdatedKey
 }) ->
-    case (Key == {key, UpdatedKey}) or (Key == undefined) of
+    case (Key == undefined) orelse (Key == {key, UpdatedKey}) of
         true ->
             dict:append(TxId, OpPayload, Ops);
         false ->
