@@ -743,8 +743,8 @@ handle_update(TxId, Key, Ops, OpPayload = #update_log_payload{
     #commit_log_payload{}
 ) -> {dict:dict(txid(), [any_log_payload()]), dict:dict(key(), [clocksi_payload()])}.
 handle_commit(TxId, MinSnapshotTime, Ops, CommittedOpsDict, _OpPayload = #commit_log_payload{
-    snapshot_time = SnapshotTime,
-    commit_time = {DcId, TxCommitTime}
+    commit_time = CommitTime,
+    snapshot_time = SnapshotTime
 }) ->
     case dict:find(TxId, Ops) of
         error ->
@@ -769,7 +769,7 @@ handle_commit(TxId, MinSnapshotTime, Ops, CommittedOpsDict, _OpPayload = #commit
                                     type = Type,
                                     op_param = Op,
                                     snapshot_time = SnapshotTime,
-                                    commit_time = {DcId, TxCommitTime},
+                                    commit_time = CommitTime,
                                     txid = TxId
                                 },
                                 dict:append(KeyInternal, CommittedDownstreamOp, Acc)
