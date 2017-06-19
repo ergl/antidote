@@ -717,7 +717,9 @@ filter_terms_for_key([{_, LogRecord} | Terms], Key, MinSnapshotTime, Ops, Commit
             filter_terms_for_key(Terms, Key, MinSnapshotTime, OpDict, CommittedOpsDict);
 
         commit ->
-            handle_commit(TxId, OpPayload, Terms, Key, MinSnapshotTime, Ops, CommittedOpsDict);
+            {OpDict, NewCommittedOpsDict} = handle_commit(TxId, MinSnapshotTime, Ops, CommittedOpsDict, OpPayload),
+            filter_terms_for_key(Terms, Key, MinSnapshotTime, OpDict, NewCommittedOpsDict);
+
         _ ->
             filter_terms_for_key(Terms, Key, MinSnapshotTime, Ops, CommittedOpsDict)
     end.
@@ -737,33 +739,42 @@ handle_update(TxId, Key, Ops, OpPayload = #update_log_payload{
 %% -spec handle_update(txid(), #commit_log_payload{}, [{non_neg_integer(), #operation{}}], key(), snapshot_time() | undefined,
 %%             dict:dict(txid(), [any_log_payload()]), dict:dict(key(), [#clocksi_payload{}])) ->
 %%                {dict:dict(txid(), [any_log_payload()]), dict:dict(key(), [#clocksi_payload{}])}.
--spec handle_commit(txid(), #commit_log_payload{}, [{non_neg_integer(), #log_record{}}], key(), snapshot_time() | undefined, dict:dict(), dict:dict()) -> {dict:dict(), dict:dict()}.
-handle_commit(TxId, OpPayload, T, Key, MinSnapshotTime, Ops, CommittedOpsDict) ->
-    #commit_log_payload{commit_time = {DcId, TxCommitTime}, snapshot_time = SnapshotTime} = OpPayload,
+-spec handle_commit(txid(), snapshot_time() | undefined, dict:dict(), dict:dict(), #commit_log_payload{}) -> {dict:dict(), dict:dict()}.
+handle_commit(TxId, MinSnapshotTime, Ops, CommittedOpsDict, _OpPayload = #commit_log_payload{
+    snapshot_time = SnapshotTime,
+    commit_time = {DcId, TxCommitTime}
+}) ->
     case dict:find(TxId, Ops) of
-        {ok, OpsList} ->
-            NewCommittedOpsDict =
-                lists:foldl(fun(#update_log_payload{key = KeyInternal, type = Type, op = Op}, Acc) ->
-                                case ((MinSnapshotTime == undefined) orelse
-                                                   (not vectorclock:all_dots_greater(SnapshotTime, MinSnapshotTime))) of
-                                true ->
-                                    CommittedDownstreamOp =
-                                    #clocksi_payload{
-                                       key = KeyInternal,
-                                       type = Type,
-                                       op_param = Op,
-                                       snapshot_time = SnapshotTime,
-                                       commit_time = {DcId, TxCommitTime},
-                                       txid = TxId},
-                                    dict:append(KeyInternal, CommittedDownstreamOp, Acc);
-                                false ->
-                                    Acc
-                                end
-                            end, CommittedOpsDict, OpsList),
-            filter_terms_for_key(T, Key, MinSnapshotTime, dict:erase(TxId, Ops),
-                     NewCommittedOpsDict);
         error ->
-            filter_terms_for_key(T, Key, MinSnapshotTime, Ops, CommittedOpsDict)
+            {Ops, CommittedOpsDict};
+
+        {ok, OpsList} ->
+            NewCommittedOpsDict = lists:foldl(fun(UpdatePayload, Acc) ->
+                #update_log_payload{key = KeyInternal, type = Type, op = Op} = UpdatePayload,
+                case MinSnapshotTime of
+                    undefined ->
+                        Acc;
+
+                    Time ->
+                        ValidSnapshot = vectorclock:all_dots_greater(SnapshotTime, Time),
+                        case ValidSnapshot of
+                            false ->
+                                Acc;
+
+                            true ->
+                                CommittedDownstreamOp = #clocksi_payload{
+                                    key = KeyInternal,
+                                    type = Type,
+                                    op_param = Op,
+                                    snapshot_time = SnapshotTime,
+                                    commit_time = {DcId, TxCommitTime},
+                                    txid = TxId
+                                },
+                                dict:append(KeyInternal, CommittedDownstreamOp, Acc)
+                        end
+                end
+            end, CommittedOpsDict, OpsList),
+            {dict:erase(TxId, Ops), NewCommittedOpsDict}
     end.
 
 handle_handoff_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, _Sender,
