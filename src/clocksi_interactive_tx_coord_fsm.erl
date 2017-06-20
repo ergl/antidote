@@ -581,7 +581,7 @@ pvc_update(UpdateOps, Sender, State = #tx_coord_state{transaction=_Transaction})
     end.
 
 pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
-    %% Might want to check this before, error on the user if using a CRDT object
+    %% Sanity check, already disallowed at the user level
     {Key, Type=antidote_crdt_lwwreg, Update} = Op,
 
     case antidote_hooks:execute_pre_commit_hook(Key, Type, Update) of
