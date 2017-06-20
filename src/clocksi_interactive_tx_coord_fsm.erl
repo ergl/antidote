@@ -580,7 +580,6 @@ pvc_update(UpdateOps, Sender, State = #tx_coord_state{transaction=_Transaction})
                     prepare(NewCoordState);
                 false ->
                     gen_fsm:reply(Sender, ok),
-                    %% TODO(borja): Generate downstream operation and log during commit (see perform_update/6)
                     {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}
             end
     end.
