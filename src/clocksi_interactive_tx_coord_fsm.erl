@@ -80,6 +80,7 @@
     finish_op/3,
     prepare/1,
     prepare_2pc/1,
+    pvc_log_responses/2,
     pvc_receive_votes/2,
     process_prepared/2,
     receive_prepared/2,
@@ -730,44 +731,70 @@ pvc_prepare(State = #tx_coord_state{
             gen_fsm:reply(From, ok),
             {stop, normal, State};
 
-        Partitions ->
+        _ ->
             io:format("PVC Entering prepare phase~n"),
-            %% TODO(borja): Log client update operations here (see pvc_propagate_updates)
-            ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
-            NumToAck = length(Partitions),
-            %% Ew
-            InitialCommitVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
-            VoteState = State#tx_coord_state{
-                num_to_ack = NumToAck,
-                return_accumulator = [InitialCommitVC]
-            },
-            {next_state, pvc_receive_votes, VoteState}
+            ok = pvc_propagate_updates(Transaction, ClientOps),
+            {next_state, pvc_log_responses, State#tx_coord_state{
+                return_accumulator = ok,
+                num_to_read = length(ClientOps)
+            }}
     end.
 
-%% FIXME(borja): Figure out how to do this
-%%pvc_propagate_updates([], Acc) ->
-%%    Acc.
-%%
-%%pvc_propagate_updates([{Key, Type=antidote_lww_register, Update} | Ops], Acc) ->
-%%    Partition = ?LOG_UTIL:get_key_partition(Key),
-%%    GenerateResult = ?CLOCKSI_DOWNSTREAM:generate_downstream_op(
-%%        Transaction,
-%%        Partition,
-%%        Key,
-%%        Type,
-%%        Update,
-%%        WriteSet,
-%%        InternalReadSet
-%%    ),
-%%
-%%    Result = case GenerateResult of
-%%        {error, Reason} ->
-%%            {error, Reason};
-%%
-%%        {ok, DownstreamOp} ->
-%%            {Partition, Transaction#transaction.txn_id, Key, Type, DownstreamOp}
-%%    end,
-%%    pvc_propagate_updates(Ops, [Result | Acc])
+pvc_log_responses(LogResponse, State = #tx_coord_state{
+    num_to_read=NumToRead,
+    transaction=Transaction,
+    transactional_protocol=pvc,
+    return_accumulator=ReturnAcc,
+    updated_partitions=Partitions
+}) ->
+
+    Status = case LogResponse of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, _} ->
+            ReturnAcc;
+        timeout ->
+            ReturnAcc
+    end,
+
+    case NumToRead > 1 of
+        true ->
+            {next_state, pvc_log_responses, State#tx_coord_state{
+                num_to_read=NumToRead - 1,
+                return_accumulator=Status
+            }};
+
+        false ->
+            case Status of
+                ok ->
+                    ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
+                    NumToAck = length(Partitions),
+                    %% Ew
+                    InitialCommitVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
+                    VoteState = State#tx_coord_state{
+                        num_to_ack = NumToAck,
+                        return_accumulator = [InitialCommitVC]
+                    },
+                    {next_state, pvc_receive_votes, VoteState};
+
+                _ ->
+                    abort(State)
+            end
+    end.
+
+-spec pvc_propagate_updates(tx(), list({key(), type(), op()})) -> ok.
+pvc_propagate_updates(#transaction{txn_id=TxId}, Ops) ->
+    lists:foreach(fun({Key, Type, Update}) ->
+        Partition = ?LOG_UTIL:get_key_partition(Key),
+        DownstreamOp = Type:downstream(Update, Type:new()),
+        ok = async_log_propagation(
+            Partition,
+            TxId,
+            Key,
+            Type,
+            DownstreamOp
+        )
+    end, Ops).
 
 %% @doc this function sends a prepare message to all updated partitions and goes
 %%      to the "receive_prepared"state.
