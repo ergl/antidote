@@ -731,7 +731,7 @@ pvc_prepare(State = #tx_coord_state{
             {stop, normal, State};
 
         _ ->
-            io:format("PVC Entering prepare phase~n"),
+            io:format("PVC Read/Write, propagating log updates~n"),
             ok = pvc_propagate_updates(Transaction, ClientOps),
             {next_state, pvc_log_responses, State#tx_coord_state{
                 return_accumulator = ok,
@@ -756,6 +756,8 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
             ReturnAcc
     end,
 
+    io:format("PVC got logresponse ~p~n", [Status]),
+
     case NumToRead > 1 of
         true ->
             {next_state, pvc_log_responses, State#tx_coord_state{
@@ -766,6 +768,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
         false ->
             case Status of
                 ok ->
+                    io:format("PVC Entering prepare phase~n"),
                     ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
                     %% Ew
@@ -900,6 +903,7 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
     num_to_ack = NumToAck,
     return_accumulator = Acc
 }) ->
+
     io:format("PVC Received vote ~p with SeqNumber ~p~n", [Outcome, SeqNumber]),
 
     case Outcome of

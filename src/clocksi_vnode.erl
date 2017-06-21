@@ -162,7 +162,8 @@ send_min_prepared(Partition) ->
 
 %% @doc Sends a prepare request to a Node involved in a tx identified by TxId
 prepare(UpdatedPartitions, Tx = #transaction{transactional_protocol = pvc}) ->
-    lists:foreach(fun({Node, WriteSet}) ->
+    lists:foreach(fun({{Partition, _}=Node, WriteSet}) ->
+        io:format("PVC sending prepare to partition ~p~n", [Partition]),
         riak_core_vnode_master:command(
             Node,
             {pvc_prepare, Tx, WriteSet},
@@ -332,17 +333,29 @@ handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
+    io:format("PVC Partition ~p received prepare~n", [State#state.partition]),
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
-handle_command({pvc_decide, _Transaction, _CommitVC, Outcome}, _Sender, State) ->
+handle_command({pvc_decide, Transaction, _CommitVC, Outcome}, _Sender, State) ->
     Partition = State#state.partition,
-    io:format("PVC decide partition ~p got outcome ~p~n", [Partition, Outcome]),
-    %% TODO(borja): Implement this
+    io:format("PVC Partition ~p received decide(~p)~n", [Partition, Outcome]),
     %% If the outcome is false, append an abort record to the log
     %% Otherwise, we append a commit record to the log
     %% FIXME(borja): Check these assumptions
-    {noreply, State};
+    NewState = case Outcome of
+        false ->
+            io:format("PVC ~p is removing Transaction ~p from commit queue~n", [Partition, Transaction#transaction.txn_id]),
+            PreparedTx = State#state.prepared_dict,
+            State#state{
+                prepared_dict = orddict:erase(Transaction#transaction.txn_id, PreparedTx)
+            };
+
+        true ->
+            %% TODO(borja): Implement this
+            State
+    end,
+    {noreply, NewState};
 
 %% @doc This is the only partition being updated by a transaction,
 %%      thus this function performs both the prepare and commit for the
@@ -483,8 +496,9 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
-pvc_prepare(_Transaction, _WriteSet, State = #state{
-    partition = Partition
+pvc_prepare(Transaction, WriteSet, State = #state{
+    partition = Partition,
+    prepared_dict = PreparedTransactions
 }) ->
     %% TODO(borja): Implement this
     %% Where's the commit queue? Is it the log? Or some in-memory dict?
@@ -498,8 +512,48 @@ pvc_prepare(_Transaction, _WriteSet, State = #state{
     %% Otherwise, increment our sequence number and send that.
     %% We also append a `prepare` payload in the log for this partition.
     %% Yes, the log is per-partition.
-    Msg = {pvc_vote, Partition, true, 0},
-    {Msg, State}.
+    {Vote, NewState} = case pvc_is_writeset_disputed(PreparedTransactions, WriteSet) of
+        true ->
+            io:format("PVC writeset for given transaction was disputed~n"),
+            {false, State};
+
+        false ->
+            io:format("PVC writeset for given transaction was not disputed~n"),
+            io:format("PVC partition ~p is putting tx ~p in commit queue~n", [Partition, Transaction#transaction.txn_id]),
+            %% TODO(borja): Check k.last.vid etc
+            PreparedVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
+            NewPrepared = orddict:store(Transaction#transaction.txn_id, {PreparedVC, WriteSet}, PreparedTransactions),
+            {true, State#state{prepared_dict = NewPrepared}}
+    end,
+    Msg = {pvc_vote, Partition, Vote, 0},
+    {Msg, NewState}.
+
+-spec pvc_is_writeset_disputed(
+    orddict:orddict(txid(), {vectorclock_partition:vectorclock(), list()}),
+    list()
+) -> boolean().
+pvc_is_writeset_disputed([], _Key) ->
+    false;
+
+pvc_is_writeset_disputed([{_TxId, {_CommitTime, PreparedWS}} | TxIds], WS) ->
+    case pvc_writeset_intersect(PreparedWS, WS) of
+        false ->
+            pvc_is_writeset_disputed(TxIds, WS);
+        true ->
+            true
+    end.
+
+-spec pvc_writeset_intersect(list(), list()) -> boolean().
+pvc_writeset_intersect([], _) ->
+    false;
+
+pvc_writeset_intersect([{Key, _, _} | WS1], WS2) ->
+    case lists:keyfind(Key, 1, WS2) of
+        false ->
+            pvc_writeset_intersect(WS1, WS2);
+        _ ->
+            true
+    end.
 
 prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict) ->
     TxId = Transaction#transaction.txn_id,
