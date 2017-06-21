@@ -74,7 +74,7 @@
     prepared_tx :: cache_id(),
     committed_tx :: cache_id(),
     read_servers :: non_neg_integer(),
-    prepared_dict :: list()
+    prepared_dict :: orddict:orddict()
 }).
 
 %%%===================================================================
