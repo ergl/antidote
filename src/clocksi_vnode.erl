@@ -508,9 +508,9 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_is_writeset_disputed(PreparedTransactions, WriteSet),
 
-    PreparedVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
+    PrepareVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
     PartitionKeys = pvc_get_partition_keys(Partition, WriteSet),
-    TooFresh = pvc_are_keys_too_fresh(Partition, PartitionKeys, PreparedVC, CommittedTransactions),
+    TooFresh = pvc_are_keys_too_fresh(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
         true ->
@@ -520,8 +520,8 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
         false ->
             io:format("PVC writeset for given transaction was not disputed~n"),
             io:format("PVC partition ~p is putting tx ~p in commit queue~n", [Partition, TxnId]),
-            NewPrepared = orddict:store(TxnId, {PreparedVC, WriteSet}, PreparedTransactions),
-            ok = pvc_propagate_prepare(Partition, TxnId, WriteSet, PreparedVC),
+            NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
+            ok = pvc_propagate_prepare(Partition, TxnId, WriteSet, PrepareVC),
             SeqNumber = LastPrepared + 1,
             io:format("PVC incrementing last prepared from ~p to ~p~n", [LastPrepared, SeqNumber]),
             {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
