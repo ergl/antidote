@@ -523,10 +523,42 @@ pvc_prepare(Transaction=#transaction{txn_id=TxnId}, WriteSet, State = #state{
             %% TODO(borja): Check k.last.vid etc
             PreparedVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
             NewPrepared = orddict:store(TxnId, {PreparedVC, WriteSet}, PreparedTransactions),
+            ok = pvc_propagate_prepares(Partition, TxnId, WriteSet, PreparedVC),
             {true, State#state{prepared_dict = NewPrepared}}
     end,
     Msg = {pvc_vote, Partition, Vote, 0},
     {Msg, NewState}.
+
+-spec pvc_propagate_prepares(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
+pvc_propagate_prepares(SelfPartition, TxnId, WriteSet, PrepareVC) ->
+    Payload = #prepare_log_payload{
+        %% Compatibility time, same as clocksi, but ignored otherwise
+        prepare_time = dc_utilities:now_microsec(),
+        pvc_prepare_clock = PrepareVC
+    },
+    PrepareRecord = #log_operation{
+        tx_id = TxnId,
+        op_type = prepare,
+        log_payload = Payload
+    },
+    Logs = pvc_get_logs_from_keys(SelfPartition, WriteSet),
+    lists:foreach(fun({IndexNode, LogId}) ->
+        {ok, _} = logging_vnode:append(IndexNode, LogId, PrepareRecord)
+    end, Logs).
+
+-spec pvc_get_logs_from_keys(partition_id(), list()) -> list().
+pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
+    lists:foldl(fun({Key, _, _}, Acc) ->
+        IndexNode={Partition, _Node} = log_utilities:get_key_partition(Key),
+        case Partition of
+            SelfPartition ->
+                LogId = log_utilities:get_logid_from_key(Key),
+                ordsets:add_element({IndexNode, LogId}, Acc);
+
+            _ ->
+                Acc
+        end
+    end, ordsets:new(), WriteSet).
 
 -spec pvc_is_writeset_disputed(
     orddict:orddict(txid(), {vectorclock_partition:partition_vc(), list()}),
