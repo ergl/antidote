@@ -339,7 +339,10 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
-handle_command({pvc_decide, Transaction, _CommitVC, Outcome}, _Sender, State) ->
+handle_command({pvc_decide, Transaction, _CommitVC, Outcome}, _Sender, State = #state{
+    committed_tx = _ComittedTx,
+    prepared_dict = PreparedTx
+}) ->
     Partition = State#state.partition,
     io:format("PVC Partition ~p received decide(~p)~n", [Partition, Outcome]),
     %% If the outcome is false, append an abort record to the log
@@ -348,13 +351,13 @@ handle_command({pvc_decide, Transaction, _CommitVC, Outcome}, _Sender, State) ->
     NewState = case Outcome of
         false ->
             io:format("PVC ~p is removing Transaction ~p from commit queue~n", [Partition, Transaction#transaction.txn_id]),
-            PreparedTx = State#state.prepared_dict,
             State#state{
                 prepared_dict = orddict:erase(Transaction#transaction.txn_id, PreparedTx)
             };
 
         true ->
             %% TODO(borja): Implement this
+            %% TODO(borja): Add all the keys in the writeset to the committed_tx table
             State
     end,
     {noreply, NewState};
