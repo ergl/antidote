@@ -74,7 +74,8 @@
     prepared_tx :: cache_id(),
     committed_tx :: cache_id(),
     read_servers :: non_neg_integer(),
-    prepared_dict :: orddict:orddict()
+    prepared_dict :: orddict:orddict(),
+    pvc_last_prepared :: non_neg_integer() | undefined
 }).
 
 %%%===================================================================
@@ -249,7 +250,8 @@ init([Partition]) ->
         prepared_tx = PreparedTx,
         committed_tx = CommittedTx,
         read_servers = ?READ_CONCURRENCY,
-        prepared_dict = orddict:new()
+        prepared_dict = orddict:new(),
+        pvc_last_prepared = 0
     }}.
 
 %% @doc The table holding the prepared transactions is shared with concurrent
@@ -496,38 +498,61 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
-pvc_prepare(Transaction=#transaction{txn_id=TxnId}, WriteSet, State = #state{
+pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
     partition = Partition,
-    prepared_dict = PreparedTransactions
+    pvc_last_prepared = LastPrepared,
+    prepared_dict = PreparedTransactions,
+    committed_tx = CommittedTransactions
 }) ->
-    %% TODO(borja): Implement this
-    %% Where's the commit queue? Is it the log? Or some in-memory dict?
-    %% If it is the log, look for tx with the prepared record but no commit record,
-    %% as the plan is that the commit record will be inserted when on PVC we move from the
-    %% commit queue to the CLog. Both the CLog and the VLog will be represented as the
-    %% replication log, I think.
-    %% Then get the most recent snapshot for the key, and check if its commit vc
-    %% is greater than the one supplied from the transaction (VCdep).
-    %% If any of these conditions is true, reply with a negative vote.
-    %% Otherwise, increment our sequence number and send that.
-    %% We also append a `prepare` payload in the log for this partition.
-    %% Yes, the log is per-partition.
-    {Vote, NewState} = case pvc_is_writeset_disputed(PreparedTransactions, WriteSet) of
+
+    %% Check if any our writeset intersects with any of the prepared transactions
+    WriteSetDisputed = pvc_is_writeset_disputed(PreparedTransactions, WriteSet),
+
+    PreparedVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
+    PartitionKeys = pvc_get_partition_keys(Partition, WriteSet),
+    TooFresh = pvc_are_keys_too_fresh(Partition, PartitionKeys, PreparedVC, CommittedTransactions),
+
+    {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
         true ->
-            io:format("PVC writeset for given transaction was disputed~n"),
-            {false, State};
+            io:format("PVC writeset for given transaction was disputed or tx is too fresh~n"),
+            {false, LastPrepared, State};
 
         false ->
             io:format("PVC writeset for given transaction was not disputed~n"),
             io:format("PVC partition ~p is putting tx ~p in commit queue~n", [Partition, TxnId]),
-            %% TODO(borja): Check k.last.vid etc
-            PreparedVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
             NewPrepared = orddict:store(TxnId, {PreparedVC, WriteSet}, PreparedTransactions),
             ok = pvc_propagate_prepare(Partition, TxnId, WriteSet, PreparedVC),
-            {true, State#state{prepared_dict = NewPrepared}}
+            SeqNumber = LastPrepared + 1,
+            io:format("PVC incrementing last prepared from ~p to ~p~n", [LastPrepared, SeqNumber]),
+            {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
     end,
-    Msg = {pvc_vote, Partition, Vote, 0},
+    Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
+
+%% @doc Check if any of the keys in a transaction writeset are too fresh with
+%%      respect to the most recent committed version.
+%%
+-spec pvc_are_keys_too_fresh(partition_id(), list(key()), vectorclock_partition:partition_vc(), cache_id()) -> boolean().
+pvc_are_keys_too_fresh(_, [], _, _) ->
+    false;
+
+pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
+    IsTooFresh = case ets:lookup(CommittedTx, Key) of
+        [] ->
+            false;
+
+        [{Key, CommitVC}] ->
+            CommitTime = vectorclock_partition:get_partition_time(SelfPartition, CommitVC),
+            PrepareTime = vectorclock_partition:get_partition_time(SelfPartition, PrepareVC),
+            CommitTime > PrepareTime
+    end,
+    case IsTooFresh of
+        true ->
+            true;
+
+        false ->
+            pvc_are_keys_too_fresh(SelfPartition, Keys, PrepareVC, CommittedTx)
+    end.
 
 %% @doc Propagate prepare log records for all keys in this partition with the given prepare time.
 -spec pvc_propagate_prepare(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
@@ -561,6 +586,14 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
                 Acc
         end
     end, ordsets:new(), WriteSet).
+
+%% @doc Get the list of keys that are owned by this partition.
+-spec pvc_get_partition_keys(partition_id(), list(key())) -> list(key()).
+pvc_get_partition_keys(SelfPartition, WriteSet) ->
+    lists:filter(fun({Key, _, _}) ->
+        {Partition, _} = log_utilities:get_key_partition(Key),
+        Partition =:= SelfPartition
+    end, WriteSet).
 
 -spec pvc_is_writeset_disputed(
     orddict:orddict(txid(), {vectorclock_partition:partition_vc(), list()}),
