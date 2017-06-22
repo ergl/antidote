@@ -496,7 +496,7 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
-pvc_prepare(Transaction, WriteSet, State = #state{
+pvc_prepare(Transaction=#transaction{txn_id=TxnId}, WriteSet, State = #state{
     partition = Partition,
     prepared_dict = PreparedTransactions
 }) ->
@@ -519,17 +519,17 @@ pvc_prepare(Transaction, WriteSet, State = #state{
 
         false ->
             io:format("PVC writeset for given transaction was not disputed~n"),
-            io:format("PVC partition ~p is putting tx ~p in commit queue~n", [Partition, Transaction#transaction.txn_id]),
+            io:format("PVC partition ~p is putting tx ~p in commit queue~n", [Partition, TxnId]),
             %% TODO(borja): Check k.last.vid etc
             PreparedVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
-            NewPrepared = orddict:store(Transaction#transaction.txn_id, {PreparedVC, WriteSet}, PreparedTransactions),
+            NewPrepared = orddict:store(TxnId, {PreparedVC, WriteSet}, PreparedTransactions),
             {true, State#state{prepared_dict = NewPrepared}}
     end,
     Msg = {pvc_vote, Partition, Vote, 0},
     {Msg, NewState}.
 
 -spec pvc_is_writeset_disputed(
-    orddict:orddict(txid(), {vectorclock_partition:vectorclock(), list()}),
+    orddict:orddict(txid(), {vectorclock_partition:partition_vc(), list()}),
     list()
 ) -> boolean().
 pvc_is_writeset_disputed([], _Key) ->
