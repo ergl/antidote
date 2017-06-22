@@ -523,14 +523,15 @@ pvc_prepare(Transaction=#transaction{txn_id=TxnId}, WriteSet, State = #state{
             %% TODO(borja): Check k.last.vid etc
             PreparedVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
             NewPrepared = orddict:store(TxnId, {PreparedVC, WriteSet}, PreparedTransactions),
-            ok = pvc_propagate_prepares(Partition, TxnId, WriteSet, PreparedVC),
+            ok = pvc_propagate_prepare(Partition, TxnId, WriteSet, PreparedVC),
             {true, State#state{prepared_dict = NewPrepared}}
     end,
     Msg = {pvc_vote, Partition, Vote, 0},
     {Msg, NewState}.
 
--spec pvc_propagate_prepares(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
-pvc_propagate_prepares(SelfPartition, TxnId, WriteSet, PrepareVC) ->
+%% @doc Propagate prepare log records for all keys in this partition with the given prepare time.
+-spec pvc_propagate_prepare(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
+pvc_propagate_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
     Payload = #prepare_log_payload{
         %% Compatibility time, same as clocksi, but ignored otherwise
         prepare_time = dc_utilities:now_microsec(),
