@@ -547,6 +547,7 @@ pvc_propagate_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
         {ok, _} = logging_vnode:append(IndexNode, LogId, PrepareRecord)
     end, Logs).
 
+%% @doc Get the list of log identifiers for the keys in this partition.
 -spec pvc_get_logs_from_keys(partition_id(), list()) -> list().
 pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
     lists:foldl(fun({Key, _, _}, Acc) ->
