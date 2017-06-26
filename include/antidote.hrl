@@ -126,7 +126,6 @@
 
 %% Commit time of a transaction at the given partition
 -record(pvc_commit_payload, {
-    partition :: partition_id(),
     time :: #pvc_time{}
 }).
 
