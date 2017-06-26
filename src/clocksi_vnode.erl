@@ -345,12 +345,13 @@ handle_command({pvc_decide, Transaction, _CommitVC, Outcome}, _Sender, State = #
 }) ->
     Partition = State#state.partition,
     io:format("PVC Partition ~p received decide(~p)~n", [Partition, Outcome]),
-    %% If the outcome is false, append an abort record to the log
     %% Otherwise, we append a commit record to the log
     %% FIXME(borja): Check these assumptions
     NewState = case Outcome of
         false ->
             io:format("PVC ~p is removing Transaction ~p from commit queue~n", [Partition, Transaction#transaction.txn_id]),
+            %% If the outcome is false, append an abort record to the log
+            ok = pvc_append_abort(Partition, Transaction#transaction.txn_id, WriteSet),
             State#state{
                 prepared_dict = orddict:erase(Transaction#transaction.txn_id, PreparedTx)
             };
@@ -573,6 +574,18 @@ pvc_append_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
 
     pvc_append_to_logs(SelfPartition, WriteSet, PrepareRecord).
 
+%% @doc Propagate abort log records for all keys in this partition.
+-spec pvc_append_abort(partition_id(), txid(), list()) -> ok.
+pvc_append_abort(SelfPartition, TxnId, WriteSet) ->
+    Record = #log_operation{
+        tx_id = TxnId,
+        op_type = abort,
+        log_payload = #abort_log_payload{}
+    },
+
+    pvc_append_to_logs(SelfPartition, WriteSet, Record).
+
+%% @doc Propagate a log record for all keys in this partition.
 -spec pvc_append_to_logs(partition_id(), list(), #log_operation{}) -> ok.
 pvc_append_to_logs(SelfPartition, WriteSet, Record) ->
     Logs = pvc_get_logs_from_keys(SelfPartition, WriteSet),
