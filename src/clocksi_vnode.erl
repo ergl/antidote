@@ -340,28 +340,33 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {reply, VoteMsg, NewState};
 
 handle_command({pvc_decide, Transaction, _CommitVC, Outcome}, _Sender, State = #state{
+    partition = Partition,
     committed_tx = _ComittedTx,
     prepared_dict = PreparedTx
 }) ->
     Partition = State#state.partition,
     io:format("PVC Partition ~p received decide(~p)~n", [Partition, Outcome]),
-    %% Otherwise, we append a commit record to the log
-    %% FIXME(borja): Check these assumptions
+
+    TxnId = Transaction#transaction.txn_id,
     NewState = case Outcome of
         false ->
             io:format("PVC ~p is removing Transaction ~p from commit queue~n", [Partition, Transaction#transaction.txn_id]),
             %% If the outcome is false, append an abort record to the log
-            ok = pvc_append_abort(Partition, Transaction#transaction.txn_id, WriteSet),
-            State#state{
-                prepared_dict = orddict:erase(Transaction#transaction.txn_id, PreparedTx)
-            };
+            ok = pvc_append_abort(Partition, TxnId, WriteSet),
+            State;
 
         true ->
             %% TODO(borja): Implement this
             %% TODO(borja): Add all the keys in the writeset to the committed_tx table
+            %% TODO(borja): Update MostRecentVC
+            %% TODO(borja): Use append_commit to propagate commit log record
+            %% VLog changes come for free with the log updates
             State
+
     end,
-    {noreply, NewState};
+    {noreply, NewState#state{
+        prepared_dict = orddict:erase(TxnId, PreparedTx)
+    }};
 
 %% @doc This is the only partition being updated by a transaction,
 %%      thus this function performs both the prepare and commit for the
