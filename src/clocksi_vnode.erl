@@ -188,11 +188,11 @@ prepare(ListofNodes, TxId) ->
 decide(UpdatedPartitions, Tx, CommitVC, Outcome) ->
     %% Sanity check
     pvc = Tx#transaction.transactional_protocol,
-    lists:foreach(fun({{Partition, _} = Node, _}) ->
+    lists:foreach(fun({{Partition, _} = Node, WriteSet}) ->
         io:format("PVC Sending decide(~p) to ~p~n", [Outcome, Partition]),
         riak_core_vnode_master:command(
             Node,
-            {pvc_decide, Tx, CommitVC, Outcome},
+            {pvc_decide, Tx, WriteSet, CommitVC, Outcome},
             {fsm, undefined, self()},
             ?CLOCKSI_MASTER
         )
@@ -340,7 +340,7 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
-handle_command({pvc_decide, Transaction, CommitVC, Outcome}, _Sender, State = #state{
+handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, State = #state{
     partition = Partition,
     committed_tx = _ComittedTx,
     prepared_dict = PreparedTx,
