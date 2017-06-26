@@ -524,7 +524,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
             io:format("PVC writeset for given transaction was not disputed~n"),
             io:format("PVC partition ~p is putting tx ~p in commit queue~n", [Partition, TxnId]),
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
-            ok = pvc_propagate_prepare(Partition, TxnId, WriteSet, PrepareVC),
+            ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
             SeqNumber = LastPrepared + 1,
             io:format("PVC incrementing last prepared from ~p to ~p~n", [LastPrepared, SeqNumber]),
             {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
@@ -558,8 +558,8 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
     end.
 
 %% @doc Propagate prepare log records for all keys in this partition with the given prepare time.
--spec pvc_propagate_prepare(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
-pvc_propagate_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
+-spec pvc_append_prepare(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
+pvc_append_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
     Payload = #prepare_log_payload{
         %% Compatibility time, same as clocksi, but ignored otherwise
         prepare_time = dc_utilities:now_microsec(),
