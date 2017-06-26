@@ -75,6 +75,7 @@
     committed_tx :: cache_id(),
     read_servers :: non_neg_integer(),
     prepared_dict :: orddict:orddict(),
+    pvc_most_recent_vc :: vectorclock_partition:partition_vc() | undefined,
     pvc_last_prepared :: non_neg_integer() | undefined
 }).
 
@@ -339,12 +340,13 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
-handle_command({pvc_decide, Transaction, _CommitVC, Outcome}, _Sender, State = #state{
+handle_command({pvc_decide, Transaction, CommitVC, Outcome}, _Sender, State = #state{
     partition = Partition,
     committed_tx = _ComittedTx,
-    prepared_dict = PreparedTx
+    prepared_dict = PreparedTx,
+    pvc_most_recent_vc = MostRecentVC
 }) ->
-    Partition = State#state.partition,
+
     io:format("PVC Partition ~p received decide(~p)~n", [Partition, Outcome]),
 
     TxnId = Transaction#transaction.txn_id,
@@ -358,10 +360,10 @@ handle_command({pvc_decide, Transaction, _CommitVC, Outcome}, _Sender, State = #
         true ->
             %% TODO(borja): Implement this
             %% TODO(borja): Add all the keys in the writeset to the committed_tx table
-            %% TODO(borja): Update MostRecentVC
             %% TODO(borja): Use append_commit to propagate commit log record
             %% VLog changes come for free with the log updates
-            State
+            NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
+            State#state{pvc_most_recent_vc = NewRecentVC}
 
     end,
     {noreply, NewState#state{
