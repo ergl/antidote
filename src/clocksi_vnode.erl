@@ -570,9 +570,14 @@ pvc_append_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
         op_type = prepare,
         log_payload = Payload
     },
+
+    pvc_append_to_logs(SelfPartition, WriteSet, PrepareRecord).
+
+-spec pvc_append_to_logs(partition_id(), list(), #log_operation{}) -> ok.
+pvc_append_to_logs(SelfPartition, WriteSet, Record) ->
     Logs = pvc_get_logs_from_keys(SelfPartition, WriteSet),
     lists:foreach(fun({IndexNode, LogId}) ->
-        {ok, _} = logging_vnode:append(IndexNode, LogId, PrepareRecord)
+        {ok, _} = logging_vnode:append(IndexNode, LogId, Record)
     end, Logs).
 
 %% @doc Get the list of log identifiers for the keys in this partition.
