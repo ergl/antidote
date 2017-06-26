@@ -715,7 +715,7 @@ apply_tx_updates_to_snapshot(Key, CoordState, Type, Snapshot)->
     end.
 
 pvc_prepare(State = #tx_coord_state{
-    from = From,
+    from=From,
     client_ops=ClientOps,
     transaction=Transaction,
     updated_partitions=UpdatedPartitions
@@ -775,7 +775,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
                     InitialCommitVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
                     VoteState = State#tx_coord_state{
                         num_to_ack = NumToAck,
-                        return_accumulator = [InitialCommitVC]
+                        return_accumulator = [{pvc, InitialCommitVC}]
                     },
                     {next_state, pvc_receive_votes, VoteState};
 
@@ -901,7 +901,7 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
 
 pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
     num_to_ack = NumToAck,
-    return_accumulator = Acc
+    return_accumulator = [{pvc, Acc}]
 }) ->
 
     io:format("PVC Received vote ~p with SeqNumber ~p~n", [Outcome, SeqNumber]),
@@ -910,30 +910,30 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
         false ->
             pvc_decide(State#tx_coord_state{
                 num_to_ack = 0,
-                return_accumulator = #pvc_decide_meta{
+                return_accumulator = [{pvc, #pvc_decide_meta{
                     outcome = Outcome,
                     %% Don't care about commit vc if we're aborting
                     commit_vc = undefined
-                }
+                }}]
             });
 
         true ->
             io:format("PVC Updating commit vc from ~p with SeqNumber ~p~n", [From, SeqNumber]),
             PrevCommitVC = case Acc of
-                %% Will be a list if this is the first vote to arrive.
-                [InitVC] -> InitVC;
-                %% Will be a decide record otherwise, and we know it will be
-                %% defined since we break out of the loop as soon as we receive
-                %% a negative vote.
-                #pvc_decide_meta{commit_vc = PrevVC} -> PrevVC
+                %% We know the commit time will be defined since we break out of
+                %% the loop as soon as we receive a negative vote.
+                #pvc_decide_meta{commit_vc = PrevVC} -> PrevVC;
+
+                %% If this is the first vote, it will be a bare vectorclock
+                InitVC -> InitVC
             end,
 
             %% Update the commit vc with the sequence number from the partition.
             CommitVC = vectorclock_partition:set_partition_time(From, SeqNumber, PrevCommitVC),
-            NewState = State#tx_coord_state{return_accumulator = #pvc_decide_meta{
+            NewState = State#tx_coord_state{return_accumulator = [{pvc, #pvc_decide_meta{
                 outcome = Outcome,
                 commit_vc = CommitVC
-            }},
+            }}]},
             case NumToAck > 1 of
                 true ->
                     {next_state, pvc_receive_votes, NewState#tx_coord_state{num_to_ack = NumToAck - 1}};
@@ -947,10 +947,10 @@ pvc_decide(State = #tx_coord_state{
     client_ops = ClientOps,
     transaction = Transaction,
     updated_partitions = UpdatedPartitions,
-    return_accumulator = #pvc_decide_meta{
+    return_accumulator = [{pvc, #pvc_decide_meta{
         outcome = Outcome,
         commit_vc = CommitVC
-    }
+    }}]
 }) ->
     Reply = case Outcome of
         false ->
