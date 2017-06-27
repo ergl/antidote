@@ -125,11 +125,7 @@
 }).
 
 %% Commit time of a transaction at the given partition
--record(pvc_commit_payload, {
-    time :: #pvc_time{}
-}).
-
--type pvc_commit_payload() :: #pvc_commit_payload{} | undefined.
+-type pvc_commit_payload() :: #pvc_time{} | undefined.
 
 -record(pvc_tx_meta, {
     %% VC metadata
