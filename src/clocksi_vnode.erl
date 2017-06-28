@@ -569,8 +569,8 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
 
 -spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
 pvc_store_key_commitvc(SelfPartition, CommittedTx, WriteSet, CommitVC) ->
-    Keys = pvc_get_logs_from_keys(SelfPartition, WriteSet),
-    lists:foreach(fun({Key, _, _}) ->
+    Keys = pvc_get_partition_keys(SelfPartition, WriteSet),
+    lists:foreach(fun(Key) ->
         true = ets:insert(CommittedTx, {Key, CommitVC})
     end, Keys).
 
