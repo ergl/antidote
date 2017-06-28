@@ -360,9 +360,8 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
         true ->
             %% TODO(borja): Implement this
             %% TODO(borja): Add all the keys in the writeset to the committed_tx table
-            %% TODO(borja): Use append_commit to propagate commit log record
-            %% VLog changes come for free with the log updates
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
+            ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
             State#state{pvc_most_recent_vc = NewRecentVC}
 
     end,
@@ -591,6 +590,41 @@ pvc_append_abort(SelfPartition, TxnId, WriteSet) ->
     },
 
     pvc_append_to_logs(SelfPartition, WriteSet, Record).
+
+-spec pvc_append_commits(
+    partition_id(),
+    txid(),
+    list(),
+    vectorclock_partition:partition_vc(),
+    vectorclock_partition:partition_vc()
+) -> ok.
+pvc_append_commits(SelfPartition, TxnId, WriteSet, CommitVC, MaxVC) ->
+    Time = #pvc_time{
+        vcdep = CommitVC,
+        vcaggr = MaxVC
+    },
+
+    DCId = dc_meta_data_utilities:get_my_dc_id(),
+    SeqNumber = vectorclock_partition:get_partition_time(SelfPartition, CommitVC),
+    Payload = #commit_log_payload{
+        pvc_metadata = Time,
+
+        %% Keep these two fields around only for backwards compatibily
+        commit_time = {DCId, SeqNumber},
+        snapshot_time = CommitVC
+    },
+
+    Record = #log_operation{
+        tx_id = TxnId,
+        op_type = commit,
+        log_payload = Payload
+    },
+
+    Logs = pvc_get_logs_from_keys(SelfPartition, WriteSet),
+    lists:foreach(fun({IndexNode, LogId}) ->
+        %% Use append_commit instead so we flush to disk
+        {ok, _} = logging_vnode:append_commit(IndexNode, LogId, Record)
+    end, Logs).
 
 %% @doc Propagate a log record for all keys in this partition.
 -spec pvc_append_to_logs(partition_id(), list(), #log_operation{}) -> ok.
