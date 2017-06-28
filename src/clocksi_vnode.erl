@@ -342,7 +342,7 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
 
 handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, State = #state{
     partition = Partition,
-    committed_tx = _ComittedTx,
+    committed_tx = ComittedTx,
     prepared_dict = PreparedTx,
     pvc_most_recent_vc = MostRecentVC
 }) ->
@@ -358,10 +358,12 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
             State;
 
         true ->
-            %% TODO(borja): Implement this
-            %% TODO(borja): Add all the keys in the writeset to the committed_tx table
+            %% Propagate commit records to the logs
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
+
+            %% Cache the commit time for the keys
+            ok = pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC),
             State#state{pvc_most_recent_vc = NewRecentVC}
 
     end,
@@ -563,6 +565,13 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
         false ->
             pvc_are_keys_too_fresh(SelfPartition, Keys, PrepareVC, CommittedTx)
     end.
+
+-spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
+pvc_store_key_commitvc(SelfPartition, CommittedTx, WriteSet, CommitVC) ->
+    Keys = pvc_get_logs_from_keys(SelfPartition, WriteSet),
+    lists:foreach(fun({Key, _, _}) ->
+        true = ets:insert(CommittedTx, {Key, CommitVC})
+    end, Keys).
 
 %% @doc Propagate prepare log records for all keys in this partition with the given prepare time.
 -spec pvc_append_prepare(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
