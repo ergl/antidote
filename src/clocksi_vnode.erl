@@ -360,14 +360,19 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
 
         true ->
             %% Propagate commit records to the logs
+            io:format("PVC will merge ~p and ~p~n", [MostRecentVC, CommitVC]),
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
+            io:format("PVC New MostRecentVC is ~p~n", [NewRecentVC]),
+            io:format("PVC appended commit records~n"),
 
+            io:format("PVC caching key commit vc~n"),
             %% Cache the commit time for the keys
             ok = pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC),
             State#state{pvc_most_recent_vc = NewRecentVC}
 
     end,
+    io:format("PVC ~p finished decide phase, removing tx from commitqueue~n", [Partition]),
     {noreply, NewState#state{
         prepared_dict = orddict:erase(TxnId, PreparedTx)
     }};
@@ -531,7 +536,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
             {false, LastPrepared, State};
 
         false ->
-            io:format("PVC writeset for given transaction was not disputed~n"),
+            io:format("PVC partition ~p: writeset for given transaction was not disputed~n", [Partition]),
             io:format("PVC partition ~p is putting tx ~p in commit queue~n", [Partition, TxnId]),
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
@@ -571,6 +576,7 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
 pvc_store_key_commitvc(SelfPartition, CommittedTx, WriteSet, CommitVC) ->
     Keys = pvc_get_partition_keys(SelfPartition, WriteSet),
     lists:foreach(fun(Key) ->
+        io:format("PVC storing time ~p for ~p~n", [CommitVC, Key]),
         true = ets:insert(CommittedTx, {Key, CommitVC})
     end, Keys).
 
