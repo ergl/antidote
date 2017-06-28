@@ -252,6 +252,7 @@ init([Partition]) ->
         committed_tx = CommittedTx,
         read_servers = ?READ_CONCURRENCY,
         prepared_dict = orddict:new(),
+        pvc_most_recent_vc = vectorclock_partition:new(),
         pvc_last_prepared = 0
     }}.
 

@@ -960,7 +960,6 @@ pvc_decide(State = #tx_coord_state{
             io:format("PVC All partitions agree, should start decide phase with commit vc ~p~n", [dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
-    %% TODO(borja): Finish decide phase
     ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
     gen_fsm:reply(From, Reply),
     {stop, normal, State}.
