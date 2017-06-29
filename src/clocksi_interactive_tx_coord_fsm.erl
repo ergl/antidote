@@ -872,34 +872,42 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
 }) ->
 
     MaxPrepareTime = max(PrepareTime, ReceivedPrepareTime),
-    case NumToAck of 1 ->
-        case CommitProtocol of
-            two_phase ->
-                case FullCommit of
-                    true ->
-                        ok = ?CLOCKSI_VNODE:commit(Updated_partitions, Transaction, MaxPrepareTime),
-                        {next_state, receive_committed,
-                            S0#tx_coord_state{num_to_ack = length(Updated_partitions), commit_time = MaxPrepareTime, state = committing}};
-                    false ->
-                        gen_fsm:reply(From, {ok, MaxPrepareTime}),
-                        {next_state, committing_2pc,
-                            S0#tx_coord_state{prepare_time = MaxPrepareTime, commit_time = MaxPrepareTime, state = committing}}
-                end;
-            _ ->
-                case FullCommit of
-                    true ->
-                        ok = ?CLOCKSI_VNODE:commit(Updated_partitions, Transaction, MaxPrepareTime),
-                        {next_state, receive_committed,
-                            S0#tx_coord_state{num_to_ack = length(Updated_partitions), commit_time = MaxPrepareTime, state = committing}};
-                    false ->
-                        gen_fsm:reply(From, {ok, MaxPrepareTime}),
-                        {next_state, committing,
-                            S0#tx_coord_state{prepare_time = MaxPrepareTime, commit_time = MaxPrepareTime, state = committing}}
-                end
-        end;
-        _ ->
-            {next_state, receive_prepared,
-                S0#tx_coord_state{num_to_ack = NumToAck - 1, prepare_time = MaxPrepareTime}}
+    case NumToAck > 1 of
+        true ->
+            {next_state, receive_prepared, S0#tx_coord_state{
+                num_to_ack = NumToAck - 1,
+                prepare_time = MaxPrepareTime
+            }};
+
+        false ->
+            case FullCommit of
+                true ->
+                    ok = ?CLOCKSI_VNODE:commit(
+                        Updated_partitions,
+                        Transaction,
+                        MaxPrepareTime
+                    ),
+
+                    {next_state, receive_committed, S0#tx_coord_state{
+                        num_to_ack = length(Updated_partitions),
+                        commit_time = MaxPrepareTime,
+                        state = committing
+                    }};
+
+                false ->
+                    gen_fsm:reply(From, {ok, MaxPrepareTime}),
+                    NextState = S0#tx_coord_state{
+                        prepare_time = MaxPrepareTime,
+                        commit_time = MaxPrepareTime,
+                        state = committing
+                    },
+                    case CommitProtocol of
+                        two_phase ->
+                            {next_state, committing_2pc, NextState};
+                        _ ->
+                            {next_state, committing, NextState}
+                    end
+            end
     end.
 
 pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
