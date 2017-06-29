@@ -771,12 +771,17 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
                     io:format("PVC Entering prepare phase~n"),
                     ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
-                    %% Ew
-                    InitialCommitVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
+
+                    InitialCommitVC = Transaction#transaction
+                        .pvc_meta#pvc_tx_meta
+                        .time#pvc_time
+                        .vcdep,
+
                     VoteState = State#tx_coord_state{
                         num_to_ack = NumToAck,
                         return_accumulator = [{pvc, InitialCommitVC}]
                     },
+
                     {next_state, pvc_receive_votes, VoteState};
 
                 _ ->

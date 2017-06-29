@@ -526,7 +526,11 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_is_writeset_disputed(PreparedTransactions, WriteSet),
 
-    PrepareVC = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcdep,
+    PrepareVC = Transaction#transaction
+        .pvc_meta#pvc_tx_meta
+        .time#pvc_time
+        .vcdep,
+
     PartitionKeys = pvc_get_partition_keys(Partition, WriteSet),
     TooFresh = pvc_are_keys_too_fresh(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
 
