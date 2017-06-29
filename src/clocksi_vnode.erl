@@ -165,7 +165,7 @@ send_min_prepared(Partition) ->
 %% @doc Sends a prepare request to a Node involved in a tx identified by TxId
 prepare(UpdatedPartitions, Tx = #transaction{transactional_protocol = pvc}) ->
     lists:foreach(fun({{Partition, _}=Node, WriteSet}) ->
-        lager:info("PVC sending prepare to partition ~p~n", [Partition]),
+        lager:info("PVC sending prepare to partition ~p", [Partition]),
         riak_core_vnode_master:command(
             Node,
             {pvc_prepare, Tx, WriteSet},
@@ -189,7 +189,7 @@ decide(UpdatedPartitions, Tx, CommitVC, Outcome) ->
     %% Sanity check
     pvc = Tx#transaction.transactional_protocol,
     lists:foreach(fun({{Partition, _} = Node, WriteSet}) ->
-        lager:info("PVC Sending decide(~p) to ~p~n", [Outcome, Partition]),
+        lager:info("PVC Sending decide(~p) to ~p", [Outcome, Partition]),
         riak_core_vnode_master:command(
             Node,
             {pvc_decide, Tx, WriteSet, CommitVC, Outcome},
@@ -337,7 +337,7 @@ handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
-    lager:info("PVC Partition ~p received prepare~n", [State#state.partition]),
+    lager:info("PVC Partition ~p received prepare", [State#state.partition]),
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
@@ -348,31 +348,31 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
     pvc_most_recent_vc = MostRecentVC
 }) ->
 
-    lager:info("PVC Partition ~p received decide(~p)~n", [Partition, Outcome]),
+    lager:info("PVC Partition ~p received decide(~p)", [Partition, Outcome]),
 
     TxnId = Transaction#transaction.txn_id,
     NewState = case Outcome of
         false ->
-            lager:info("PVC ~p is removing Transaction ~p from commit queue~n", [Partition, Transaction#transaction.txn_id]),
+            lager:info("PVC ~p is removing Transaction ~p from commit queue", [Partition, Transaction#transaction.txn_id]),
             %% If the outcome is false, append an abort record to the log
             ok = pvc_append_abort(Partition, TxnId, WriteSet),
             State;
 
         true ->
             %% Propagate commit records to the logs
-            lager:info("PVC will merge ~p and ~p~n", [MostRecentVC, CommitVC]),
+            lager:info("PVC will merge ~p and ~p", [MostRecentVC, CommitVC]),
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
-            lager:info("PVC New MostRecentVC is ~p~n", [NewRecentVC]),
-            lager:info("PVC appended commit records~n"),
+            lager:info("PVC New MostRecentVC is ~p", [NewRecentVC]),
+            lager:info("PVC appended commit records"),
 
-            lager:info("PVC caching key commit vc~n"),
+            lager:info("PVC caching key commit vc"),
             %% Cache the commit time for the keys
             ok = pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC),
             State#state{pvc_most_recent_vc = NewRecentVC}
 
     end,
-    lager:info("PVC ~p finished decide phase, removing tx from commitqueue~n", [Partition]),
+    lager:info("PVC ~p finished decide phase, removing tx from commitqueue", [Partition]),
     {noreply, NewState#state{
         prepared_dict = orddict:erase(TxnId, PreparedTx)
     }};
@@ -536,16 +536,16 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
         true ->
-            lager:info("PVC writeset for given transaction was disputed or tx is too fresh~n"),
+            lager:info("PVC writeset for given transaction was disputed or tx is too fresh"),
             {false, LastPrepared, State};
 
         false ->
-            lager:info("PVC partition ~p: writeset for given transaction was not disputed~n", [Partition]),
-            lager:info("PVC partition ~p is putting tx ~p in commit queue~n", [Partition, TxnId]),
+            lager:info("PVC partition ~p: writeset for given transaction was not disputed", [Partition]),
+            lager:info("PVC partition ~p is putting tx ~p in commit queue", [Partition, TxnId]),
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
             SeqNumber = LastPrepared + 1,
-            lager:info("PVC incrementing last prepared from ~p to ~p~n", [LastPrepared, SeqNumber]),
+            lager:info("PVC incrementing last prepared from ~p to ~p", [LastPrepared, SeqNumber]),
             {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
     end,
     Msg = {pvc_vote, Partition, Vote, Seq},
@@ -580,7 +580,7 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
 pvc_store_key_commitvc(SelfPartition, CommittedTx, WriteSet, CommitVC) ->
     Keys = pvc_get_partition_keys(SelfPartition, WriteSet),
     lists:foreach(fun(Key) ->
-        lager:info("PVC storing time ~p for ~p~n", [CommitVC, Key]),
+        lager:info("PVC storing time ~p for ~p", [CommitVC, Key]),
         true = ets:insert(CommittedTx, {Key, CommitVC})
     end, Keys).
 
