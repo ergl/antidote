@@ -723,14 +723,14 @@ pvc_prepare(State = #tx_coord_state{
     pvc = State#tx_coord_state.transactional_protocol,
     case UpdatedPartitions of
         [] ->
-            io:format("PVC Read only~n"),
+            lager:info("PVC Read only~n"),
             %% No need to perform 2pc if read-only
             ok = execute_post_commit_hooks(ClientOps),
             gen_fsm:reply(From, ok),
             {stop, normal, State};
 
         _ ->
-            io:format("PVC Read/Write, propagating log updates~n"),
+            lager:info("PVC Read/Write, propagating log updates~n"),
             ok = pvc_propagate_updates(Transaction, ClientOps),
             {next_state, pvc_log_responses, State#tx_coord_state{
                 return_accumulator = ok,
@@ -755,7 +755,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
             ReturnAcc
     end,
 
-    io:format("PVC got logresponse ~p~n", [Status]),
+    lager:info("PVC got logresponse ~p~n", [Status]),
 
     case NumToRead > 1 of
         true ->
@@ -767,7 +767,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
         false ->
             case Status of
                 ok ->
-                    io:format("PVC Entering prepare phase~n"),
+                    lager:info("PVC Entering prepare phase~n"),
                     ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
 
@@ -907,7 +907,7 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
     return_accumulator = [{pvc, Acc}]
 }) ->
 
-    io:format("PVC Received vote ~p with SeqNumber ~p~n", [Outcome, SeqNumber]),
+    lager:info("PVC Received vote ~p with SeqNumber ~p~n", [Outcome, SeqNumber]),
 
     case Outcome of
         false ->
@@ -921,7 +921,7 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
             });
 
         true ->
-            io:format("PVC Updating commit vc from ~p with SeqNumber ~p~n", [From, SeqNumber]),
+            lager:info("PVC Updating commit vc from ~p with SeqNumber ~p~n", [From, SeqNumber]),
             PrevCommitVC = case Acc of
                 %% We know the commit time will be defined since we break out of
                 %% the loop as soon as we receive a negative vote.
@@ -957,10 +957,10 @@ pvc_decide(State = #tx_coord_state{
 }) ->
     Reply = case Outcome of
         false ->
-            io:format("PVC No consensus, aborting~n"),
+            lager:info("PVC No consensus, aborting~n"),
             {aborted, Transaction#transaction.txn_id};
         true ->
-            io:format("PVC All partitions agree, should start decide phase with commit vc ~p~n", [dict:to_list(CommitVC)]),
+            lager:info("PVC All partitions agree, should start decide phase with commit vc ~p~n", [dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
     ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
