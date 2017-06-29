@@ -466,7 +466,6 @@ execute_op({OpType, Args}, Sender, State) ->
 
 %% @doc Execute the commit protocol
 execute_command(prepare, Protocol, Sender, State0) ->
-    io:format("Preparing tx with prot ~p~n", [Protocol]),
     State = State0#tx_coord_state{from=Sender, commit_protocol=Protocol},
     case Protocol of
         two_phase ->
@@ -822,7 +821,6 @@ prepare(SD0 = #tx_coord_state{
                             reply_to_client(SD0#tx_coord_state{state = committed_read_only});
 
                         false ->
-                            io:format("Tx read only~n"),
                             gen_fsm:reply(From, {ok, Snapshot_time}),
                             {next_state, committing, SD0#tx_coord_state{state = committing, commit_time = Snapshot_time}}
                     end;
@@ -985,7 +983,6 @@ receive_prepared(timeout, S0) ->
 single_committing({committed, CommitTime}, S0 = #tx_coord_state{from = From, full_commit = FullCommit}) ->
     case FullCommit of
         false ->
-            io:format("Replying to client CT with ~p~n", [CommitTime]),
             gen_fsm:reply(From, {ok, CommitTime}),
             {next_state, committing_single,
                 S0#tx_coord_state{commit_time = CommitTime, state = committing}};
@@ -1006,7 +1003,6 @@ single_committing(timeout, S0 = #tx_coord_state{from = _From}) ->
 committing_single(commit, Sender, SD0 = #tx_coord_state{
     commit_time = Commit_time
 }) ->
-    io:format("On committing_single~n"),
     reply_to_client(SD0#tx_coord_state{prepare_time = Commit_time, from = Sender, commit_time = Commit_time, state = committed}).
 
 %% @doc after receiving all prepare_times, send the commit message to all
@@ -1038,7 +1034,6 @@ committing(commit, Sender, SD0 = #tx_coord_state{
     NumToAck = length(Updated_partitions),
     case NumToAck of
         0 ->
-            io:format("committed read only~n"),
             reply_to_client(SD0#tx_coord_state{state = committed_read_only, from = Sender});
         _ ->
             ok = ?CLOCKSI_VNODE:commit(Updated_partitions, Transaction, Commit_time),
@@ -1124,10 +1119,8 @@ reply_to_client(SD = #tx_coord_state{
                 committed_read_only ->
                     case IsStatic of
                         false ->
-                            io:format("reply_to_client, read only, interactive~n"),
                             {ok, {TxId, Transaction#transaction.vec_snapshot_time}};
                         true ->
-                            io:format("reply_to_client, read only, static~n"),
                             {ok, {TxId, ReturnAcc, Transaction#transaction.vec_snapshot_time}}
                     end;
 
@@ -1139,7 +1132,6 @@ reply_to_client(SD = #tx_coord_state{
                     CausalClock = ?VECTORCLOCK:set_clock_of_dc(DcId, CommitTime, Transaction#transaction.vec_snapshot_time),
                     case IsStatic of
                         false ->
-                            io:format("reply_to_client, committed, sending CausalClock~n"),
                             {ok, {TxId, CausalClock}};
                         true ->
                             {ok, CausalClock}
