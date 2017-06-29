@@ -100,8 +100,10 @@ read_data_item({Partition, Node}, Key, Type, Transaction) ->
 
 -spec async_read_data_item(index_node(), key(), type(), tx(), term()) -> ok.
 async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
-    gen_server:cast({global, generate_random_server_name(Node, Partition)},
-            {perform_read_cast, Coordinator, Key, Type, Transaction}).
+    gen_server:cast(
+        {global, generate_random_server_name(Node, Partition)},
+        {perform_read_cast, Coordinator, Key, Type, Transaction}
+    ).
 
 %% @doc This checks all partitions in the system to see if all read
 %%      servers have been started up.
@@ -212,7 +214,7 @@ handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
 
 -spec perform_read_internal(pid(), key(), type(), #transaction{}, [], #state{}) -> ok.
 perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_protocol=pvc}, _PropList, State) ->
-    %% TODO(borja): This is where we perform PVC's read logic, don't wait like cure/gr
+    %% TODO(borja): This is where we perform PVC's read logic
     CurrentPartition = State#state.partition,
     HasRead = Tx#transaction.pvc_meta#pvc_tx_meta.hasread,
 
@@ -226,6 +228,9 @@ perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_pr
             vectorclock_partition:new()
     end,
     case materializer_vnode:read(Key, Type, MaxVersion, Tx, State#state.mat_state) of
+        {error, Reason} ->
+            reply_to_coordinator(Coordinator, {error, Reason});
+
         {ok, Snapshot} ->
             Value = Type:value(Snapshot),
             lager:info("PVC read @ ~p got snapshot ~p", [CurrentPartition, Snapshot]),
@@ -234,10 +239,7 @@ perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_pr
             CoordReturn = {pvc_readreturn, {Key, Value, MaxVersion, MaxVersion}},
             %% TODO(borja): Check when is this triggered
             ServerReturn = {ok, Value},
-            reply_to_coordinator(Coordinator, CoordReturn, ServerReturn);
-
-        {error, Reason} ->
-            reply_to_coordinator(Coordinator, {error, Reason})
+            reply_to_coordinator(Coordinator, CoordReturn, ServerReturn)
     end;
 
 perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
