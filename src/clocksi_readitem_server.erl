@@ -99,11 +99,15 @@ read_data_item({Partition, Node}, Key, Type, Transaction) ->
     end.
 
 -spec async_read_data_item(index_node(), key(), type(), tx(), term()) -> ok.
-async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
-    gen_server:cast(
-        {global, generate_random_server_name(Node, Partition)},
-        {perform_read_cast, Coordinator, Key, Type, Transaction}
-    ).
+async_read_data_item({Partition, Node}=IndexNode, Key, Type, Transaction, Coordinator) ->
+    To = {global, generate_random_server_name(Node, Partition)},
+    Msg = case Transaction#transaction.transactional_protocol of
+        pvc ->
+            {pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Transaction};
+        _ ->
+            {perform_read_cast, Coordinator, Key, Type, Transaction}
+    end,
+    gen_server:cast(To, Msg).
 
 %% @doc This checks all partitions in the system to see if all read
 %%      servers have been started up.
@@ -210,7 +214,27 @@ handle_call({go_down}, _Sender, SD0) ->
 
 handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
-    {noreply, SD0}.
+    {noreply, SD0};
+
+handle_cast({pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}, State) ->
+    ok = pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State),
+    {noreply, State}.
+
+pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
+    partition = Partition
+}) ->
+    %% Sanity check
+    pvc = Tx#transaction.transactional_protocol,
+
+    {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
+    VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+    case pvc_check_time(Partition, MostRecentVC, VCaggr) of
+        {not_ready, WaitTime} ->
+            erlang:send_after(WaitTime, self(), {pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}),
+            ok;
+        ready ->
+            ok = perform_read_internal(Coordinator, Key, Type, Tx, [], State)
+    end.
 
 -spec perform_read_internal(pid(), key(), type(), #transaction{}, [], #state{}) -> ok.
 perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_protocol=pvc}, _PropList, State) ->
@@ -258,6 +282,23 @@ perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
             return(Coordinator, Key, Type, Tx, PropertyList, State)
     end.
 
+%% @doc Check if this partition is ready to proceed with a read.
+-spec pvc_check_time(
+    partition_id(),
+    vectorclock_partition:partition_vc(),
+    vectorclock_partition:partition_vc()
+) -> ready | {not_ready, non_neg_integer()}.
+
+pvc_check_time(Partition, MostRecentVC, VCaggr) ->
+    MostRecentTime = vectorclock_partition:get_partition_time(Partition, MostRecentVC),
+    AggregateTime = vectorclock_partition:get_partition_time(Partition, VCaggr),
+    case AggregateTime < MostRecentTime of
+        true ->
+            {not_ready, ?PVC_WAIT_MS};
+        false ->
+            ready
+    end.
+
 %% @doc check_clock: Compares its local clock with the tx timestamp.
 %%      if local clock is behind, it sleeps the fms until the clock
 %%      catches up. CLOCK-SI: clock skew.
@@ -268,7 +309,7 @@ check_clock(Key, TxLocalStartTime, PreparedCache, Partition) ->
     Time = dc_utilities:now_microsec(),
     case TxLocalStartTime > Time of
         true ->
-            {not_ready, (TxLocalStartTime - Time) div 1000 +1};
+            {not_ready, (TxLocalStartTime - Time) div 1000 + 1};
         false ->
             check_prepared(Key, TxLocalStartTime, PreparedCache, Partition)
     end.
@@ -316,6 +357,10 @@ return(Coordinator, Key, Type, Transaction, PropertyList,
 handle_info({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
     {noreply, SD0};
+
+handle_info({pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}, State) ->
+    ok = pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State),
+    {noreply, State};
 
 handle_info(_Info, StateData) ->
     {noreply, StateData}.

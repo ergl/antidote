@@ -106,6 +106,11 @@
 }).
 
 %% PVC
+
+%% Time (in ms) a partition should wait between retries at checking
+%% a partition's most recent vc during reads.
+-define(PVC_WAIT_MS, 1000).
+
 -record(pvc_decide_meta, {
     %% The cumulative outcome of the votes.
     %% Only keep one as we exit as soon as we receive a negative one.

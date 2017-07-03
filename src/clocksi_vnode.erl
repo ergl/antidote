@@ -53,6 +53,8 @@
     handle_coverage/4,
     handle_exit/3]).
 
+-export([pvc_get_most_recent_vc/1]).
+
 -ignore_xref([start_vnode/1]).
 
 %%---------------------------------------------------------------------
@@ -101,7 +103,23 @@ read_data_item(Node, TxId, Key, Type, Updates) ->
 
 async_read_data_item(Node, Transaction, Key, Type) ->
     %% TODO(borja): Move Coordinator={fsm, self()} to the caller
-    clocksi_readitem_server:async_read_data_item(Node, Key, Type, Transaction, {fsm, self()}).
+    clocksi_readitem_server:async_read_data_item(
+        Node,
+        Key,
+        Type,
+        Transaction,
+        {fsm, self()}
+    ).
+
+%% @doc Hack-ish way to get the most recent vc in this partition
+%%
+%% Called from clocksi_readitem_server, couples them together,
+%% but this is the least complicated way I could come up with
+%% to get around blocking the virtual node while waiting for
+%% the clock to catch up.
+-spec pvc_get_most_recent_vc(index_node()) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
+pvc_get_most_recent_vc(Node) ->
+    riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER).
 
 %% @doc Return active transactions in prepare state with their preparetime for a given key
 %% should be run from same physical node
@@ -335,6 +353,11 @@ handle_command({check_servers_ready}, _Sender, SD0 = #state{partition = Partitio
 
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
+
+handle_command(pvc_mostrecentvc, _Sender, State = #state{
+    pvc_most_recent_vc = MostRecentVC
+}) ->
+    {reply, {ok, MostRecentVC}, State};
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     lager:info("PVC Partition ~p received prepare", [State#state.partition]),
