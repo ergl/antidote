@@ -536,7 +536,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
         true ->
-            lager:info("PVC writeset for given transaction was disputed or tx is too fresh"),
+            lager:info("PVC writeset disputed [~p] or tx is too fresh [~p]", [WriteSetDisputed, TooFresh]),
             {false, LastPrepared, State};
 
         false ->
