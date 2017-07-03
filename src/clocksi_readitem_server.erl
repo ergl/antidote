@@ -43,7 +43,7 @@
 
 %% States
 -export([read_data_item/4,
-        async_read_data_item/5,
+         async_read_data_item/5,
          check_partition_ready/3,
          start_read_servers/2,
          stop_read_servers/2]).
