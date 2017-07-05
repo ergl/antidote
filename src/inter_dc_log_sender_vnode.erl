@@ -30,28 +30,26 @@
 
 
 %% API
--export([
-     send/2,
-     update_last_log_id/2,
-     start_timer/1,
-     send_stable_time/2]).
+-export([send/2,
+         update_last_log_id/2,
+         start_timer/1,
+         send_stable_time/2]).
 
 %% VNode methods
--export([
-  init/1,
-  start_vnode/1,
-  handle_command/3,
-  handle_coverage/4,
-  handle_exit/3,
-  handoff_starting/2,
-  handoff_cancelled/1,
-  handoff_finished/2,
-  handle_handoff_command/3,
-  handle_handoff_data/2,
-  encode_handoff_item/2,
-  is_empty/1,
-  terminate/2,
-  delete/1]).
+-export([init/1,
+         start_vnode/1,
+         handle_command/3,
+         handle_coverage/4,
+         handle_exit/3,
+         handoff_starting/2,
+         handoff_cancelled/1,
+         handoff_finished/2,
+         handle_handoff_command/3,
+         handle_handoff_data/2,
+         encode_handoff_item/2,
+         is_empty/1,
+         terminate/2,
+         delete/1]).
 
 %% Vnode state
 -record(state, {
@@ -68,33 +66,53 @@
 %% and then the transaction will be broadcasted via interDC.
 %% WARNING: only LOCALLY COMMITED operations (not from remote DCs) should be sent to log_sender_vnode.
 -spec send(partition_id(), #log_record{}) -> ok.
-send(Partition, LogRecord) -> dc_utilities:call_vnode(Partition, inter_dc_log_sender_vnode_master, {log_event, LogRecord}).
+send(Partition, LogRecord) ->
+    dc_utilities:call_vnode(
+        Partition,
+        inter_dc_log_sender_vnode_master,
+        {log_event, LogRecord}
+    ).
 
 %% Start the heartbeat timer
 -spec start_timer(partition_id()) -> ok.
-start_timer(Partition) -> dc_utilities:call_vnode_sync(Partition, inter_dc_log_sender_vnode_master, {start_timer}).
+start_timer(Partition) ->
+    dc_utilities:call_vnode_sync(
+        Partition,
+        inter_dc_log_sender_vnode_master,
+        {start_timer}
+    ).
 
 %% After restarting from failure, load the operation id of the last operation sent by this DC
 %% Otherwise the stable time won't advance as the receving DC will be thinking it is getting old messages
 -spec update_last_log_id(partition_id(), #op_number{}) -> ok.
-update_last_log_id(Partition, OpId) -> dc_utilities:call_vnode_sync(Partition, inter_dc_log_sender_vnode_master, {update_last_log_id, OpId}).
+update_last_log_id(Partition, OpId) ->
+    dc_utilities:call_vnode_sync(
+        Partition,
+        inter_dc_log_sender_vnode_master,
+        {update_last_log_id, OpId}
+    ).
 
 %% Send the stable time to this vnode, no transaction in the future will commit with a smaller time
 -spec send_stable_time(partition_id(), non_neg_integer()) -> ok.
 send_stable_time(Partition, Time) ->
-    dc_utilities:call_local_vnode(Partition, inter_dc_log_sender_vnode_master, {stable_time, Time}).
+    dc_utilities:call_local_vnode(
+        Partition,
+        inter_dc_log_sender_vnode_master,
+        {stable_time, Time}
+    ).
 
 %%%% VNode methods ----------------------------------------------------------+
 
-start_vnode(I) -> riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
+start_vnode(I) ->
+    riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-  {ok, #state{
-    partition = Partition,
-    buffer = log_txn_assembler:new_state(),
-    last_log_id = #op_number{},
-    timer = none
-  }}.
+    {ok, #state{
+        partition = Partition,
+        buffer = log_txn_assembler:new_state(),
+        last_log_id = #op_number{},
+        timer = none
+    }}.
 
 %% Start the timer
 handle_command({start_timer}, _Sender, State) ->

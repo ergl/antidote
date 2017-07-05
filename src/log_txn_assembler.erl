@@ -25,10 +25,9 @@
 -include("inter_dc_repl.hrl").
 
 %% API
--export([
-  new_state/0,
-  process/2,
-  process_all/2]).
+-export([new_state/0,
+         process/2,
+         process_all/2]).
 
 %% State
 -record(state, {
@@ -55,20 +54,24 @@ process(LogRecord, State) ->
 process_all(LogRecords, State) -> process_all(LogRecords, [], State).
 
 -spec process_all([#log_record{}], [[#log_record{}]], #state{}) -> {[[#log_record{}]], #state{}}.
-process_all([], Acc, State) -> {Acc, State};
+process_all([], Acc, State) ->
+    {Acc, State};
+
 process_all([H|T], Acc, State) ->
-  {Result, NewState} = process(H, State),
-  NewAcc = case Result of
-    {ok, Txn} -> Acc ++ [Txn];
-    none -> Acc
-  end,
-  process_all(T, NewAcc, NewState).
+    {Result, NewState} = process(H, State),
+    NewAcc = case Result of
+        none ->
+            Acc;
+        {ok, Txn} ->
+            Acc ++ [Txn]
+    end,
+    process_all(T, NewAcc, NewState).
 
 %%%% Methods ----------------------------------------------------------------+
 
 -spec find_or_default(#tx_id{}, any(), dict:dict()) -> any().
 find_or_default(Key, Default, Dict) ->
-  case dict:find(Key, Dict) of
-    {ok, Val} -> Val;
-    _ -> Default
-  end.
+    case dict:find(Key, Dict) of
+        {ok, Val} -> Val;
+        _ -> Default
+    end.

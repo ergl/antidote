@@ -30,18 +30,17 @@
 -export_type([vector_orddict/0, nonempty_vector_orddict/0]).
 
 -export([new/0,
-  get_smaller/2,
-  get_smaller_from_id/3,
-  insert/3,
-  insert_bigger/3,
-  sublist/3,
-  size/1,
-  to_list/1,
-  from_list/1,
-  first/1,
-  last/1,
-  filter/2]).
-
+         get_smaller/2,
+         get_smaller_from_id/3,
+         insert/3,
+         insert_bigger/3,
+         sublist/3,
+         size/1,
+         to_list/1,
+         from_list/1,
+         first/1,
+         last/1,
+         filter/2]).
 
 %% @doc The vector orddict is an ordered dictionary used to store materialized snapshots whose order
 %%      is described by vectorclocks.

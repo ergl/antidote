@@ -88,18 +88,19 @@ handle_info(_Info, State) ->
 
 -spec get_entries_internal(partition_id(), log_opid(), log_opid()) -> [#interdc_txn{}].
 get_entries_internal(Partition, From, To) ->
-  Node = case lists:member(Partition, dc_utilities:get_my_partitions()) of
-             true -> node();
-             false ->
-                 log_utilities:get_my_node(Partition)
-         end,
-  Logs = log_read_range(Partition, Node, From, To),
-  Asm = log_txn_assembler:new_state(),
-  {OpLists, _} = log_txn_assembler:process_all(Logs, Asm),
-  Txns = lists:map(fun(TxnOps) -> inter_dc_txn:from_ops(TxnOps, Partition, none) end, OpLists),
-  %% This is done in order to ensure that we only send the transactions we committed.
-  %% We can remove this once the read_log_range is reimplemented.
-  lists:filter(fun inter_dc_txn:is_local/1, Txns).
+    Node = case lists:member(Partition, dc_utilities:get_my_partitions()) of
+        true ->
+            node();
+        false ->
+            log_utilities:get_my_node(Partition)
+    end,
+    Logs = log_read_range(Partition, Node, From, To),
+    Asm = log_txn_assembler:new_state(),
+    {OpLists, _} = log_txn_assembler:process_all(Logs, Asm),
+    Txns = lists:map(fun(TxnOps) -> inter_dc_txn:from_ops(TxnOps, Partition, none) end, OpLists),
+    %% This is done in order to ensure that we only send the transactions we committed.
+    %% We can remove this once the read_log_range is reimplemented.
+    lists:filter(fun inter_dc_txn:is_local/1, Txns).
 
 %% TODO: reimplement this method efficiently once the log provides efficient access by partition and DC (Santiago, here!)
 %% TODO: also fix the method to provide complete snapshots if the log was trimmed
