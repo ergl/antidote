@@ -54,7 +54,7 @@
 %% Vnode state
 -record(state, {
   partition :: partition_id(),
-  buffer, %% log_tx_assembler:state
+  buffer :: log_txn_assembler:buffer(),
   last_log_id :: #op_number{},
   timer :: any()
 }).
