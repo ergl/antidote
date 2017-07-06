@@ -22,17 +22,16 @@
 -include("inter_dc_repl.hrl").
 
 %% API
--export([
-  from_ops/3,
-  ping/3,
-  is_local/1,
-  req_id_to_bin/1,
-  ops_by_type/2,
-  to_bin/1,
-  from_bin/1,
-  partition_to_bin/1,
-  last_log_opid/1,
-  is_ping/1]).
+-export([from_ops/3,
+         ping/3,
+         is_local/1,
+         req_id_to_bin/1,
+         ops_by_type/2,
+         to_bin/1,
+         from_bin/1,
+         partition_to_bin/1,
+         last_log_opid/1,
+         is_ping/1]).
 
 %% Functions
 
@@ -73,10 +72,12 @@ last_log_opid(Txn = #interdc_txn{log_records = Ops, prev_log_opid = LogOpId}) ->
     end.
 
 -spec is_local(#interdc_txn{}) -> boolean().
-is_local(#interdc_txn{dcid = DCID}) -> DCID == dc_meta_data_utilities:get_my_dc_id().
+is_local(#interdc_txn{dcid = DCID}) ->
+    DCID == dc_meta_data_utilities:get_my_dc_id().
 
 -spec is_ping(#interdc_txn{}) -> boolean().
-is_ping(#interdc_txn{log_records = Ops}) -> Ops == [].
+is_ping(#interdc_txn{log_records = Ops}) ->
+    Ops == [].
 
 -spec ops_by_type(#interdc_txn{}, any()) -> [#log_record{}].
 ops_by_type(#interdc_txn{log_records = Ops}, Type) ->
@@ -117,7 +118,8 @@ pad_or_trim(Width, Binary) ->
   end.
 
 -spec partition_to_bin(partition_id()) -> binary().
-partition_to_bin(Partition) -> pad(?PARTITION_BYTE_LENGTH, binary:encode_unsigned(Partition)).
+partition_to_bin(Partition) ->
+    pad(?PARTITION_BYTE_LENGTH, binary:encode_unsigned(Partition)).
 
 %% These are interdc message ids, as non-neg-integers, encoded as unsigned
 %% They are of a fixed binary size, looping back to zero
