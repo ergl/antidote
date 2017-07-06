@@ -44,7 +44,7 @@ new_buffer() ->
 process(LogRecord, Buffer) ->
     Payload = LogRecord#log_record.log_operation,
     TxId = Payload#log_operation.tx_id,
-    NewTxnBuf = find_or_default(TxId, [], Buffer) ++ [LogRecord],
+    NewTxnBuf = find_or_default(TxId, Buffer, []) ++ [LogRecord],
     case Payload#log_operation.op_type of
         commit ->
             {{ok, NewTxnBuf}, dict:erase(TxId, Buffer)};
@@ -76,8 +76,8 @@ process_all([H|T], Acc, Buffer) ->
 
 %%%% Methods ----------------------------------------------------------------+
 
--spec find_or_default(#tx_id{}, any(), dict:dict()) -> any().
-find_or_default(Key, Default, Dict) ->
+-spec find_or_default(#tx_id{}, dict:dict(), any()) -> any().
+find_or_default(Key, Dict, Default) ->
     case dict:find(Key, Dict) of
         {ok, Val} ->
             Val;
