@@ -124,19 +124,23 @@ handle_command({update_last_log_id, OpId}, _Sender, State = #state{partition = P
 
 %% Handle the new operation
 %% -spec handle_command({log_event, #log_record{}}, pid(), #state{}) -> {noreply, #state{}}.
-handle_command({log_event, LogRecord}, _Sender, State) ->
-  %% Use the txn_assembler to check if the complete transaction was collected.
-  {Result, NewBufState} = log_txn_assembler:process(LogRecord, State#state.buffer),
-  State1 = State#state{buffer = NewBufState},
-  State2 = case Result of
-    %% If the transaction was collected
-    {ok, Ops} ->
-      Txn = inter_dc_txn:from_ops(Ops, State1#state.partition, State#state.last_log_id),
-      broadcast(State1, Txn);
-    %% If the transaction is not yet complete
-    none -> State1
-  end,
-  {noreply, State2};
+handle_command({log_event, LogRecord}, _Sender, State = #state{
+    partition = Partition,
+    last_log_id = LastLogId
+}) ->
+    %% Use the txn_assembler to check if the complete transaction was collected.
+    {Result, NewBuffer} = log_txn_assembler:process(LogRecord, State#state.buffer),
+    NewState = case Result of
+        %% If the transaction is not yet complete
+        none ->
+            State;
+
+        %% If the transaction was collected
+        {ok, Ops} ->
+            Txn = inter_dc_txn:from_ops(Ops, Partition, LastLogId),
+            broadcast(State, Txn)
+    end,
+    {noreply, NewState#state{buffer = NewBuffer}};
 
 handle_command({stable_time, Time}, _Sender, State) ->
     PingTxn = inter_dc_txn:ping(State#state.partition, State#state.last_log_id, Time),
