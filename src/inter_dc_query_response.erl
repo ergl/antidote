@@ -95,7 +95,7 @@ get_entries_internal(Partition, From, To) ->
             log_utilities:get_my_node(Partition)
     end,
     Logs = log_read_range(Partition, Node, From, To),
-    Asm = log_txn_assembler:new_state(),
+    Asm = log_txn_assembler:new_buffer(),
     {OpLists, _} = log_txn_assembler:process_all(Logs, Asm),
     Txns = lists:map(fun(TxnOps) -> inter_dc_txn:from_ops(TxnOps, Partition, none) end, OpLists),
     %% This is done in order to ensure that we only send the transactions we committed.

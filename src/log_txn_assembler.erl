@@ -25,7 +25,7 @@
 -include("inter_dc_repl.hrl").
 
 %% API
--export([new_state/0,
+-export([new_buffer/0,
          process/2,
          process_all/2]).
 
@@ -36,8 +36,8 @@
 
 %%%% API --------------------------------------------------------------------+
 
--spec new_state() -> buffer().
-new_state() ->
+-spec new_buffer() -> buffer().
+new_buffer() ->
     dict:new().
 
 -spec process(#log_record{}, buffer()) -> {{ok, [#log_record{}]} | none, buffer()}.

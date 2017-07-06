@@ -109,7 +109,7 @@ start_vnode(I) ->
 init([Partition]) ->
     {ok, #state{
         partition = Partition,
-        buffer = log_txn_assembler:new_state(),
+        buffer = log_txn_assembler:new_buffer(),
         last_log_id = #op_number{},
         timer = none
     }}.
