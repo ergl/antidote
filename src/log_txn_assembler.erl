@@ -42,10 +42,13 @@ new_buffer() ->
 
 -spec process(#log_record{}, buffer()) -> {{ok, [#log_record{}]} | none, buffer()}.
 process(LogRecord, Buffer) ->
-    Payload = LogRecord#log_record.log_operation,
-    TxId = Payload#log_operation.tx_id,
+    #log_operation{
+        tx_id = TxId,
+        op_type = OpType
+    } = LogRecord#log_record.log_operation,
+
     NewTxnBuf = find_or_default(TxId, Buffer, []) ++ [LogRecord],
-    case Payload#log_operation.op_type of
+    case OpType of
         commit ->
             {{ok, NewTxnBuf}, dict:erase(TxId, Buffer)};
 

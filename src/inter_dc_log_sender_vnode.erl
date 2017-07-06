@@ -143,7 +143,7 @@ handle_command({stable_time, Time}, _Sender, State) ->
     {noreply, set_timer(broadcast(State, PingTxn))};
 
 handle_command({hello}, _Sender, State) ->
-  {reply, ok, State};
+    {reply, ok, State};
 
 %% Handle the ping request, managed by the timer (1s by default)
 handle_command(ping, _Sender, State) ->
@@ -152,27 +152,37 @@ handle_command(ping, _Sender, State) ->
 
 handle_coverage(_Req, _KeySpaces, _Sender, State) ->
     {stop, not_implemented, State}.
+
 handle_exit(_Pid, _Reason, State) ->
     {noreply, State}.
+
 handoff_starting(_TargetNode, State) ->
     {true, State}.
+
 handoff_cancelled(State) ->
     {ok, set_timer(State)}.
+
 handoff_finished(_TargetNode, State) ->
     {ok, State}.
+
 handle_handoff_command( _Message , _Sender, State) ->
     {noreply, State}.
+
 handle_handoff_data(_Data, State) ->
     {reply, ok, State}.
+
 encode_handoff_item(Key, Operation) ->
     term_to_binary({Key, Operation}).
+
 is_empty(State) ->
     {true, State}.
+
 delete(State) ->
     {ok, State}.
+
 terminate(_Reason, State) ->
     _ = del_timer(State),
-  ok.
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -180,8 +190,8 @@ terminate(_Reason, State) ->
 -spec del_timer(#state{}) -> #state{}.
 del_timer(State = #state{timer = none}) -> State;
 del_timer(State = #state{timer = Timer}) ->
-  _ = erlang:cancel_timer(Timer),
-  State#state{timer = none}.
+    _ = erlang:cancel_timer(Timer),
+    State#state{timer = none}.
 
 %% Cancels the previous ping timer and sets a new one.
 -spec set_timer(#state{}) -> #state{}.
@@ -211,9 +221,9 @@ set_timer(First, State = #state{partition = Partition}) ->
 %% Broadcasts the transaction via local publisher.
 -spec broadcast(#state{}, #interdc_txn{}) -> #state{}.
 broadcast(State, Txn) ->
-  inter_dc_pub:broadcast(Txn),
-  Id = inter_dc_txn:last_log_opid(Txn),
-  State#state{last_log_id = Id}.
+    inter_dc_pub:broadcast(Txn),
+    Id = inter_dc_txn:last_log_opid(Txn),
+    State#state{last_log_id = Id}.
 
 %% @doc Sends an async request to get the smallest snapshot time of active transactions.
 %%      No new updates with smaller timestamp will occur in future.
