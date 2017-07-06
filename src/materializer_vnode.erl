@@ -419,13 +419,13 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
                     %% No in-memory snapshot, get it from replication log
                     get_from_snapshot_log(Key, Type, MinSnaphsotTime);
 
-                FoundVersion ->
+                FoundSnapshot ->
                     %% Snapshot was present, now update it with the operations found in the cache.
                     %%
                     %% Operations are taken from the in-memory cache.
                     %% Any snapshot already in the cache will have more recent operations
                     %% also in the cache, so no need to hit the log.
-                    update_snapshot_from_cache(FoundVersion, Key, OpsCache)
+                    update_snapshot_from_cache(FoundSnapshot, Key, OpsCache)
             end
     end.
 
@@ -464,8 +464,8 @@ store_snapshot(TxId, Key, Snapshot, Time, ShouldGC, MatState) ->
     cache_id()
 ) -> #snapshot_get_response{}.
 
-update_snapshot_from_cache(SnapshotResponse, Key, OpsCache) ->
-    {{SnapshotCommitTime, LatestSnapshot}, IsFirst} = SnapshotResponse,
+update_snapshot_from_cache(Snapshot, Key, OpsCache) ->
+    {{SnapshotCommitTime, LatestSnapshot}, IsFirst} = Snapshot,
     {Ops, OpsLen} = fetch_updates_from_cache(OpsCache, Key),
     #snapshot_get_response{
         ops_list=Ops,
