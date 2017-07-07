@@ -90,9 +90,10 @@ get_smaller_internal([{FirstClock, _}=Version | Rest], Vector, IsFirst) ->
                                                                    | undefined.
 
 get_smaller_from_id(_Id, _Time, {_List, Size}) when Size == 0 ->
-  undefined;
+    undefined;
+
 get_smaller_from_id(Id, Time, {List, _Size}) ->
-  get_smaller_from_id_internal(Id, Time, List).
+    get_smaller_from_id_internal(Id, Time, List).
 
 -spec get_smaller_from_id_internal(
     term(),
@@ -101,15 +102,16 @@ get_smaller_from_id(Id, Time, {List, _Size}) ->
 ) -> {vectorclock(), term()} | undefined.
 
 get_smaller_from_id_internal(_Id, _Time, []) ->
-  undefined;
+    undefined;
+
 get_smaller_from_id_internal(Id, Time, [{Clock, Val}|Rest]) ->
-  ValTime = vectorclock:get_clock_of_dc(Id, Clock),
-  case ValTime =< Time of
-    true ->
-      {Clock, Val};
-    false ->
-      get_smaller_from_id_internal(Id, Time, Rest)
-  end.
+    ValTime = vectorclock:get_clock_of_dc(Id, Clock),
+    case ValTime =< Time of
+        true ->
+            {Clock, Val};
+        false ->
+            get_smaller_from_id_internal(Id, Time, Rest)
+    end.
 
 -spec insert(vectorclock(), term(), vector_orddict()) -> vector_orddict().
 insert(Vector, Val, {List, Size}) ->
@@ -131,11 +133,11 @@ insert_internal(Vector, Val, [{FirstClock, FirstVal}|Rest], Size, PrevList) ->
 
 -spec insert_bigger(vectorclock(), term(), vector_orddict()) -> nonempty_vector_orddict().
 insert_bigger(Vector, Val, {List, Size}) ->
-  insert_bigger_internal(Vector, Val, List, Size).
+    insert_bigger_internal(Vector, Val, List, Size).
 
 -spec insert_bigger_internal(vectorclock(), term(), [{vectorclock(), term()}], non_neg_integer()) -> nonempty_vector_orddict().
 insert_bigger_internal(Vector, Val, [], 0) ->
-  {[{Vector, Val}], 1};
+    {[{Vector, Val}], 1};
 
 insert_bigger_internal(Vector, Val, [{FirstClock, FirstVal}|Rest], Size) ->
   case not vectorclock:le(Vector, FirstClock) of
@@ -147,28 +149,28 @@ insert_bigger_internal(Vector, Val, [{FirstClock, FirstVal}|Rest], Size) ->
 
 -spec sublist(vector_orddict(), non_neg_integer(), non_neg_integer()) -> vector_orddict().
 sublist({List, _Size}, Start, Len) ->
-  Res = lists:sublist(List, Start, Len),
-  {Res, length(Res)}.
+    Res = lists:sublist(List, Start, Len),
+    {Res, length(Res)}.
 
 -spec size(vector_orddict()) -> non_neg_integer().
 size({_List, Size}) ->
-  Size.
+    Size.
 
 -spec to_list(vector_orddict()) -> [{vectorclock(), term()}].
 to_list({List, _Size}) ->
-  List.
+    List.
 
 -spec from_list([{vectorclock(), term()}]) -> vector_orddict().
 from_list(List) ->
-  {List, length(List)}.
+    {List, length(List)}.
 
 -spec first(vector_orddict()) -> {vectorclock(), term()}.
 first({[First|_Rest], _Size}) ->
-  First.
+    First.
 
 -spec last(vector_orddict()) -> {vectorclock(), term()}.
 last({List, _Size}) ->
-  lists:last(List).
+    lists:last(List).
 
 -spec filter(fun((term()) -> boolean()), vector_orddict()) -> vector_orddict().
 filter(Fun, {List, _Size}) ->
