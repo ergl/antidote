@@ -415,7 +415,7 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
 
         [{_, SnapshotDict}] ->
             case vector_orddict:get_smaller(MinSnaphsotTime, SnapshotDict) of
-                {undefined, _} ->
+                undefined ->
                     %% No in-memory snapshot, get it from replication log
                     get_from_snapshot_log(Key, Type, MinSnaphsotTime);
 
