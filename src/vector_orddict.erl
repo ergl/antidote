@@ -115,21 +115,29 @@ get_smaller_from_id_internal(Id, Time, [{Clock, Val}|Rest]) ->
 
 -spec insert(vectorclock(), term(), vector_orddict()) -> vector_orddict().
 insert(Vector, Val, {List, Size}) ->
-  insert_internal(Vector, Val, List, Size+1, []).
+    NewSize = Size + 1,
+    {insert_internal(Vector, Val, List, []), NewSize}.
 
--spec insert_internal(vectorclock(), term(), [{vectorclock(), term()}], non_neg_integer(), [{vectorclock(), term()}]) -> vector_orddict().
-insert_internal(Vector, Val, [], Size, PrevList) ->
-  {lists:reverse([{Vector, Val}|PrevList]), Size};
+-spec insert_internal(
+    vectorclock(),
+    term(),
+    [{vectorclock(), term()}],
+    [{vectorclock(), term()}]
+) -> [{vectorclock(), term()}].
 
-insert_internal(Vector, Val, [{FirstClock, FirstVal}|Rest], Size, PrevList) ->
-  case vectorclock:all_dots_greater(Vector, FirstClock) of
-    true ->
-      {lists:reverse(PrevList, [{Vector, Val}|[{FirstClock, FirstVal}|Rest]]), Size};
-    %%PrevList;
-    false ->
-      insert_internal(Vector, Val, Rest, Size, [{FirstClock, FirstVal}|PrevList])
-  end.
+insert_internal(Vector, Val, [], Acc) ->
+    lists:reverse([{Vector, Val} | Acc]);
 
+insert_internal(Vector, Val, All, Acc) ->
+    [{FirstClock, _} = Version | Rest] = All,
+
+    case vectorclock:all_dots_greater(Vector, FirstClock) of
+        true ->
+            lists:reverse(Acc, [{Vector, Val} | All]);
+
+        false ->
+            insert_internal(Vector, Val, Rest, [Version | Acc])
+    end.
 
 -spec insert_bigger(vectorclock(), term(), vector_orddict()) -> nonempty_vector_orddict().
 insert_bigger(Vector, Val, {List, Size}) ->
@@ -139,13 +147,15 @@ insert_bigger(Vector, Val, {List, Size}) ->
 insert_bigger_internal(Vector, Val, [], 0) ->
     {[{Vector, Val}], 1};
 
-insert_bigger_internal(Vector, Val, [{FirstClock, FirstVal}|Rest], Size) ->
-  case not vectorclock:le(Vector, FirstClock) of
-    true ->
-      {[{Vector, Val}|[{FirstClock, FirstVal}|Rest]], Size+1};
-    false ->
-      {[{FirstClock, FirstVal}|Rest], Size}
-  end.
+insert_bigger_internal(Vector, Val, All, Size) ->
+    [{FirstClock, _} | _] = All,
+    case not vectorclock:le(Vector, FirstClock) of
+        true ->
+            {[{Vector, Val} | All], Size + 1};
+
+        false ->
+            {All, Size}
+    end.
 
 -spec sublist(vector_orddict(), non_neg_integer(), non_neg_integer()) -> vector_orddict().
 sublist({List, _Size}, Start, Len) ->
