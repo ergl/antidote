@@ -47,7 +47,7 @@
 %%      Note that the elements are stored in a sorted list going from big to small (left to right).
 -spec new() -> {[], 0}.
 new() ->
-  {[], 0}.
+    {[], 0}.
 
 %% @doc Get the first appropiate element from the dict according to a =< ordering.
 %%

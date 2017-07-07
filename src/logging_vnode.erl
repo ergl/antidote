@@ -179,10 +179,12 @@ asyn_append_group(IndexNode, LogId, LogRecordList, IsLocal) ->
 -spec get(index_node(), key(), vectorclock(), term(), key()) ->
          #snapshot_get_response{} | {error, term()}.
 get(IndexNode, LogId, MinSnapshotTime, Type, Key) ->
-    riak_core_vnode_master:sync_command(IndexNode,
-                                        {get, LogId, MinSnapshotTime, Type, Key},
-                                        ?LOGGING_MASTER,
-                                        infinity).
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {get, LogId, MinSnapshotTime, Type, Key},
+        ?LOGGING_MASTER,
+        infinity
+    ).
 
 %% @doc Given the logid and position in the log (given by continuation) and a dict
 %% of non_commited operations up to this position returns
