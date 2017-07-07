@@ -45,7 +45,7 @@
 %% @doc The vector orddict is an ordered dictionary used to store materialized snapshots whose order
 %%      is described by vectorclocks.
 %%      Note that the elements are stored in a sorted list going from big to small (left to right).
--spec new() -> {[], 0}.
+-spec new() -> vector_orddict().
 new() ->
     {[], 0}.
 
@@ -55,7 +55,7 @@ new() ->
 %%      where Entry is the most recent entry such that DClock =< Clock.
 %%
 %%      In addition, return IsFirst, indicating if the selected entry was the newest entry
-%%      in the orddict.
+%%      in the orddict. Returns undefined if there's no appropriate entry in the dict.
 %%
 -spec get_smaller(vectorclock(), vector_orddict()) -> {{vectorclock(), term()}, boolean()}
                                                     | undefined.
@@ -79,13 +79,27 @@ get_smaller_internal([{FirstClock, _}=Version | Rest], Vector, IsFirst) ->
             get_smaller_internal(Rest, Vector, false)
     end.
 
--spec get_smaller_from_id(term(), clock_time(), vector_orddict()) -> undefined | {vectorclock(), term()}.
+%% @doc Same as get_smaller, according to a =< ordering on the id-th entry of each vectorclock.
+%%
+%%      get_smaller_from_id(Id, Time, Dict) will return {Clock, _}=Entry,
+%%      where Entry is the most recent entry such that Clock[Id] =< Time.
+%%
+%%      Returns undefined if there's no appropriate entry in the dict.
+%%
+-spec get_smaller_from_id(term(), clock_time(), vector_orddict()) -> {vectorclock(), term()}
+                                                                   | undefined.
+
 get_smaller_from_id(_Id, _Time, {_List, Size}) when Size == 0 ->
   undefined;
 get_smaller_from_id(Id, Time, {List, _Size}) ->
   get_smaller_from_id_internal(Id, Time, List).
 
--spec get_smaller_from_id_internal(term(), clock_time(), [{vectorclock, term()}, ...]) -> undefined | {vectorclock(), term()}.
+-spec get_smaller_from_id_internal(
+    term(),
+    clock_time(),
+    [{vectorclock(), term()}]
+) -> {vectorclock(), term()} | undefined.
+
 get_smaller_from_id_internal(_Id, _Time, []) ->
   undefined;
 get_smaller_from_id_internal(Id, Time, [{Clock, Val}|Rest]) ->
