@@ -182,8 +182,7 @@ send_min_prepared(Partition) ->
 
 %% @doc Sends a prepare request to a Node involved in a tx identified by TxId
 prepare(UpdatedPartitions, Tx = #transaction{transactional_protocol = pvc}) ->
-    lists:foreach(fun({{Partition, _}=Node, WriteSet}) ->
-        lager:info("PVC sending prepare to partition ~p", [Partition]),
+    lists:foreach(fun({Node, WriteSet}) ->
         riak_core_vnode_master:command(
             Node,
             {pvc_prepare, Tx, WriteSet},
@@ -206,8 +205,7 @@ prepare(ListofNodes, TxId) ->
 decide(UpdatedPartitions, Tx, CommitVC, Outcome) ->
     %% Sanity check
     pvc = Tx#transaction.transactional_protocol,
-    lists:foreach(fun({{Partition, _} = Node, WriteSet}) ->
-        lager:info("PVC Sending decide(~p) to ~p", [Outcome, Partition]),
+    lists:foreach(fun({Node, WriteSet}) ->
         riak_core_vnode_master:command(
             Node,
             {pvc_decide, Tx, WriteSet, CommitVC, Outcome},
@@ -383,13 +381,9 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
 
         true ->
             %% Propagate commit records to the logs
-            lager:info("PVC will merge ~p and ~p", [MostRecentVC, CommitVC]),
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
-            lager:info("PVC New MostRecentVC is ~p", [NewRecentVC]),
-            lager:info("PVC appended commit records"),
 
-            lager:info("PVC caching key commit vc"),
             %% Cache the commit time for the keys
             ok = pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC),
             State#state{pvc_most_recent_vc = NewRecentVC}
@@ -568,7 +562,6 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
             SeqNumber = LastPrepared + 1,
-            lager:info("PVC incrementing last prepared from ~p to ~p", [LastPrepared, SeqNumber]),
             {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
     end,
     Msg = {pvc_vote, Partition, Vote, Seq},
@@ -603,7 +596,6 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
 pvc_store_key_commitvc(SelfPartition, CommittedTx, WriteSet, CommitVC) ->
     Keys = pvc_get_partition_keys(SelfPartition, WriteSet),
     lists:foreach(fun(Key) ->
-        lager:info("PVC storing time ~p for ~p", [CommitVC, Key]),
         true = ets:insert(CommittedTx, {Key, CommitVC})
     end, Keys).
 

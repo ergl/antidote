@@ -997,8 +997,6 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
             ReturnAcc
     end,
 
-    lager:info("PVC got logresponse ~p", [Status]),
-
     case NumToRead > 1 of
         true ->
             {next_state, pvc_log_responses, State#tx_coord_state{
@@ -1009,7 +1007,6 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
         false ->
             case Status of
                 ok ->
-                    lager:info("PVC Entering prepare phase"),
                     ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
 
@@ -1180,8 +1177,6 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
     num_to_ack = NumToAck,
     return_accumulator = [{pvc, Acc}]
 }) ->
-
-    lager:info("PVC Received vote ~p with SeqNumber ~p", [Outcome, SeqNumber]),
 
     case Outcome of
         false ->
