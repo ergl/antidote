@@ -297,7 +297,8 @@ perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
 pvc_check_time(Partition, MostRecentVC, VCaggr) ->
     MostRecentTime = vectorclock_partition:get_partition_time(Partition, MostRecentVC),
     AggregateTime = vectorclock_partition:get_partition_time(Partition, VCaggr),
-    case AggregateTime < MostRecentTime of
+    lager:info("Will wait until MostRecentVC[i] (~p) >= VCaggr[i] (~p)", [MostRecentTime, AggregateTime]),
+    case MostRecentTime < AggregateTime of
         true ->
             {not_ready, ?PVC_WAIT_MS};
         false ->
