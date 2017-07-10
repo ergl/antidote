@@ -715,9 +715,11 @@ finish_op_load(CommittedOpsDict) ->
     end, dict:new(), CommittedOpsDict).
 
 %% @doc Given a list of log_records, this method filters the ones corresponding to Key.
-%% If key is undefined then is returns all records for all keys
-%% It returns a dict corresponding to all the ops matching Key and
-%% a list of the commited operations for that key which have a smaller commit time than MinSnapshotTime.
+%%
+%%      If key is undefined then is returns all records for all keys
+%%      It returns a dict corresponding to all the ops matching Key and
+%%      a list of the commited operations for that key which have a smaller commit time than MinSnapshotTime.
+%%
 -spec filter_terms_for_key(
     [{non_neg_integer(), #log_record{}}],
     key(),
@@ -725,6 +727,7 @@ finish_op_load(CommittedOpsDict) ->
     update_ops_dict(),
     committed_ops_dict()
 ) -> {update_ops_dict(), committed_ops_dict()}.
+
 filter_terms_for_key([], _Key, _MinSnapshotTime, Ops, CommittedOpsDict) ->
     {Ops, CommittedOpsDict};
 
@@ -764,6 +767,7 @@ handle_update(TxId, Key, Ops, OpPayload = #update_log_payload{
     committed_ops_dict(),
     #commit_log_payload{}
 ) -> {update_ops_dict(), committed_ops_dict()}.
+
 handle_commit(TxId, MinSnapshotTime, Ops, CommittedOpsDict, _OpPayload = #commit_log_payload{
     commit_time = CommitTime,
     snapshot_time = SnapshotTime
