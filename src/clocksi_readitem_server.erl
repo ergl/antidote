@@ -229,6 +229,10 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
     {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
 
     VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+    %% FIXME(borja): This check is being done too soon. Move
+    %% The check only needs to be performed before scanning the CLog.
+    %% If this partition was read before (see MaxVersion = case ...),
+    %% then we don't need to check the time (see alg. line 29, line 31)
     case pvc_check_time(Partition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
             lager:info("Partition not ready, will wait ~p ms", [WaitTime]),
@@ -249,8 +253,8 @@ perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_pr
             lager:info("PVC read @ ~p - Key ~p has been read before", [CurrentPartition, Key]),
             Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr;
         false ->
-            %% FIXME(borja): Wait for MostCurrentVC_i, need to figure out where this is located
             lager:info("PVC read @ ~p - Key ~p has not been read before", [CurrentPartition, Key]),
+            %% TODO(borja): Perform CLog scan here
             vectorclock_partition:new()
     end,
     case materializer_vnode:read(Key, Type, MaxVersion, Tx, State#state.mat_state) of
