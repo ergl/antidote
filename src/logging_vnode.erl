@@ -637,9 +637,21 @@ update_ets_op_id(Key, NewOp, ClockTable) ->
     end.
 
 %% @doc Retrieve all the operations for a key with commit time larger than the given one.
--spec get_ops_from_log(log_id(), {key, key()} | undefined, snapshot_time(), load_all | load_per_chunk) -> {ok, [{op_num(), clocksi_payload()}]} | {error, reason()}.
-get_ops_from_log(Log, {key, Key}, MinSnapshotTime, LoadType) ->
-    Res = get_ops_from_log(Log, Key, start, MinSnapshotTime, dict:new(), dict:new(), LoadType),
+%%
+%%      If given an undefined snapshot time, it will fetch all operations.
+%%
+-spec get_ops_from_log(
+    log_id(),
+    key(),
+    snapshot_time() | undefined,
+    load_all | load_per_chunk
+) -> {ok, [{op_num(), clocksi_payload()}]} | {error, reason()}.
+
+get_ops_from_log(_, undefined, _, _) ->
+    {error, undefined_key};
+
+get_ops_from_log(Log, Key, MinSnapshotTime, LoadType) ->
+    Res = get_ops_from_log(Log, {key, Key}, start, MinSnapshotTime, dict:new(), dict:new(), LoadType),
     case Res of
         {error, Reason} ->
             {error, Reason};
@@ -736,9 +748,11 @@ filter_terms_for_key([{_, LogRecord} | Terms], Key, MinSnapshotTime, Ops, Commit
 handle_update(TxId, Key, Ops, OpPayload = #update_log_payload{
     key = UpdatedKey
 }) ->
+    %% Append anyway if the key is undefined, we are collecting everything.
     case (Key == undefined) orelse (Key == {key, UpdatedKey}) of
         true ->
             dict:append(TxId, OpPayload, Ops);
+
         false ->
             Ops
     end.
