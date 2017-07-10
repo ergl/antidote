@@ -225,19 +225,16 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
 }) ->
     %% Sanity check
     pvc = Tx#transaction.transactional_protocol,
-    io:format("pvc_perform_read_cast called on state ~p~n", [State#state.partition]),
 
     {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
-    io:format("pvc_perform_read_cast called with MRVC ~p~n", [MostRecentVC]),
 
     VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
     case pvc_check_time(Partition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
-            io:format("Partition is not ready, will wait ~p ms~n", [WaitTime]),
+            lager:info("Partition not ready, will wait ~p ms", [WaitTime]),
             erlang:send_after(WaitTime, self(), {pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}),
             ok;
         ready ->
-            io:format("Partition is ready, proceeding with read logic~n"),
             ok = perform_read_internal(Coordinator, Key, Type, Tx, [], State)
     end.
 
