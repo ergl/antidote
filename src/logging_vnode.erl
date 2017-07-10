@@ -778,28 +778,29 @@ handle_commit(TxId, MinSnapshotTime, Ops, CommittedOpsDict, _OpPayload = #commit
 
         {ok, OpsList} ->
             NewCommittedOpsDict = lists:foldl(fun(UpdatePayload, Acc) ->
-                case MinSnapshotTime of
+                ValidSnapshot = case MinSnapshotTime of
                     undefined ->
-                        Acc;
+                        true;
 
                     Time ->
-                        ValidSnapshot = vectorclock:all_dots_greater(SnapshotTime, Time),
-                        case ValidSnapshot of
-                            false ->
-                                Acc;
+                        StrictlyNewer = vectorclock:all_dots_greater(SnapshotTime, Time),
+                        not StrictlyNewer
+                end,
+                case ValidSnapshot of
+                    false ->
+                        Acc;
 
-                            true ->
-                                #update_log_payload{key = KeyInternal, type = Type, op = Op} = UpdatePayload,
-                                CommittedDownstreamOp = #clocksi_payload{
-                                    key = KeyInternal,
-                                    type = Type,
-                                    op_param = Op,
-                                    snapshot_time = SnapshotTime,
-                                    commit_time = CommitTime,
-                                    txid = TxId
-                                },
-                                dict:append(KeyInternal, CommittedDownstreamOp, Acc)
-                        end
+                    true ->
+                        #update_log_payload{key = KeyInternal, type = Type, op = Op} = UpdatePayload,
+                        CommittedDownstreamOp = #clocksi_payload{
+                            key = KeyInternal,
+                            type = Type,
+                            op_param = Op,
+                            snapshot_time = SnapshotTime,
+                            commit_time = CommitTime,
+                            txid = TxId
+                        },
+                        dict:append(KeyInternal, CommittedDownstreamOp, Acc)
                 end
             end, CommittedOpsDict, OpsList),
             {dict:erase(TxId, Ops), NewCommittedOpsDict}
