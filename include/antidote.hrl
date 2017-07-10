@@ -185,7 +185,7 @@
 
 %% The way records are stored in the log.
 -record(log_record, {
-    %% The version of the log record, for backwards compatability
+    %% The version of the log record, for backwards compatibility
     version :: non_neg_integer(),
     op_number :: #op_number{},
     bucket_op_number :: #op_number{},

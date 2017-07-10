@@ -75,16 +75,21 @@
               update_ops_dict/0,
               committed_ops_dict/0]).
 
--record(state, {partition :: partition_id(),
-                enable_log_to_disk :: boolean(), %% this enables or disables logging to disk.
-                logs_map :: dict:dict(),
-                op_id_table :: cache_id(),  %% Stores the count of ops appended to each log
-                recovered_vector :: vectorclock(),  %% This is loaded on start, storing the version vector
-                                                    %% of the last operation appended to this log, this value
-                                                    %% is sent to the interdc dependcy module, so it knows up to
-                                                    %% what time updates from other DCs have been receieved (after crash and restart)
-                senders_awaiting_ack :: dict:dict(),
-                last_read :: term()}).
+-record(state, {
+    partition :: partition_id(),
+    %% this enables or disables logging to disk.
+    enable_log_to_disk :: boolean(),
+    logs_map :: dict:dict(),
+    %% Stores the count of ops appended to each log
+    op_id_table :: cache_id(),
+    %% This is loaded on start, storing the version vector
+    %% of the last operation appended to this log, this value
+    %% is sent to the interdc dependcy module, so it knows up to
+    %% what time updates from other DCs have been receieved (after crash and restart)
+    recovered_vector :: vectorclock(),
+    senders_awaiting_ack :: dict:dict(),
+    last_read :: term()
+}).
 
 %% API
 -spec start_vnode(integer()) -> any().
