@@ -47,6 +47,7 @@
          read_from/3,
          get/5,
          get_all/4,
+         get_commits/2,
          request_bucket_op_id/4,
          request_op_id/3]).
 
@@ -205,6 +206,17 @@ get_all(IndexNode, LogId, Continuation, PrevOps) ->
     riak_core_vnode_master:sync_command(IndexNode, {get_all, LogId, Continuation, PrevOps},
                                         ?LOGGING_MASTER,
                                         infinity).
+
+%% @doc Return all the commit records at the specified Log Id.
+
+-spec get_commits(index_node(), log_id()) -> {ok, list()} | {error, reason()}.
+get_commits(IndexNode, LogId) ->
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {get_commits, LogId},
+        ?LOGGING_MASTER,
+        infinity
+    ).
 
 %% @doc Gets the last id of operations stored in the log for the given DCID
 -spec request_op_id(index_node(), dcid(), partition()) -> {ok, non_neg_integer()}.
@@ -552,6 +564,19 @@ handle_command({get_all, LogId, Continuation, Ops}, _Sender,
             {reply, {error, Reason}, State}
     end;
 
+handle_command({get_commits, LogId}, _Sender, State = #state{
+    logs_map = LogMap,
+    partition = Partition
+}) ->
+    Response = case get_log_from_map(LogMap, Partition, LogId) of
+        {error, Reason} ->
+            {error, Reason};
+
+        {ok, Log} ->
+            get_commits_from_log(Log)
+    end,
+    {reply, Response, State};
+
 handle_command(_Message, _Sender, State) ->
     {noreply, State}.
 
@@ -671,6 +696,51 @@ get_ops_from_log(Log, Key, MinSnapshotTime, LoadType) ->
                 error -> []
             end,
             {ok, Ops}
+    end.
+
+-spec get_commits_from_log(log()) -> {ok, list()} | {error, reason()}.
+get_commits_from_log(Log) ->
+    get_commits_from_log(Log, start, []).
+
+-spec get_commits_from_log(log(), start | disk_log:continuation(), list()) -> {ok, list()} | {error, reason()}.
+get_commits_from_log(Log, Continuation, Acc) ->
+    case disk_log:chunk(Log, Continuation) of
+        {error, Reason} ->
+            {error, Reason};
+
+        eof ->
+            {ok, Acc};
+
+        {NewContinuation, NewTerms} ->
+            Commits = filter_commits(NewTerms),
+            get_commits_from_log(Log, NewContinuation, [Commits | Acc]);
+
+        {NewContinuation, NewTerms, BadBytes} ->
+            case BadBytes > 0 of
+                true ->
+                    {error, bad_bytes};
+                false ->
+                    Commits = filter_commits(NewTerms),
+                    get_commits_from_log(Log, NewContinuation, [Commits | Acc])
+            end
+    end.
+
+-spec filter_commits([{non_neg_integer(), #log_record{}}]) -> list().
+filter_commits(Terms) ->
+    filter_commits(Terms, []).
+
+-spec filter_commits([{non_neg_integer(), #log_record{}}], list()) -> list().
+filter_commits([], Acc) ->
+    Acc;
+
+filter_commits([{_, LogRecord} | Terms], Acc) ->
+    #log_record{log_operation = LogOperation} = log_utilities:check_log_record_version(LogRecord),
+    #log_operation{op_type = OpType, log_payload = OpPayload} = LogOperation,
+    case OpType of
+        commit ->
+            filter_commits(Terms, [OpPayload | Acc]);
+        _ ->
+            filter_commits(Terms, Acc)
     end.
 
 %% @doc This method successively calls disk_log:chunk so all the log is read.
@@ -1002,11 +1072,11 @@ fold_log(Log, Continuation, F, Acc) ->
 -spec insert_log_record(log(), log_id(), #log_record{}, boolean()) -> {ok, #op_number{}} | {error, reason()}.
 insert_log_record(Log, LogId, LogRecord, EnableLogging) ->
     Result = case EnableLogging of
-                 true ->
-                     disk_log:log(Log, {LogId, LogRecord});
-                 false ->
-                     ok
-             end,
+        true ->
+            disk_log:log(Log, {LogId, LogRecord});
+        false ->
+            ok
+    end,
     case Result of
         ok ->
             {ok, LogRecord#log_record.op_number};
