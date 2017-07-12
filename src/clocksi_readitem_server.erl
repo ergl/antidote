@@ -242,33 +242,114 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
             ok = perform_read_internal(Coordinator, Key, Type, Tx, [], State)
     end.
 
+%% @doc Scan the log for the maximum aggregate time that will be used for a read
+
+-spec pvc_find_maxvc(index_node(), log_id(), #transaction{}) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
+pvc_find_maxvc(IndexNode, LogId, #transaction{
+    %% Sanity check
+    transactional_protocol = pvc,
+    pvc_meta = #pvc_tx_meta{
+        hasread = HasRead,
+        time = #pvc_time{
+            vcaggr = VCaggr
+        }
+    }
+}) ->
+
+    %% TODO(borja): Could really make this more efficient
+    %% For example, pass a cutoff time so it doesn't check the entire log,
+    %% Or pass a select function to get_commits so it only captures the ones
+    %% we want.
+
+    %% Gather all the commit records in the log
+    GetCommits = logging_vnode:get_commits(IndexNode, LogId),
+
+    case GetCommits of
+        {error, Reason} ->
+            {error, Reason};
+
+        {ok, Commits} ->
+            %% For all the partitions that have been read...
+            ValidPartitions = sets:to_list(HasRead),
+
+            %% ... select the vectors that are older or equal than the current aggregate time...
+            ValidCheck = fun(Vector) ->
+                lists:all(fun(P) ->
+                    ThresholdTime = vectorclock_partition:get_partition_time(P, VCaggr),
+                    CommittedTime = vectorclock_partition:get_partition_time(P, Vector),
+                    CommittedTime =< ThresholdTime
+                end, ValidPartitions)
+            end,
+
+            %% ... accumulate all the valid vectors...
+            ValidVectors = lists:foldl(fun(CommitRecord, Acc) ->
+                #commit_log_payload{pvc_metadata=#pvc_time{
+                    vcaggr = CommittedVCaggr
+                }} = CommitRecord,
+
+                case ValidCheck(CommittedVCaggr) of
+                    true ->
+                        [CommittedVCaggr | Acc];
+                    false ->
+                        Acc
+                end
+            end, [], Commits),
+
+            %% ... and keep only the most recent.
+            MaxVC = vectorclock_partition:max(ValidVectors),
+
+            %% If the selected time is too old, we should abort the read
+            {CurrentPartition, _} = IndexNode,
+            MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
+            CurrentThresholdTime = vectorclock_partition:get_partition_time(CurrentPartition, VCaggr),
+            ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
+            case ValidVersionTime of
+                true ->
+                    {ok, MaxVC};
+
+                false ->
+                    {error, abort}
+            end
+    end.
+
 -spec perform_read_internal(pid(), key(), type(), #transaction{}, [], #state{}) -> ok.
 perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_protocol=pvc}, _PropList, State) ->
     CurrentPartition = State#state.partition,
     HasRead = Tx#transaction.pvc_meta#pvc_tx_meta.hasread,
 
-    MaxVersion = case sets:is_element(CurrentPartition, HasRead) of
+    GetMax = case sets:is_element(CurrentPartition, HasRead) of
         true ->
             lager:info("PVC read @ ~p - Key ~p has been read before", [CurrentPartition, Key]),
-            Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr;
+            VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+            {ok, VCaggr};
+
         false ->
             lager:info("PVC read @ ~p - Key ~p has not been read before", [CurrentPartition, Key]),
-            %% TODO(borja): Perform CLog scan here
-            vectorclock_partition:new()
+            %% Sanity check
+            {CurrentPartition, _}=Node = log_utilities:get_key_partition(Key),
+            LogId = log_utilities:get_logid_from_key(Key),
+            pvc_find_maxvc(Node, LogId, Tx)
     end,
-    case materializer_vnode:read(Key, Type, MaxVersion, Tx, State#state.mat_state) of
+    case GetMax of
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
 
-        {ok, Snapshot} ->
-            Value = Type:value(Snapshot),
-            lager:info("PVC read @ ~p got snapshot ~p", [CurrentPartition, Snapshot]),
-            %% TODO(borja): Get the version of the snapshot, don't send MaxVersion twice
-            %% The first is wrong
-            CoordReturn = {pvc_readreturn, {Key, Value, MaxVersion, MaxVersion}},
-            %% TODO(borja): Check when is this triggered
-            ServerReturn = {ok, Value},
-            reply_to_coordinator(Coordinator, CoordReturn, ServerReturn)
+        {ok, MaxVC} ->
+            case materializer_vnode:read(Key, Type, MaxVC, Tx, State#state.mat_state) of
+                {error, Reason} ->
+                    reply_to_coordinator(Coordinator, {error, Reason});
+
+                {ok, Snapshot} ->
+                    Value = Type:value(Snapshot),
+                    lager:info("PVC read @ ~p got snapshot ~p", [CurrentPartition, Snapshot]),
+                    %% TODO(borja): Get the version of the snapshot, don't send MaxVC twice
+                    %% The first is wrong
+                    CoordReturn = {pvc_readreturn, {Key, Value, MaxVC, MaxVC}},
+
+                    %% TODO(borja): Check when is this triggered
+                    ServerReturn = {ok, Value},
+                    reply_to_coordinator(Coordinator, CoordReturn, ServerReturn)
+            end
     end;
 
 perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
