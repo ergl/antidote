@@ -717,7 +717,7 @@ get_commits_from_log(Log, Continuation, Acc) ->
 
         {NewContinuation, NewTerms} ->
             Commits = filter_commits(NewTerms),
-            get_commits_from_log(Log, NewContinuation, [Commits | Acc]);
+            get_commits_from_log(Log, NewContinuation, Acc ++ Commits);
 
         {NewContinuation, NewTerms, BadBytes} ->
             case BadBytes > 0 of
@@ -725,7 +725,7 @@ get_commits_from_log(Log, Continuation, Acc) ->
                     {error, bad_bytes};
                 false ->
                     Commits = filter_commits(NewTerms),
-                    get_commits_from_log(Log, NewContinuation, [Commits | Acc])
+                    get_commits_from_log(Log, NewContinuation, Acc ++ Commits)
             end
     end.
 
