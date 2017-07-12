@@ -136,7 +136,6 @@
     %% VC metadata
     time :: #pvc_time{},
     %% Represents the partitions where the transaction has fixed a snapshot
-    %% TODO(borja): Can reuse tx_coord_state#updated_partitions for this
     hasread :: sets:set(partition_id())
 }).
 
@@ -155,7 +154,6 @@
     prepare_time :: non_neg_integer(),
 
     %% Tentative commit time for the transaction
-    %% TODO(borja): Is this strictly necessary?
     pvc_prepare_clock :: vectorclock_partition:partition_vc()
                        | undefined
 }).
@@ -320,7 +318,6 @@
     transactional_protocol :: transactional_protocol(),
     from :: undefined | {pid(), term()} | pid(),
     transaction :: undefined | tx(),
-    %% TODO(borja): Might be able to reuse this for hasRead?
     updated_partitions :: list(),
     client_ops :: list(), % list of upstream updates, used for post commit hooks
     num_to_ack :: non_neg_integer(),

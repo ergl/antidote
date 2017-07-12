@@ -516,7 +516,6 @@ handle_command({append_group, LogId, LogRecordList, _IsLocal = false, Sync}, _Se
             {reply, Error, State}
     end;
 
-%% TODO(borja): Check this
 handle_command({get, LogId, MinSnapshotTime, Type, Key}, _Sender, State = #state{
     logs_map = Map,
     partition = Partition

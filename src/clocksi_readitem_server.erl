@@ -244,7 +244,6 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
 
 -spec perform_read_internal(pid(), key(), type(), #transaction{}, [], #state{}) -> ok.
 perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_protocol=pvc}, _PropList, State) ->
-    %% TODO(borja): This is where we perform PVC's read logic
     CurrentPartition = State#state.partition,
     HasRead = Tx#transaction.pvc_meta#pvc_tx_meta.hasread,
 
