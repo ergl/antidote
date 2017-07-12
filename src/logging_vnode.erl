@@ -208,7 +208,12 @@ get_all(IndexNode, LogId, Continuation, PrevOps) ->
                                         infinity).
 
 %% @doc Return all the commit records at the specified Log Id.
-
+%%
+%% FIXME(borja): Will break if logging is disabled
+%% {enable_logging, false} in antidote.app.src
+%% Make sure this is enabled during benchmarks?
+%% Or put the data somewhere else so we don't have to do that
+%%
 -spec get_commits(index_node(), log_id()) -> {ok, list()} | {error, reason()}.
 get_commits(IndexNode, LogId) ->
     riak_core_vnode_master:sync_command(
