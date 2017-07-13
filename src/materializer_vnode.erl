@@ -790,6 +790,20 @@ perform_gc(Key, #clocksi_payload{type=Type, snapshot_time=SSTime}, State) ->
 
 -ifdef(TEST).
 
+serialize_key_test() ->
+    Key = key,
+
+    Ser = key_to_tuple(Key),
+    DeserOps = tuple_to_cached_ops(Ser),
+
+    ?assertMatch({Key, 0, Ser}, DeserOps),
+
+    Deser = tuple_to_key(Ser, false),
+    DeserList = tuple_to_key(Ser, true),
+
+    ?assertMatch({Key, 0, 0, 50, Ser}, Deser),
+    ?assertMatch({Key, 0, 0, 50, []}, DeserList).
+
 %% @doc Testing belongs_to_snapshot returns true when a commit time
 %% is smaller than a snapshot time
 belongs_to_snapshot_test()->
