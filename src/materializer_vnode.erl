@@ -673,6 +673,15 @@ check_filter(Fun, Id, Last, NewId, Tuple, NewSize, NewOps) ->
             check_filter(Fun, Id+1, Last, NewId, Tuple, NewSize, NewOps)
     end.
 
+%% @doc Transform a key into the internal represntation used by the ops cache
+-spec key_to_tuple(key()) -> tuple().
+key_to_tuple(Key) ->
+    erlang:make_tuple(
+        ?FIRST_OP + ?OPS_THRESHOLD,
+        0,
+        [{1, Key}, {2, {0, ?OPS_THRESHOLD}}]
+    ).
+
 %% This is an internal function used to convert the tuple stored in ets
 %% to a tuple and list usable by the materializer
 %% The second argument if true will convert the ops tuple to a list of ops
@@ -711,38 +720,66 @@ op_insert_gc(Key, DownstreamOp, State = #mat_state{ops_cache = OpsCache})->
             ok;
 
         false ->
-            Tuple = erlang:make_tuple(
-                ?FIRST_OP + ?OPS_THRESHOLD,
-                0,
-                [{1, Key}, {2, {0, ?OPS_THRESHOLD}}]
-            ),
+            Tuple = key_to_tuple(Key),
             true = ets:insert(OpsCache, Tuple),
             ok
     end,
-    NewId = ets:update_counter(OpsCache, Key, {3, 1}),
-    {Length, ListLen} = ets:lookup_element(OpsCache, Key, 2),
+    NewId = faa_next_op_id(OpsCache, Key),
+    {CurrSize, MaxSize} = get_ops_size(OpsCache, Key),
     %% Perform the GC incase the list is full, or every ?OPS_THRESHOLD operations (which ever comes first)
-    case ((Length) >= ListLen) or ((NewId rem ?OPS_THRESHOLD) == 0) of
+    case ((CurrSize) >= MaxSize) or ((NewId rem ?OPS_THRESHOLD) == 0) of
         false ->
-            true = ets:update_element(
-                OpsCache,
-                Key,
-                [{Length+?FIRST_OP, {NewId, DownstreamOp}}, {2, {Length+1, ListLen}}]
-            );
+            true = update_key_ops(OpsCache, Key, NewId, DownstreamOp, CurrSize, MaxSize);
 
         true ->
-            Type = DownstreamOp#clocksi_payload.type,
-            SnapshotTime = DownstreamOp#clocksi_payload.snapshot_time,
-            %% Here is where the GC is done (with the 5th argument being "true", GC is performed by the internal read
-            {_, _} = internal_read(Key, Type, SnapshotTime, ignore, true, State),
-            %% Have to get the new ops dict because the interal_read can change it
-            {Length1, ListLen1} = ets:lookup_element(OpsCache, Key, 2),
-            true = ets:update_element(
-                OpsCache,
-                Key,
-                [{Length1 + ?FIRST_OP, {NewId, DownstreamOp}}, {2, {Length1 + 1, ListLen1}}]
-            )
+            ok = perform_gc(Key, DownstreamOp, State),
+            true = update_key_ops(OpsCache, Key, NewId, DownstreamOp)
     end.
+
+%% @doc Store a new clocksi payload with the given id under the given key
+-spec update_key_ops(cache_id(), key(), non_neg_integer(), clocksi_payload()) -> boolean().
+update_key_ops(OpsCache, Key, NewId, Op) ->
+    {Size, MaxSize} = get_ops_size(OpsCache, Key),
+    update_key_ops(OpsCache, Key, NewId, Op, Size, MaxSize).
+
+%% @doc Same as update_key_ops/4, but leak internals about the key structure
+%%
+%%      Should supply the current and maximum size of the key representation
+%%      in the snapshot cache.
+%%
+-spec update_key_ops(
+    OpsCache :: cache_id(),
+    Key :: key(),
+    NewId :: non_neg_integer(),
+    Op :: clocksi_payload(),
+    Size :: non_neg_integer(),
+    MaxSize :: non_neg_integer()
+) -> boolean().
+
+update_key_ops(OpsCache, Key, NewId, Op, Size, MaxSize) ->
+    EtsOp = [
+        {?FIRST_OP + Size, {NewId, Op}},
+        {2, {Size + 1, MaxSize}}
+    ],
+    ets:update_element(OpsCache, Key, EtsOp).
+
+%% @doc Fetch and add to the next id to be used for clocksi payloads
+-spec faa_next_op_id(cache_id(), key()) -> non_neg_integer().
+faa_next_op_id(OpsCache, Key) ->
+    ets:update_counter(OpsCache, Key, {3, 1}).
+
+%% @doc Get the current (and max) size of the ops list under this key.
+-spec get_ops_size(cache_id(), key()) -> {non_neg_integer(), non_neg_integer()}.
+get_ops_size(OpsCache, Key) ->
+    ets:lookup_element(OpsCache, Key, 2).
+
+%% @doc Garbage collect the snapshots associated with the given key.
+-spec perform_gc(key(), clocksi_payload(), #mat_state{}) -> ok.
+perform_gc(Key, #clocksi_payload{type=Type, snapshot_time=SSTime}, State) ->
+    %% TODO: Extract GC implementation outside of internal read and use that
+    %% with the 5th argument being "true", GC is performed by the internal read
+    {_, _} = internal_read(Key, Type, SSTime, ignore, true, State),
+    ok.
 
 -ifdef(TEST).
 
