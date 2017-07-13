@@ -586,7 +586,7 @@ snapshot_insert_gc(Key, SnapshotDict, ShouldGc, #mat_state{
                 [] ->
                     {Key, 0, 0, 0, {}};
                 [Tuple] ->
-                    tuple_to_key(Tuple, false)
+                    tuple_to_key(Tuple)
             end,
             {NewLength, PrunedOps} = prune_ops({Length, OpsDict}, CommitTime),
             true = ets:insert(SnapshotCache, {Key, PrunedSnapshots}),
@@ -682,6 +682,10 @@ key_to_tuple(Key) ->
         [{1, Key}, {2, {0, ?OPS_THRESHOLD}}]
     ).
 
+-spec tuple_to_key(tuple()) -> {key(), integer(), non_neg_integer(), non_neg_integer(), tuple()}.
+tuple_to_key(Tuple) ->
+    tuple_to_key(Tuple, false).
+
 %% This is an internal function used to convert the tuple stored in ets
 %% to a tuple and list usable by the materializer
 %% The second argument if true will convert the ops tuple to a list of ops
@@ -703,6 +707,7 @@ tuple_to_key(Tuple, ToList) ->
     end,
     {Key, Length, OpId, ListLen, Ops}.
 
+%% FIXME: Broken since this will always match and return the empty list
 tuple_to_key_int(Next, Next, _Tuple, Acc) ->
     Acc;
 
