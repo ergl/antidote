@@ -727,7 +727,7 @@ op_insert_gc(Key, DownstreamOp, State = #mat_state{ops_cache = OpsCache})->
     NewId = faa_next_op_id(OpsCache, Key),
     {CurrSize, MaxSize} = get_ops_size(OpsCache, Key),
     %% Perform the GC incase the list is full, or every ?OPS_THRESHOLD operations (which ever comes first)
-    case ((CurrSize) >= MaxSize) or ((NewId rem ?OPS_THRESHOLD) == 0) of
+    case (CurrSize >= MaxSize) or ((NewId rem ?OPS_THRESHOLD) == 0) of
         false ->
             true = update_key_ops(OpsCache, Key, NewId, DownstreamOp, CurrSize, MaxSize);
 
