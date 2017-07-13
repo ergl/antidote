@@ -348,10 +348,10 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
     snapshot_cache=SnapshotCache
 }) ->
 
-    #materialized_snapshot{last_op_id = NewOpId} = Snapshot,
     SnapshotDict = case ets:lookup(SnapshotCache, Key) of
         [] ->
             vector_orddict:new();
+
         [{_, SnapshotDictA}] ->
             SnapshotDictA
     end,
@@ -362,6 +362,7 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
             true;
 
         true ->
+            #materialized_snapshot{last_op_id = NewOpId} = Snapshot,
             {_Vector, FirstSnapshot} = vector_orddict:first(SnapshotDict),
             ((NewOpId - FirstSnapshot#materialized_snapshot.last_op_id) >= ?MIN_OP_STORE_SS)
     end,

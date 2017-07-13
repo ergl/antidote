@@ -781,35 +781,46 @@ reset_prepared(PreparedTx, [{Key, _Type, _Update} | Rest], TxId, Time, ActiveTxs
 commit(Transaction, TxCommitTime, Updates, State = #state{
     committed_tx = CommittedTx
 }) ->
+
     TxId = Transaction#transaction.txn_id,
     DcId = dc_meta_data_utilities:get_my_dc_id(),
-    LogRecord = #log_operation{tx_id = TxId,
-                op_type = commit,
-                log_payload = #commit_log_payload{commit_time = {DcId, TxCommitTime},
-                                 snapshot_time = Transaction#transaction.vec_snapshot_time}},
+    LogRecord = #log_operation{
+        tx_id = TxId,
+        op_type = commit,
+        log_payload = #commit_log_payload{
+            commit_time = {DcId, TxCommitTime},
+            snapshot_time = Transaction#transaction.vec_snapshot_time
+        }
+    },
+
     case Updates of
         [{Key, _Type, _Update} | _Rest] ->
-        case application:get_env(antidote, txn_cert) of
-        {ok, true} ->
-            lists:foreach(fun({K, _, _}) -> true = ets:insert(CommittedTx, {K, TxCommitTime}) end,
-                  Updates);
-        _ ->
-            ok
-        end,
+            case application:get_env(antidote, txn_cert) of
+                {ok, true} ->
+                    lists:foreach(fun({K, _, _}) ->
+                        true = ets:insert(CommittedTx, {K, TxCommitTime})
+                    end, Updates);
+                _ ->
+                    ok
+            end,
+
             LogId = log_utilities:get_logid_from_key(Key),
             Node = log_utilities:get_key_partition(Key),
             case logging_vnode:append_commit(Node, LogId, LogRecord) of
+                {error, timeout} ->
+                    {error, timeout};
+
                 {ok, _} ->
                     case update_materializer(Updates, Transaction, TxCommitTime) of
+                        error ->
+                            {error, materializer_failure};
+
                         ok ->
                             NewPreparedDict = clean_and_notify(TxId, Updates, State),
-                            {ok, committed, NewPreparedDict};
-                        error ->
-                            {error, materializer_failure}
-                    end;
-                {error, timeout} ->
-                    {error, timeout}
+                            {ok, committed, NewPreparedDict}
+                    end
             end;
+
         _ ->
             {error, no_updates}
     end.
@@ -852,20 +863,22 @@ clean_and_notify(TxId, Updates, #state{
 
 clean_prepared(_PreparedTx, [], _TxId) ->
     ok;
+
 clean_prepared(PreparedTx, [{Key, _Type, _Update} | Rest], TxId) ->
     ActiveTxs = case ets:lookup(PreparedTx, Key) of
-                    [] ->
-                        [];
-                    [{Key, List}] ->
-                        List
-                end,
+        [] ->
+            [];
+        [{Key, List}] ->
+            List
+    end,
     NewActive = lists:keydelete(TxId, 1, ActiveTxs),
     true = case NewActive of
-               [] ->
-                   ets:delete(PreparedTx, Key);
-               _ ->
-                   ets:insert(PreparedTx, {Key, NewActive})
-           end,
+        [] ->
+            ets:delete(PreparedTx, Key);
+
+        _ ->
+            ets:insert(PreparedTx, {Key, NewActive})
+    end,
     clean_prepared(PreparedTx, Rest, TxId).
 
 %% @doc converts a tuple {MegaSecs, Secs, MicroSecs} into microseconds
@@ -917,30 +930,34 @@ check_prepared(_TxId, PreparedTx, Key) ->
             false
     end.
 
--spec update_materializer(DownstreamOps :: [{key(), type(), op()}],
-    Transaction :: tx(), TxCommitTime :: non_neg_integer()) ->
-    ok | error.
+-spec update_materializer(
+    DownstreamOps :: [{key(), type(), op()}],
+    Transaction :: tx(),
+    TxCommitTime :: non_neg_integer()
+) -> ok | error.
+
 update_materializer(DownstreamOps, Transaction, TxCommitTime) ->
     DcId = dc_meta_data_utilities:get_my_dc_id(),
     ReversedDownstreamOps = lists:reverse(DownstreamOps),
     UpdateFunction = fun({Key, Type, Op}, AccIn) ->
-                         CommittedDownstreamOp =
-                             #clocksi_payload{
-                                key = Key,
-                                type = Type,
-                                op_param = Op,
-                                snapshot_time = Transaction#transaction.vec_snapshot_time,
-                                commit_time = {DcId, TxCommitTime},
-                                txid = Transaction#transaction.txn_id},
-                         [materializer_vnode:update(Key, CommittedDownstreamOp) | AccIn]
-                     end,
+        CommittedDownstreamOp = #clocksi_payload{
+            key = Key,
+            type = Type,
+            op_param = Op,
+            snapshot_time = Transaction#transaction.vec_snapshot_time,
+            commit_time = {DcId, TxCommitTime},
+            txid = Transaction#transaction.txn_id
+        },
+        Res = materializer_vnode:update(Key, CommittedDownstreamOp),
+        [Res| AccIn]
+    end,
     Results = lists:foldl(UpdateFunction, [], ReversedDownstreamOps),
-    Failures = lists:filter(fun(Elem) -> Elem /= ok end, Results),
-    case Failures of
-        [] ->
-            ok;
-        _ ->
-            error
+    Failed = lists:any(fun(ok) -> false; (_) -> true end, Results),
+    case Failed of
+        true ->
+            error;
+        false ->
+            ok
     end.
 
 %% Internal functions
