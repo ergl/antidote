@@ -486,7 +486,7 @@ fetch_updates_from_cache(OpsCache, Key) ->
             {[], 0};
 
         [Tuple] ->
-            {Key, Length, _OpId, _ListLen, CachedOps} = tuple_to_key(Tuple, false),
+            {Key, Length, CachedOps} = tuple_to_cached_ops(Tuple),
             {CachedOps, Length}
     end.
 
@@ -708,6 +708,13 @@ tuple_to_key_int(Next, Next, _Tuple, Acc) ->
 
 tuple_to_key_int(Next, Last, Tuple, Acc) ->
     tuple_to_key_int(Next+1, Last, Tuple, [element(Next, Tuple)|Acc]).
+
+-spec tuple_to_cached_ops(tuple()) -> {key(), integer(), tuple()}.
+tuple_to_cached_ops(Tuple) ->
+    Key = element(1, Tuple),
+    {Length, _} = element(2, Tuple),
+    Ops = Tuple,
+    {Key, Length, Ops}.
 
 %% @doc Insert an operation and start garbage collection triggered by writes.
 %% the mechanism is very simple; when there are more than OPS_THRESHOLD
