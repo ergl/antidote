@@ -256,6 +256,8 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
     }
 }) ->
 
+    lager:info("PVC performing MAXVC search on ~p:~p", [IndexNode, LogId]),
+
     %% TODO(borja): Could really make this more efficient
     %% For example, pass a cutoff time so it doesn't check the entire log,
     %% Or pass a select function to get_commits so it only captures the ones
@@ -275,8 +277,10 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
             %% ... select the vectors that are older or equal than the current aggregate time...
             ValidCheck = fun(Vector) ->
                 lists:all(fun(P) ->
+                    lager:info("PVC scan checking for partition ~p", [P]),
                     ThresholdTime = vectorclock_partition:get_partition_time(P, VCaggr),
                     CommittedTime = vectorclock_partition:get_partition_time(P, Vector),
+                    lager:info("PVC CommittedTime (~p) =< ThresholdTime (~p)", [CommittedTime, ThresholdTime]),
                     CommittedTime =< ThresholdTime
                 end, ValidPartitions)
             end,
@@ -289,20 +293,29 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
 
                 case ValidCheck(CommittedVCaggr) of
                     true ->
+                        lager:info("PVC scan valid time"),
                         [CommittedVCaggr | Acc];
                     false ->
+                        lager:info("PVC scan invalid time"),
                         Acc
                 end
             end, [], Commits),
 
             %% ... and keep only the most recent.
             MaxVC = vectorclock_partition:max(ValidVectors),
+            lager:info("PVC scan found max time ~p", [dict:to_list(MaxVC)]),
 
             %% If the selected time is too old, we should abort the read
             {CurrentPartition, _} = IndexNode,
             MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
             CurrentThresholdTime = vectorclock_partition:get_partition_time(CurrentPartition, VCaggr),
             ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
+
+            lager:info(
+                "PVC scan is selected time too old? [~p] >= [~p] ~p",
+                [MaxSelectedTime, CurrentThresholdTime, not ValidVersionTime]
+            ),
+
             case ValidVersionTime of
                 true ->
                     {ok, MaxVC};

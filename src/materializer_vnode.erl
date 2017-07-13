@@ -365,6 +365,10 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
             {_Vector, FirstSnapshot} = vector_orddict:first(SnapshotDict),
             ((NewOpId - FirstSnapshot#materialized_snapshot.last_op_id) >= ?MIN_OP_STORE_SS)
     end,
+    lager:info(
+        "PVC read inserting snapshot in cache ~p or ~p? ~p",
+        [ShouldInsert, ShouldGc, ShouldInsert or ShouldGc]
+    ),
     case (ShouldInsert or ShouldGc) of
         true ->
             SnapshotDict1 = vector_orddict:insert_bigger(CommitTime, Snapshot, SnapshotDict),
@@ -382,6 +386,8 @@ internal_read(Key, Type, MinSnapshotTime, TxId, State) ->
 internal_read(Key, Type, MinSnapshotTime, TxId, ShouldGc, State) ->
     %% First get the most recent snapshot older than the specified time
     SnapshotGetResp = get_from_snapshot_cache(TxId, Key, Type, MinSnapshotTime, State),
+
+    lager:info("PVC read got resp from snapshot chache ~p", [SnapshotGetResp]),
 
     %% Now apply the operations to the snapshot, and return a materialized value
     materialize_snapshot(TxId, Key, Type, MinSnapshotTime, ShouldGc, State, SnapshotGetResp).
@@ -404,6 +410,8 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
 }) ->
     case ets:lookup(SnapshotCache, Key) of
         [] ->
+            lager:info("PVC read lookup of snapshot cache empty"),
+
             EmptySnapshot = #materialized_snapshot{
                 last_op_id=0,
                 value=clocksi_materializer:new(Type)
@@ -414,12 +422,16 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
             update_snapshot_from_cache(BaseVersion, Key, OpsCache);
 
         [{_, SnapshotDict}] ->
+            lager:info("PVC read lookup of snapshot cache"),
+
             case vector_orddict:get_smaller(MinSnaphsotTime, SnapshotDict) of
                 undefined ->
+                    lager:info("PVC no in-memory snapshot, getting from log"),
                     %% No in-memory snapshot, get it from replication log
                     get_from_snapshot_log(Key, Type, MinSnaphsotTime);
 
                 FoundSnapshot ->
+                    lager:info("PVC found snapshot ~p", [FoundSnapshot]),
                     %% Snapshot was present, now update it with the operations found in the cache.
                     %%
                     %% Operations are taken from the in-memory cache.
@@ -483,9 +495,11 @@ update_snapshot_from_cache(Snapshot, Key, OpsCache) ->
 fetch_updates_from_cache(OpsCache, Key) ->
     case ets:lookup(OpsCache, Key) of
         [] ->
+            lager:info("PVC read opscache is empty"),
             {[], 0};
 
         [Tuple] ->
+            lager:info("PVC read opscache contains ~p", [Tuple]),
             {Key, Length, CachedOps} = tuple_to_cached_ops(Tuple),
             {CachedOps, Length}
     end.
