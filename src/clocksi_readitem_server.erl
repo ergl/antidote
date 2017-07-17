@@ -235,7 +235,7 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
     %% then we don't need to check the time (see alg. line 29, line 31)
     case pvc_check_time(Partition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
-            lager:info("Partition not ready, will wait ~p ms", [WaitTime]),
+            lager:info("PVC Partition not ready, will wait ~p ms", [WaitTime]),
             erlang:send_after(WaitTime, self(), {pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}),
             ok;
         ready ->
@@ -256,7 +256,7 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
     }
 }) ->
 
-    lager:info("PVC performing MAXVC search on ~p:~p", [IndexNode, LogId]),
+    lager:info("PVC performing MaxVC search on ~p:~p", [IndexNode, LogId]),
 
     %% TODO(borja): Could really make this more efficient
     %% For example, pass a cutoff time so it doesn't check the entire log,
@@ -332,12 +332,12 @@ perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_pr
 
     GetMax = case sets:is_element(CurrentPartition, HasRead) of
         true ->
-            lager:info("PVC read @ ~p - Key ~p has been read before", [CurrentPartition, Key]),
             VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+            lager:info("PVC read Key ~p has been read before, will use supplied time ~p", [Key, dict:to_list(VCaggr)]),
             {ok, VCaggr};
 
         false ->
-            lager:info("PVC read @ ~p - Key ~p has not been read before", [CurrentPartition, Key]),
+            lager:info("PVC read Key ~p has not been read before, will perform CLog scan", [Key]),
             %% Sanity check
             {CurrentPartition, _}=Node = log_utilities:get_key_partition(Key),
             LogId = log_utilities:get_logid_from_key(Key),
@@ -348,6 +348,8 @@ perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_pr
             reply_to_coordinator(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
+            lager:info("PVC read will use MaxVC ~p", [dict:to_list(MaxVC)]),
+
             case materializer_vnode:read(Key, Type, MaxVC, Tx, State#state.mat_state) of
                 {error, Reason} ->
                     reply_to_coordinator(Coordinator, {error, Reason});
@@ -391,7 +393,7 @@ perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
 pvc_check_time(Partition, MostRecentVC, VCaggr) ->
     MostRecentTime = vectorclock_partition:get_partition_time(Partition, MostRecentVC),
     AggregateTime = vectorclock_partition:get_partition_time(Partition, VCaggr),
-    lager:info("Will wait until MostRecentVC[i] (~p) >= VCaggr[i] (~p)", [MostRecentTime, AggregateTime]),
+    lager:info("PVC Will wait until MostRecentVC[i] (~p) >= VCaggr[i] (~p)", [MostRecentTime, AggregateTime]),
     case MostRecentTime < AggregateTime of
         true ->
             {not_ready, ?PVC_WAIT_MS};
