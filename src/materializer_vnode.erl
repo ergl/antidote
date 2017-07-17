@@ -68,6 +68,9 @@
          handle_coverage/4,
          handle_exit/3]).
 
+%% PVC-only functions
+-export([pvc_update/1]).
+
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
 start_vnode(I) ->
@@ -105,6 +108,17 @@ update(Key, DownstreamOp) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
         {update, Key, DownstreamOp},
+        materializer_vnode_master
+    ).
+
+-spec pvc_update(clocksi_payload()) -> ok | {error, reason()}.
+pvc_update(Payload = #clocksi_payload{
+    key = Key
+}) ->
+    IndexNode = log_utilities:get_key_partition(Key),
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {pvc_update, Payload},
         materializer_vnode_master
     ).
 
@@ -242,6 +256,10 @@ handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
 
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
+    {reply, ok, State};
+
+handle_command({pvc_update, Payload}, _Sender, State) ->
+    ok = pvc_bypass_snapshot(Payload, State),
     {reply, ok, State};
 
 handle_command({store_ss, Key, Snapshot, CommitTime}, _Sender, State) ->
@@ -721,6 +739,54 @@ tuple_to_cached_ops(Tuple) ->
     {Length, _} = element(2, Tuple),
     Ops = Tuple,
     {Key, Length, Ops}.
+
+%% @doc Simplified materializer update for pvc
+%%
+%%      Instead of storing ops and applying those to the previous
+%%      snapshot on read, materialize that and store it back,
+%%      bypass the ops cache and create a new snapshot, given that
+%%      we only operate on lww registers, the update is the same
+%%      as the value.
+%%
+-spec pvc_bypass_snapshot(clocksi_payload(), #mat_state{}) -> ok.
+pvc_bypass_snapshot(Payload, #mat_state{
+    snapshot_cache = SnapshotCache
+}) ->
+    #clocksi_payload{
+        key = Key,
+        snapshot_time = SnapshotTime,
+        op_param = DownstreamOp
+    } = Payload,
+
+    SnapshotDict = case ets:lookup(SnapshotCache, Key) of
+        [] ->
+            vector_orddict:new();
+
+        [{_, PrevSnapshotDict}] ->
+            PrevSnapshotDict
+    end,
+
+    Snapshot = #materialized_snapshot{
+        %% Placeholder value, we don't use this field in pvc
+        last_op_id = 0,
+        value = DownstreamOp
+    },
+    %% Store in an ordered fashion in the multi-version dict
+    NextSnapshotDict = vector_orddict:insert_bigger(SnapshotTime, Snapshot, SnapshotDict),
+
+    %% To prevent unbound growth, we cap the dict to 10 versions
+    %% If we need to get an older version, we will go to the replication log
+    OverThreshold = vector_orddict:size(NextSnapshotDict) >= ?SNAPSHOT_THRESHOLD,
+    case OverThreshold of
+        false ->
+            true = ets:insert(SnapshotCache, {Key, NextSnapshotDict}),
+            ok;
+        true ->
+            %% Very simplified GC as we don't touch the ops cache
+            Pruned = vector_orddict:sublist(NextSnapshotDict, 1, ?SNAPSHOT_MIN),
+            true = ets:insert(SnapshotCache, {Key, Pruned}),
+            ok
+    end.
 
 %% @doc Insert an operation and start garbage collection triggered by writes.
 %% the mechanism is very simple; when there are more than OPS_THRESHOLD

@@ -384,6 +384,9 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
 
+            %% Update the materializer snapshot cache
+            ok = pvc_update_materializer(TxnId, WriteSet, CommitVC),
+
             %% Cache the commit time for the keys
             ok = pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC),
             State#state{pvc_most_recent_vc = NewRecentVC}
@@ -683,6 +686,41 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
                 Acc
         end
     end, ordsets:new(), WriteSet).
+
+%% @doc Update the materializer cache with the newest snapshots (VLog)
+-spec pvc_update_materializer(txid(), list(), vectorclock_partition:partition_vc()) -> ok | error.
+pvc_update_materializer(TxnId, WriteSet, CommitVC) ->
+    Update = fun({Key, Type, Op}, Acc) ->
+        DCId = dc_meta_data_utilities:get_my_dc_id(),
+        {Partition, _} = log_utilities:get_key_partition(Key),
+        CommitTime = vectorclock_partition:get_partition_time(
+            Partition,
+            CommitVC
+        ),
+
+        {ok, DownstreamOp} = Type:downstream(Op, Type:new()),
+
+        Payload = #clocksi_payload{
+            txid = TxnId,
+            key = Key,
+            type = Type,
+            op_param = DownstreamOp,
+            snapshot_time = CommitVC,
+            commit_time = {DCId, CommitTime}
+        },
+
+        Res = materializer_vnode:pvc_update(Payload),
+        [Res | Acc]
+    end,
+
+    Results = lists:foldl(Update, [], lists:reverse(WriteSet)),
+    Failed = lists:any(fun(ok) -> false; (_) -> true end, Results),
+    case Failed of
+        true ->
+            error;
+        false ->
+            ok
+    end.
 
 %% @doc Get the list of keys that are owned by this partition.
 -spec pvc_get_partition_keys(partition_id(), list(key())) -> list(key()).
