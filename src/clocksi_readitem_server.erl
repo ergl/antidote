@@ -350,16 +350,14 @@ perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_pr
         {ok, MaxVC} ->
             lager:info("PVC read will use MaxVC ~p", [dict:to_list(MaxVC)]),
 
-            case materializer_vnode:read(Key, Type, MaxVC, Tx, State#state.mat_state) of
+            case materializer_vnode:pvc_read(pvc, Key, Type, MaxVC, State#state.mat_state) of
                 {error, Reason} ->
                     reply_to_coordinator(Coordinator, {error, Reason});
 
-                {ok, Snapshot} ->
+                {ok, Snapshot, CommitVC} ->
                     Value = Type:value(Snapshot),
-                    lager:info("PVC read @ ~p got snapshot ~p", [CurrentPartition, Snapshot]),
-                    %% TODO(borja): Get the version of the snapshot, don't send MaxVC twice
-                    %% The first is wrong
-                    CoordReturn = {pvc_readreturn, {Key, Value, MaxVC, MaxVC}},
+                    lager:info("PVC read Got snapshot ~p at time ~p", [Snapshot, dict:to_list(CommitVC)]),
+                    CoordReturn = {pvc_readreturn, {Key, Value, CommitVC, MaxVC}},
 
                     %% TODO(borja): Check when is this triggered
                     ServerReturn = {ok, Value},

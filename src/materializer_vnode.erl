@@ -69,14 +69,14 @@
          handle_exit/3]).
 
 %% PVC-only functions
--export([pvc_update/1]).
+-export([pvc_read/5,
+         pvc_update/1]).
 
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
-%% TODO(borja): Modify read to return the commit time
 %% @doc Read state of key at given snapshot time, this does not touch the vnode process
 %%      directly, instead it just reads from the operations and snapshot tables that
 %%      are in shared memory, allowing concurrent reads.
@@ -94,6 +94,25 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
         _ ->
             TxId = Transaction#transaction.txn_id,
             internal_read(Key, Type, SnapshotTime, TxId, MatState)
+    end.
+
+%% @doc Same as read/5, but return also the commit time of the snapshot.
+%%
+%%      Will also bypass the ops cache as we don't need it.
+%%
+-spec pvc_read(pvc, key(), type(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
+pvc_read(pvc, Key, Type, SnapshotTime, MatState = #mat_state{snapshot_cache = SnapshotCache}) ->
+    case ets:info(SnapshotCache) of
+        undefined ->
+            riak_core_vnode_master:sync_command(
+                {MatState#mat_state.partition, node()},
+                {pvc_read, Key, Type, SnapshotTime},
+                materializer_vnode_master,
+                infinity
+            );
+
+        _ ->
+            pvc_internal_read(Key, Type, SnapshotTime, MatState)
     end.
 
 -spec get_cache_name(non_neg_integer(), atom()) -> atom().
@@ -254,6 +273,9 @@ handle_command({check_ready}, _Sender, State = #mat_state{partition=Partition, i
 handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
     {reply, read(Key, Type, SnapshotTime, Transaction, State), State};
 
+handle_command({pvc_read, Key, Type, SnapshotTime}, _Sender, State) ->
+    {reply, pvc_read(pvc, Key, Type, SnapshotTime, State), State};
+
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
     {reply, ok, State};
@@ -391,6 +413,40 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
         false ->
             false
     end.
+
+%% @doc Simplified read for pvc, bypass the materializer and ops cache step
+-spec pvc_internal_read(key(), type(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()}.
+pvc_internal_read(Key, Type=antidote_crdt_lwwreg, MinSnapshotTime, #mat_state{
+    snapshot_cache = SnapshotCache
+}) ->
+    {SnapshotVal, CommitVC} = case ets:lookup(SnapshotCache, Key) of
+        [] ->
+            lager:info("PVC read lookup of snapshot cache empty"),
+
+            Base = #materialized_snapshot{
+                last_op_id = 0,
+                value=Type:new()
+            },
+            {Base, vectorclock_partition:new()};
+
+        [{_, SnapshotDict}] ->
+            lager:info("PVC read lookup of snapshot cache"),
+
+            case vector_orddict:get_smaller(MinSnapshotTime, SnapshotDict) of
+                undefined ->
+                    lager:info("PVC no in-memory snapshot, getting from log"),
+                    #snapshot_get_response{
+                        snapshot_time = Time,
+                        materialized_snapshot = Snapshot
+                    } = get_from_snapshot_log(Key, Type, MinSnapshotTime),
+                    {Snapshot, Time};
+                FoundSnapshot ->
+                    lager:info("PVC found snapshot ~p", [FoundSnapshot]),
+                    {{Time, Snapshot}, _} = FoundSnapshot,
+                    {Snapshot, Time}
+            end
+    end,
+    {ok, SnapshotVal#materialized_snapshot.value, CommitVC}.
 
 %% @doc This function takes care of reading. It is implemented here for not blocking the
 %% vnode when the write function calls it. That is done for garbage collection.
