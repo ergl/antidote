@@ -53,6 +53,8 @@
     handle_coverage/4,
     handle_exit/3]).
 
+-export([pvc_get_most_recent_vc/1]).
+
 -ignore_xref([start_vnode/1]).
 
 %%---------------------------------------------------------------------
@@ -101,7 +103,23 @@ read_data_item(Node, TxId, Key, Type, Updates) ->
 
 async_read_data_item(Node, Transaction, Key, Type) ->
     %% TODO(borja): Move Coordinator={fsm, self()} to the caller
-    clocksi_readitem_server:async_read_data_item(Node, Key, Type, Transaction, {fsm, self()}).
+    clocksi_readitem_server:async_read_data_item(
+        Node,
+        Key,
+        Type,
+        Transaction,
+        {fsm, self()}
+    ).
+
+%% @doc Hack-ish way to get the most recent vc in this partition
+%%
+%% Called from clocksi_readitem_server, couples them together,
+%% but this is the least complicated way I could come up with
+%% to get around blocking the virtual node while waiting for
+%% the clock to catch up.
+-spec pvc_get_most_recent_vc(index_node()) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
+pvc_get_most_recent_vc(Node) ->
+    riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER).
 
 %% @doc Return active transactions in prepare state with their preparetime for a given key
 %% should be run from same physical node
@@ -164,8 +182,7 @@ send_min_prepared(Partition) ->
 
 %% @doc Sends a prepare request to a Node involved in a tx identified by TxId
 prepare(UpdatedPartitions, Tx = #transaction{transactional_protocol = pvc}) ->
-    lists:foreach(fun({{Partition, _}=Node, WriteSet}) ->
-        lager:info("PVC sending prepare to partition ~p", [Partition]),
+    lists:foreach(fun({Node, WriteSet}) ->
         riak_core_vnode_master:command(
             Node,
             {pvc_prepare, Tx, WriteSet},
@@ -188,8 +205,7 @@ prepare(ListofNodes, TxId) ->
 decide(UpdatedPartitions, Tx, CommitVC, Outcome) ->
     %% Sanity check
     pvc = Tx#transaction.transactional_protocol,
-    lists:foreach(fun({{Partition, _} = Node, WriteSet}) ->
-        lager:info("PVC Sending decide(~p) to ~p", [Outcome, Partition]),
+    lists:foreach(fun({Node, WriteSet}) ->
         riak_core_vnode_master:command(
             Node,
             {pvc_decide, Tx, WriteSet, CommitVC, Outcome},
@@ -336,6 +352,11 @@ handle_command({check_servers_ready}, _Sender, SD0 = #state{partition = Partitio
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
+handle_command(pvc_mostrecentvc, _Sender, State = #state{
+    pvc_most_recent_vc = MostRecentVC
+}) ->
+    {reply, {ok, MostRecentVC}, State};
+
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     lager:info("PVC Partition ~p received prepare", [State#state.partition]),
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
@@ -360,13 +381,12 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
 
         true ->
             %% Propagate commit records to the logs
-            lager:info("PVC will merge ~p and ~p", [MostRecentVC, CommitVC]),
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
-            lager:info("PVC New MostRecentVC is ~p", [NewRecentVC]),
-            lager:info("PVC appended commit records"),
 
-            lager:info("PVC caching key commit vc"),
+            %% Update the materializer snapshot cache
+            ok = pvc_update_materializer(TxnId, WriteSet, CommitVC),
+
             %% Cache the commit time for the keys
             ok = pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC),
             State#state{pvc_most_recent_vc = NewRecentVC}
@@ -536,7 +556,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
         true ->
-            lager:info("PVC writeset for given transaction was disputed or tx is too fresh"),
+            lager:info("PVC writeset disputed [~p] or tx is too fresh [~p]", [WriteSetDisputed, TooFresh]),
             {false, LastPrepared, State};
 
         false ->
@@ -545,7 +565,6 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
             SeqNumber = LastPrepared + 1,
-            lager:info("PVC incrementing last prepared from ~p to ~p", [LastPrepared, SeqNumber]),
             {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
     end,
     Msg = {pvc_vote, Partition, Vote, Seq},
@@ -580,7 +599,6 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
 pvc_store_key_commitvc(SelfPartition, CommittedTx, WriteSet, CommitVC) ->
     Keys = pvc_get_partition_keys(SelfPartition, WriteSet),
     lists:foreach(fun(Key) ->
-        lager:info("PVC storing time ~p for ~p", [CommitVC, Key]),
         true = ets:insert(CommittedTx, {Key, CommitVC})
     end, Keys).
 
@@ -668,6 +686,41 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
                 Acc
         end
     end, ordsets:new(), WriteSet).
+
+%% @doc Update the materializer cache with the newest snapshots (VLog)
+-spec pvc_update_materializer(txid(), list(), vectorclock_partition:partition_vc()) -> ok | error.
+pvc_update_materializer(TxnId, WriteSet, CommitVC) ->
+    Update = fun({Key, Type, Op}, Acc) ->
+        DCId = dc_meta_data_utilities:get_my_dc_id(),
+        {Partition, _} = log_utilities:get_key_partition(Key),
+        CommitTime = vectorclock_partition:get_partition_time(
+            Partition,
+            CommitVC
+        ),
+
+        {ok, DownstreamOp} = Type:downstream(Op, Type:new()),
+
+        Payload = #clocksi_payload{
+            txid = TxnId,
+            key = Key,
+            type = Type,
+            op_param = DownstreamOp,
+            snapshot_time = CommitVC,
+            commit_time = {DCId, CommitTime}
+        },
+
+        Res = materializer_vnode:pvc_update(Payload),
+        [Res | Acc]
+    end,
+
+    Results = lists:foldl(Update, [], lists:reverse(WriteSet)),
+    Failed = lists:any(fun(ok) -> false; (_) -> true end, Results),
+    case Failed of
+        true ->
+            error;
+        false ->
+            ok
+    end.
 
 %% @doc Get the list of keys that are owned by this partition.
 -spec pvc_get_partition_keys(partition_id(), list(key())) -> list(key()).
@@ -766,35 +819,46 @@ reset_prepared(PreparedTx, [{Key, _Type, _Update} | Rest], TxId, Time, ActiveTxs
 commit(Transaction, TxCommitTime, Updates, State = #state{
     committed_tx = CommittedTx
 }) ->
+
     TxId = Transaction#transaction.txn_id,
     DcId = dc_meta_data_utilities:get_my_dc_id(),
-    LogRecord = #log_operation{tx_id = TxId,
-                op_type = commit,
-                log_payload = #commit_log_payload{commit_time = {DcId, TxCommitTime},
-                                 snapshot_time = Transaction#transaction.vec_snapshot_time}},
+    LogRecord = #log_operation{
+        tx_id = TxId,
+        op_type = commit,
+        log_payload = #commit_log_payload{
+            commit_time = {DcId, TxCommitTime},
+            snapshot_time = Transaction#transaction.vec_snapshot_time
+        }
+    },
+
     case Updates of
         [{Key, _Type, _Update} | _Rest] ->
-        case application:get_env(antidote, txn_cert) of
-        {ok, true} ->
-            lists:foreach(fun({K, _, _}) -> true = ets:insert(CommittedTx, {K, TxCommitTime}) end,
-                  Updates);
-        _ ->
-            ok
-        end,
+            case application:get_env(antidote, txn_cert) of
+                {ok, true} ->
+                    lists:foreach(fun({K, _, _}) ->
+                        true = ets:insert(CommittedTx, {K, TxCommitTime})
+                    end, Updates);
+                _ ->
+                    ok
+            end,
+
             LogId = log_utilities:get_logid_from_key(Key),
             Node = log_utilities:get_key_partition(Key),
             case logging_vnode:append_commit(Node, LogId, LogRecord) of
+                {error, timeout} ->
+                    {error, timeout};
+
                 {ok, _} ->
                     case update_materializer(Updates, Transaction, TxCommitTime) of
+                        error ->
+                            {error, materializer_failure};
+
                         ok ->
                             NewPreparedDict = clean_and_notify(TxId, Updates, State),
-                            {ok, committed, NewPreparedDict};
-                        error ->
-                            {error, materializer_failure}
-                    end;
-                {error, timeout} ->
-                    {error, timeout}
+                            {ok, committed, NewPreparedDict}
+                    end
             end;
+
         _ ->
             {error, no_updates}
     end.
@@ -837,20 +901,22 @@ clean_and_notify(TxId, Updates, #state{
 
 clean_prepared(_PreparedTx, [], _TxId) ->
     ok;
+
 clean_prepared(PreparedTx, [{Key, _Type, _Update} | Rest], TxId) ->
     ActiveTxs = case ets:lookup(PreparedTx, Key) of
-                    [] ->
-                        [];
-                    [{Key, List}] ->
-                        List
-                end,
+        [] ->
+            [];
+        [{Key, List}] ->
+            List
+    end,
     NewActive = lists:keydelete(TxId, 1, ActiveTxs),
     true = case NewActive of
-               [] ->
-                   ets:delete(PreparedTx, Key);
-               _ ->
-                   ets:insert(PreparedTx, {Key, NewActive})
-           end,
+        [] ->
+            ets:delete(PreparedTx, Key);
+
+        _ ->
+            ets:insert(PreparedTx, {Key, NewActive})
+    end,
     clean_prepared(PreparedTx, Rest, TxId).
 
 %% @doc converts a tuple {MegaSecs, Secs, MicroSecs} into microseconds
@@ -902,30 +968,34 @@ check_prepared(_TxId, PreparedTx, Key) ->
             false
     end.
 
--spec update_materializer(DownstreamOps :: [{key(), type(), op()}],
-    Transaction :: tx(), TxCommitTime :: non_neg_integer()) ->
-    ok | error.
+-spec update_materializer(
+    DownstreamOps :: [{key(), type(), op()}],
+    Transaction :: tx(),
+    TxCommitTime :: non_neg_integer()
+) -> ok | error.
+
 update_materializer(DownstreamOps, Transaction, TxCommitTime) ->
     DcId = dc_meta_data_utilities:get_my_dc_id(),
     ReversedDownstreamOps = lists:reverse(DownstreamOps),
     UpdateFunction = fun({Key, Type, Op}, AccIn) ->
-                         CommittedDownstreamOp =
-                             #clocksi_payload{
-                                key = Key,
-                                type = Type,
-                                op_param = Op,
-                                snapshot_time = Transaction#transaction.vec_snapshot_time,
-                                commit_time = {DcId, TxCommitTime},
-                                txid = Transaction#transaction.txn_id},
-                         [materializer_vnode:update(Key, CommittedDownstreamOp) | AccIn]
-                     end,
+        CommittedDownstreamOp = #clocksi_payload{
+            key = Key,
+            type = Type,
+            op_param = Op,
+            snapshot_time = Transaction#transaction.vec_snapshot_time,
+            commit_time = {DcId, TxCommitTime},
+            txid = Transaction#transaction.txn_id
+        },
+        Res = materializer_vnode:update(Key, CommittedDownstreamOp),
+        [Res| AccIn]
+    end,
     Results = lists:foldl(UpdateFunction, [], ReversedDownstreamOps),
-    Failures = lists:filter(fun(Elem) -> Elem /= ok end, Results),
-    case Failures of
-        [] ->
-            ok;
-        _ ->
-            error
+    Failed = lists:any(fun(ok) -> false; (_) -> true end, Results),
+    case Failed of
+        true ->
+            error;
+        false ->
+            ok
     end.
 
 %% Internal functions

@@ -25,50 +25,65 @@
 -include("inter_dc_repl.hrl").
 
 %% API
--export([
-  new_state/0,
-  process/2,
-  process_all/2]).
+-export([new_buffer/0,
+         process/2,
+         process_all/2]).
 
 %% State
--record(state, {
-  op_buffer :: dict:dict()
-}).
+-opaque buffer() :: dict:dict(txid(), [#log_record{}]).
+
+-export_type([buffer/0]).
 
 %%%% API --------------------------------------------------------------------+
 
--spec new_state() -> #state{}.
-new_state() -> #state{op_buffer = dict:new()}.
+-spec new_buffer() -> buffer().
+new_buffer() ->
+    dict:new().
 
--spec process(#log_record{}, #state{}) -> {{ok, [#log_record{}]} | none, #state{}}.
-process(LogRecord, State) ->
-  Payload = LogRecord#log_record.log_operation,
-  TxId = Payload#log_operation.tx_id,
-  NewTxnBuf = find_or_default(TxId, [], State#state.op_buffer) ++ [LogRecord],
-  case Payload#log_operation.op_type of
-    commit -> {{ok, NewTxnBuf}, State#state{op_buffer = dict:erase(TxId, State#state.op_buffer)}};
-    abort -> {none, State#state{op_buffer = dict:erase(TxId, State#state.op_buffer)}};
-    _ -> {none, State#state{op_buffer = dict:store(TxId, NewTxnBuf, State#state.op_buffer)}}
+-spec process(#log_record{}, buffer()) -> {{ok, [#log_record{}]} | none, buffer()}.
+process(LogRecord, Buffer) ->
+    #log_operation{
+        tx_id = TxId,
+        op_type = OpType
+    } = LogRecord#log_record.log_operation,
+
+    NewTxnBuf = find_or_default(TxId, Buffer, []) ++ [LogRecord],
+    case OpType of
+        commit ->
+            {{ok, NewTxnBuf}, dict:erase(TxId, Buffer)};
+
+        abort ->
+            {none, dict:erase(TxId, Buffer)};
+
+        _ ->
+            {none, dict:store(TxId, NewTxnBuf, Buffer)}
   end.
 
--spec process_all([#log_record{}], #state{}) -> {[[#log_record{}]], #state{}}.
-process_all(LogRecords, State) -> process_all(LogRecords, [], State).
+-spec process_all([#log_record{}], buffer()) -> {[[#log_record{}]], buffer()}.
+process_all(LogRecords, Buffer) ->
+    process_all(LogRecords, [], Buffer).
 
--spec process_all([#log_record{}], [[#log_record{}]], #state{}) -> {[[#log_record{}]], #state{}}.
-process_all([], Acc, State) -> {Acc, State};
-process_all([H|T], Acc, State) ->
-  {Result, NewState} = process(H, State),
-  NewAcc = case Result of
-    {ok, Txn} -> Acc ++ [Txn];
-    none -> Acc
-  end,
-  process_all(T, NewAcc, NewState).
+-spec process_all([#log_record{}], [[#log_record{}]], buffer()) -> {[[#log_record{}]], buffer()}.
+process_all([], Acc, Buffer) ->
+    {Acc, Buffer};
+
+process_all([H|T], Acc, Buffer) ->
+    {Result, NewBuffer} = process(H, Buffer),
+    NewAcc = case Result of
+        none ->
+            Acc;
+        {ok, Txn} ->
+            Acc ++ [Txn]
+    end,
+    process_all(T, NewAcc, NewBuffer).
 
 %%%% Methods ----------------------------------------------------------------+
 
--spec find_or_default(#tx_id{}, any(), dict:dict()) -> any().
-find_or_default(Key, Default, Dict) ->
-  case dict:find(Key, Dict) of
-    {ok, Val} -> Val;
-    _ -> Default
-  end.
+-spec find_or_default(#tx_id{}, dict:dict(), any()) -> any().
+find_or_default(Key, Dict, Default) ->
+    case dict:find(Key, Dict) of
+        {ok, Val} ->
+            Val;
+        _ ->
+            Default
+    end.

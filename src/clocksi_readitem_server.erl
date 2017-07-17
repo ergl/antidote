@@ -43,7 +43,7 @@
 
 %% States
 -export([read_data_item/4,
-        async_read_data_item/5,
+         async_read_data_item/5,
          check_partition_ready/3,
          start_read_servers/2,
          stop_read_servers/2]).
@@ -99,9 +99,15 @@ read_data_item({Partition, Node}, Key, Type, Transaction) ->
     end.
 
 -spec async_read_data_item(index_node(), key(), type(), tx(), term()) -> ok.
-async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
-    gen_server:cast({global, generate_random_server_name(Node, Partition)},
-            {perform_read_cast, Coordinator, Key, Type, Transaction}).
+async_read_data_item({Partition, Node}=IndexNode, Key, Type, Transaction, Coordinator) ->
+    To = {global, generate_random_server_name(Node, Partition)},
+    Msg = case Transaction#transaction.transactional_protocol of
+        pvc ->
+            {pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Transaction};
+        _ ->
+            {perform_read_cast, Coordinator, Key, Type, Transaction}
+    end,
+    gen_server:cast(To, Msg).
 
 %% @doc This checks all partitions in the system to see if all read
 %%      servers have been started up.
@@ -208,12 +214,156 @@ handle_call({go_down}, _Sender, SD0) ->
 
 handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
-    {noreply, SD0}.
+    {noreply, SD0};
+
+handle_cast({pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}, State) ->
+    ok = pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State),
+    {noreply, State}.
+
+pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
+    partition = Partition
+}) ->
+    %% Sanity check
+    pvc = Tx#transaction.transactional_protocol,
+
+    {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
+
+    VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+    %% FIXME(borja): This check is being done too soon. Move
+    %% The check only needs to be performed before scanning the CLog.
+    %% If this partition was read before (see MaxVersion = case ...),
+    %% then we don't need to check the time (see alg. line 29, line 31)
+    case pvc_check_time(Partition, MostRecentVC, VCaggr) of
+        {not_ready, WaitTime} ->
+            lager:info("PVC Partition not ready, will wait ~p ms", [WaitTime]),
+            erlang:send_after(WaitTime, self(), {pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}),
+            ok;
+        ready ->
+            ok = perform_read_internal(Coordinator, Key, Type, Tx, [], State)
+    end.
+
+%% @doc Scan the log for the maximum aggregate time that will be used for a read
+
+-spec pvc_find_maxvc(index_node(), log_id(), #transaction{}) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
+pvc_find_maxvc(IndexNode, LogId, #transaction{
+    %% Sanity check
+    transactional_protocol = pvc,
+    pvc_meta = #pvc_tx_meta{
+        hasread = HasRead,
+        time = #pvc_time{
+            vcaggr = VCaggr
+        }
+    }
+}) ->
+
+    lager:info("PVC performing MaxVC search on ~p:~p", [IndexNode, LogId]),
+
+    %% TODO(borja): Could really make this more efficient
+    %% For example, pass a cutoff time so it doesn't check the entire log,
+    %% Or pass a select function to get_commits so it only captures the ones
+    %% we want.
+
+    %% Gather all the commit records in the log
+    GetCommits = logging_vnode:get_commits(IndexNode, LogId),
+
+    case GetCommits of
+        {error, Reason} ->
+            {error, Reason};
+
+        {ok, Commits} ->
+            %% For all the partitions that have been read...
+            ValidPartitions = sets:to_list(HasRead),
+
+            %% ... select the vectors that are older or equal than the current aggregate time...
+            ValidCheck = fun(Vector) ->
+                lists:all(fun(P) ->
+                    lager:info("PVC scan checking for partition ~p", [P]),
+                    ThresholdTime = vectorclock_partition:get_partition_time(P, VCaggr),
+                    CommittedTime = vectorclock_partition:get_partition_time(P, Vector),
+                    lager:info("PVC CommittedTime (~p) =< ThresholdTime (~p)", [CommittedTime, ThresholdTime]),
+                    CommittedTime =< ThresholdTime
+                end, ValidPartitions)
+            end,
+
+            %% ... accumulate all the valid vectors...
+            ValidVectors = lists:foldl(fun(CommitRecord, Acc) ->
+                #commit_log_payload{pvc_metadata=#pvc_time{
+                    vcaggr = CommittedVCaggr
+                }} = CommitRecord,
+
+                case ValidCheck(CommittedVCaggr) of
+                    true ->
+                        lager:info("PVC scan valid time"),
+                        [CommittedVCaggr | Acc];
+                    false ->
+                        lager:info("PVC scan invalid time"),
+                        Acc
+                end
+            end, [], Commits),
+
+            %% ... and keep only the most recent.
+            MaxVC = vectorclock_partition:max(ValidVectors),
+            lager:info("PVC scan found max time ~p", [dict:to_list(MaxVC)]),
+
+            %% If the selected time is too old, we should abort the read
+            {CurrentPartition, _} = IndexNode,
+            MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
+            CurrentThresholdTime = vectorclock_partition:get_partition_time(CurrentPartition, VCaggr),
+            ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
+
+            lager:info(
+                "PVC scan is selected time too old? [~p] >= [~p] ~p",
+                [MaxSelectedTime, CurrentThresholdTime, not ValidVersionTime]
+            ),
+
+            case ValidVersionTime of
+                true ->
+                    {ok, MaxVC};
+
+                false ->
+                    {error, abort}
+            end
+    end.
 
 -spec perform_read_internal(pid(), key(), type(), #transaction{}, [], #state{}) -> ok.
-perform_read_internal(_Coordinator, _Key, _Type, _Tx = #transaction{transactional_protocol=pvc}, _PropList, _State) ->
-    %% TODO(borja): This is where we perform PVC's read logic, don't wait like cure/gr
-    ok;
+perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_protocol=pvc}, _PropList, State) ->
+    CurrentPartition = State#state.partition,
+    HasRead = Tx#transaction.pvc_meta#pvc_tx_meta.hasread,
+
+    GetMax = case sets:is_element(CurrentPartition, HasRead) of
+        true ->
+            VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+            lager:info("PVC read Key ~p has been read before, will use supplied time ~p", [Key, dict:to_list(VCaggr)]),
+            {ok, VCaggr};
+
+        false ->
+            lager:info("PVC read Key ~p has not been read before, will perform CLog scan", [Key]),
+            %% Sanity check
+            {CurrentPartition, _}=Node = log_utilities:get_key_partition(Key),
+            LogId = log_utilities:get_logid_from_key(Key),
+            pvc_find_maxvc(Node, LogId, Tx)
+    end,
+    case GetMax of
+        {error, Reason} ->
+            reply_to_coordinator(Coordinator, {error, Reason});
+
+        {ok, MaxVC} ->
+            lager:info("PVC read will use MaxVC ~p", [dict:to_list(MaxVC)]),
+
+            case materializer_vnode:pvc_read(pvc, Key, Type, MaxVC, State#state.mat_state) of
+                {error, Reason} ->
+                    reply_to_coordinator(Coordinator, {error, Reason});
+
+                {ok, Snapshot, CommitVC} ->
+                    Value = Type:value(Snapshot),
+                    lager:info("PVC read Got snapshot ~p at time ~p", [Snapshot, dict:to_list(CommitVC)]),
+                    CoordReturn = {pvc_readreturn, {Key, Value, CommitVC, MaxVC}},
+
+                    %% TODO(borja): Check when is this triggered
+                    ServerReturn = {ok, Value},
+                    reply_to_coordinator(Coordinator, CoordReturn, ServerReturn)
+            end
+    end;
 
 perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
     partition=Partition,
@@ -231,6 +381,24 @@ perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
             return(Coordinator, Key, Type, Tx, PropertyList, State)
     end.
 
+%% @doc Check if this partition is ready to proceed with a read.
+-spec pvc_check_time(
+    partition_id(),
+    vectorclock_partition:partition_vc(),
+    vectorclock_partition:partition_vc()
+) -> ready | {not_ready, non_neg_integer()}.
+
+pvc_check_time(Partition, MostRecentVC, VCaggr) ->
+    MostRecentTime = vectorclock_partition:get_partition_time(Partition, MostRecentVC),
+    AggregateTime = vectorclock_partition:get_partition_time(Partition, VCaggr),
+    lager:info("PVC Will wait until MostRecentVC[i] (~p) >= VCaggr[i] (~p)", [MostRecentTime, AggregateTime]),
+    case MostRecentTime < AggregateTime of
+        true ->
+            {not_ready, ?PVC_WAIT_MS};
+        false ->
+            ready
+    end.
+
 %% @doc check_clock: Compares its local clock with the tx timestamp.
 %%      if local clock is behind, it sleeps the fms until the clock
 %%      catches up. CLOCK-SI: clock skew.
@@ -241,7 +409,7 @@ check_clock(Key, TxLocalStartTime, PreparedCache, Partition) ->
     Time = dc_utilities:now_microsec(),
     case TxLocalStartTime > Time of
         true ->
-            {not_ready, (TxLocalStartTime - Time) div 1000 +1};
+            {not_ready, (TxLocalStartTime - Time) div 1000 + 1};
         false ->
             check_prepared(Key, TxLocalStartTime, PreparedCache, Partition)
     end.
@@ -289,6 +457,10 @@ return(Coordinator, Key, Type, Transaction, PropertyList,
 handle_info({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
     {noreply, SD0};
+
+handle_info({pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}, State) ->
+    ok = pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State),
+    {noreply, State};
 
 handle_info(_Info, StateData) ->
     {noreply, StateData}.

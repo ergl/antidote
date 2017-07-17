@@ -47,6 +47,7 @@
          read_from/3,
          get/5,
          get_all/4,
+         get_commits/2,
          request_bucket_op_id/4,
          request_op_id/3]).
 
@@ -75,16 +76,21 @@
               update_ops_dict/0,
               committed_ops_dict/0]).
 
--record(state, {partition :: partition_id(),
-                enable_log_to_disk :: boolean(), %% this enables or disables logging to disk.
-                logs_map :: dict:dict(),
-                op_id_table :: cache_id(),  %% Stores the count of ops appended to each log
-                recovered_vector :: vectorclock(),  %% This is loaded on start, storing the version vector
-                                                    %% of the last operation appended to this log, this value
-                                                    %% is sent to the interdc dependcy module, so it knows up to
-                                                    %% what time updates from other DCs have been receieved (after crash and restart)
-                senders_awaiting_ack :: dict:dict(),
-                last_read :: term()}).
+-record(state, {
+    partition :: partition_id(),
+    %% this enables or disables logging to disk.
+    enable_log_to_disk :: boolean(),
+    logs_map :: dict:dict(),
+    %% Stores the count of ops appended to each log
+    op_id_table :: cache_id(),
+    %% This is loaded on start, storing the version vector
+    %% of the last operation appended to this log, this value
+    %% is sent to the interdc dependcy module, so it knows up to
+    %% what time updates from other DCs have been receieved (after crash and restart)
+    recovered_vector :: vectorclock(),
+    senders_awaiting_ack :: dict:dict(),
+    last_read :: term()
+}).
 
 %% API
 -spec start_vnode(integer()) -> any().
@@ -179,10 +185,12 @@ asyn_append_group(IndexNode, LogId, LogRecordList, IsLocal) ->
 -spec get(index_node(), key(), vectorclock(), term(), key()) ->
          #snapshot_get_response{} | {error, term()}.
 get(IndexNode, LogId, MinSnapshotTime, Type, Key) ->
-    riak_core_vnode_master:sync_command(IndexNode,
-                                        {get, LogId, MinSnapshotTime, Type, Key},
-                                        ?LOGGING_MASTER,
-                                        infinity).
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {get, LogId, MinSnapshotTime, Type, Key},
+        ?LOGGING_MASTER,
+        infinity
+    ).
 
 %% @doc Given the logid and position in the log (given by continuation) and a dict
 %% of non_commited operations up to this position returns
@@ -198,6 +206,22 @@ get_all(IndexNode, LogId, Continuation, PrevOps) ->
     riak_core_vnode_master:sync_command(IndexNode, {get_all, LogId, Continuation, PrevOps},
                                         ?LOGGING_MASTER,
                                         infinity).
+
+%% @doc Return all the commit records at the specified Log Id.
+%%
+%% FIXME(borja): Will break if logging is disabled
+%% {enable_logging, false} in antidote.app.src
+%% Make sure this is enabled during benchmarks?
+%% Or put the data somewhere else so we don't have to do that
+%%
+-spec get_commits(index_node(), log_id()) -> {ok, list()} | {error, reason()}.
+get_commits(IndexNode, LogId) ->
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {get_commits, LogId},
+        ?LOGGING_MASTER,
+        infinity
+    ).
 
 %% @doc Gets the last id of operations stored in the log for the given DCID
 -spec request_op_id(index_node(), dcid(), partition()) -> {ok, non_neg_integer()}.
@@ -385,10 +409,11 @@ handle_command({append, LogId, LogOperation, Sync}, _Sender,
                     NewOpId
             end,
             LogRecord = #log_record{
-              version = log_utilities:log_record_version(),
-              op_number = NewOpId,
-              bucket_op_number = NewBucketOpId,
-              log_operation = LogOperation},
+                version = log_utilities:log_record_version(),
+                op_number = NewOpId,
+                bucket_op_number = NewBucketOpId,
+                log_operation = LogOperation
+            },
             case insert_log_record(Log, LogId, LogRecord, EnableLog) of
                 {ok, NewOpId} ->
                     inter_dc_log_sender_vnode:send(Partition, LogRecord),
@@ -543,6 +568,19 @@ handle_command({get_all, LogId, Continuation, Ops}, _Sender,
             {reply, {error, Reason}, State}
     end;
 
+handle_command({get_commits, LogId}, _Sender, State = #state{
+    logs_map = LogMap,
+    partition = Partition
+}) ->
+    Response = case get_log_from_map(LogMap, Partition, LogId) of
+        {error, Reason} ->
+            {error, Reason};
+
+        {ok, Log} ->
+            get_commits_from_log(Log)
+    end,
+    {reply, Response, State};
+
 handle_command(_Message, _Sender, State) ->
     {noreply, State}.
 
@@ -662,6 +700,51 @@ get_ops_from_log(Log, Key, MinSnapshotTime, LoadType) ->
                 error -> []
             end,
             {ok, Ops}
+    end.
+
+-spec get_commits_from_log(log()) -> {ok, list()} | {error, reason()}.
+get_commits_from_log(Log) ->
+    get_commits_from_log(Log, start, []).
+
+-spec get_commits_from_log(log(), start | disk_log:continuation(), list()) -> {ok, list()} | {error, reason()}.
+get_commits_from_log(Log, Continuation, Acc) ->
+    case disk_log:chunk(Log, Continuation) of
+        {error, Reason} ->
+            {error, Reason};
+
+        eof ->
+            {ok, Acc};
+
+        {NewContinuation, NewTerms} ->
+            Commits = filter_commits(NewTerms),
+            get_commits_from_log(Log, NewContinuation, Acc ++ Commits);
+
+        {NewContinuation, NewTerms, BadBytes} ->
+            case BadBytes > 0 of
+                true ->
+                    {error, bad_bytes};
+                false ->
+                    Commits = filter_commits(NewTerms),
+                    get_commits_from_log(Log, NewContinuation, Acc ++ Commits)
+            end
+    end.
+
+-spec filter_commits([{non_neg_integer(), #log_record{}}]) -> list().
+filter_commits(Terms) ->
+    filter_commits(Terms, []).
+
+-spec filter_commits([{non_neg_integer(), #log_record{}}], list()) -> list().
+filter_commits([], Acc) ->
+    Acc;
+
+filter_commits([{_, LogRecord} | Terms], Acc) ->
+    #log_record{log_operation = LogOperation} = log_utilities:check_log_record_version(LogRecord),
+    #log_operation{op_type = OpType, log_payload = OpPayload} = LogOperation,
+    case OpType of
+        commit ->
+            filter_commits(Terms, [OpPayload | Acc]);
+        _ ->
+            filter_commits(Terms, Acc)
     end.
 
 %% @doc This method successively calls disk_log:chunk so all the log is read.
@@ -993,11 +1076,11 @@ fold_log(Log, Continuation, F, Acc) ->
 -spec insert_log_record(log(), log_id(), #log_record{}, boolean()) -> {ok, #op_number{}} | {error, reason()}.
 insert_log_record(Log, LogId, LogRecord, EnableLogging) ->
     Result = case EnableLogging of
-                 true ->
-                     disk_log:log(Log, {LogId, LogRecord});
-                 false ->
-                     ok
-             end,
+        true ->
+            disk_log:log(Log, {LogId, LogRecord});
+        false ->
+            ok
+    end,
     case Result of
         ok ->
             {ok, LogRecord#log_record.op_number};

@@ -106,6 +106,11 @@
 }).
 
 %% PVC
+
+%% Time (in ms) a partition should wait between retries at checking
+%% a partition's most recent vc during reads.
+-define(PVC_WAIT_MS, 1000).
+
 -record(pvc_decide_meta, {
     %% The cumulative outcome of the votes.
     %% Only keep one as we exit as soon as we receive a negative one.
@@ -131,7 +136,6 @@
     %% VC metadata
     time :: #pvc_time{},
     %% Represents the partitions where the transaction has fixed a snapshot
-    %% TODO(borja): Can reuse tx_coord_state#updated_partitions for this
     hasread :: sets:set(partition_id())
 }).
 
@@ -150,7 +154,6 @@
     prepare_time :: non_neg_integer(),
 
     %% Tentative commit time for the transaction
-    %% TODO(borja): Is this strictly necessary?
     pvc_prepare_clock :: vectorclock_partition:partition_vc()
                        | undefined
 }).
@@ -180,7 +183,7 @@
 
 %% The way records are stored in the log.
 -record(log_record, {
-    %% The version of the log record, for backwards compatability
+    %% The version of the log record, for backwards compatibility
     version :: non_neg_integer(),
     op_number :: #op_number{},
     bucket_op_number :: #op_number{},
@@ -315,7 +318,6 @@
     transactional_protocol :: transactional_protocol(),
     from :: undefined | {pid(), term()} | pid(),
     transaction :: undefined | tx(),
-    %% TODO(borja): Might be able to reuse this for hasRead?
     updated_partitions :: list(),
     client_ops :: list(), % list of upstream updates, used for post commit hooks
     num_to_ack :: non_neg_integer(),

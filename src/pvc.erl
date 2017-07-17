@@ -49,7 +49,19 @@ abort_transaction(TxId) ->
     cure:abort_transaction(TxId).
 
 read_objects(Objects, TxId) ->
-    cure:read_objects(Objects, TxId).
+    case valid_objects(Objects) of
+        false ->
+            {error, type_not_supported};
+        true ->
+            FormattedObjects = format_read_params(Objects),
+            Resp = gen_fsm:sync_send_event(TxId#tx_id.server_pid, {read_objects, FormattedObjects}, ?OP_TIMEOUT),
+            case Resp of
+                {ok, Res} ->
+                    {ok, Res};
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
 
 read_objects(_Clock, _Properterties, _Objects) ->
     %% TODO: Support static transactions
@@ -98,6 +110,11 @@ compat_args() ->
     %% This feels hacky
     [ignore, update_clock, false].
 
+format_read_params(ReadObjects) ->
+    lists:map(fun({Key, Type, Bucket}) ->
+        {{Key, Bucket}, Type}
+    end, ReadObjects).
+
 format_update_params(Updates) ->
     lists:map(fun({{Key, Type, Bucket}, Op, Param}) ->
         {{Key, Bucket}, Type, {Op, Param}}
@@ -108,6 +125,9 @@ valid_updates(Updates) ->
 
 valid_update({Obj, _, _}) ->
     valid_object(Obj).
+
+valid_objects(Objects) ->
+    lists:all(fun valid_object/1, Objects).
 
 valid_object({_, antidote_crdt_lwwreg, _}) ->
     true;

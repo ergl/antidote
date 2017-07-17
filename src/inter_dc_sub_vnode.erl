@@ -57,7 +57,8 @@
 %%%% API --------------------------------------------------------------------+
 
 -spec deliver_txn(#interdc_txn{}) -> ok.
-deliver_txn(Txn) -> call(Txn#interdc_txn.partition, {txn, Txn}).
+deliver_txn(Txn) ->
+    call(Txn#interdc_txn.partition, {txn, Txn}).
 
 %% This function is called with the response from the log request operations request
 %% when some messages were lost
@@ -72,9 +73,9 @@ init([Partition]) -> {ok, #state{partition = Partition, buffer_fsms = dict:new()
 start_vnode(I) -> riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 handle_command({txn, Txn = #interdc_txn{dcid = DCID}}, _Sender, State) ->
-  Buf0 = get_buf(DCID, State),
-  Buf1 = inter_dc_sub_buf:process({txn, Txn}, Buf0),
-  {noreply, set_buf(DCID, Buf1, State)};
+    Buf0 = get_buf(DCID, State),
+    Buf1 = inter_dc_sub_buf:process({txn, Txn}, Buf0),
+    {noreply, set_buf(DCID, Buf1, State)};
 
 handle_command({log_reader_resp, BinaryRep}, _Sender, State) ->
   %% The binary reply is type {pdcid(), [#interdc_txn{}]}
@@ -97,12 +98,13 @@ delete(State) -> {ok, State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-call(Partition, Request) -> dc_utilities:call_local_vnode(Partition, inter_dc_sub_vnode_master, Request).
+call(Partition, Request) ->
+    dc_utilities:call_local_vnode(Partition, inter_dc_sub_vnode_master, Request).
 
 get_buf(DCID, State) ->
-  case dict:find(DCID, State#state.buffer_fsms) of
-    {ok, Buf} -> Buf;
-    error -> inter_dc_sub_buf:new_state({DCID, State#state.partition})
-  end.
+    case dict:find(DCID, State#state.buffer_fsms) of
+        {ok, Buf} -> Buf;
+        error -> inter_dc_sub_buf:new_state({DCID, State#state.partition})
+    end.
 
 set_buf(DCID, Buf, State) -> State#state{buffer_fsms = dict:store(DCID, Buf, State#state.buffer_fsms)}.

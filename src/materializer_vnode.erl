@@ -68,6 +68,10 @@
          handle_coverage/4,
          handle_exit/3]).
 
+%% PVC-only functions
+-export([pvc_read/5,
+         pvc_update/1]).
+
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
 start_vnode(I) ->
@@ -92,6 +96,25 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
             internal_read(Key, Type, SnapshotTime, TxId, MatState)
     end.
 
+%% @doc Same as read/5, but return also the commit time of the snapshot.
+%%
+%%      Will also bypass the ops cache as we don't need it.
+%%
+-spec pvc_read(pvc, key(), type(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
+pvc_read(pvc, Key, Type, SnapshotTime, MatState = #mat_state{snapshot_cache = SnapshotCache}) ->
+    case ets:info(SnapshotCache) of
+        undefined ->
+            riak_core_vnode_master:sync_command(
+                {MatState#mat_state.partition, node()},
+                {pvc_read, Key, Type, SnapshotTime},
+                materializer_vnode_master,
+                infinity
+            );
+
+        _ ->
+            pvc_internal_read(Key, Type, SnapshotTime, MatState)
+    end.
+
 -spec get_cache_name(non_neg_integer(), atom()) -> atom().
 get_cache_name(Partition, Base) ->
     list_to_atom(atom_to_list(Base) ++ "-" ++ integer_to_list(Partition)).
@@ -101,29 +124,52 @@ get_cache_name(Partition, Base) ->
 -spec update(key(), clocksi_payload()) -> ok | {error, reason()}.
 update(Key, DownstreamOp) ->
     IndexNode = log_utilities:get_key_partition(Key),
-    riak_core_vnode_master:sync_command(IndexNode, {update, Key, DownstreamOp},
-                                        materializer_vnode_master).
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {update, Key, DownstreamOp},
+        materializer_vnode_master
+    ).
+
+-spec pvc_update(clocksi_payload()) -> ok | {error, reason()}.
+pvc_update(Payload = #clocksi_payload{
+    key = Key
+}) ->
+    IndexNode = log_utilities:get_key_partition(Key),
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {pvc_update, Payload},
+        materializer_vnode_master
+    ).
 
 %%@doc write snapshot to cache for future read, snapshots are stored
 %%     one at a time into the ets table
 -spec store_ss(key(), #materialized_snapshot{}, snapshot_time()) -> ok.
 store_ss(Key, Snapshot, CommitTime) ->
     IndexNode = log_utilities:get_key_partition(Key),
-    riak_core_vnode_master:command(IndexNode, {store_ss, Key, Snapshot, CommitTime},
-                                        materializer_vnode_master).
+    riak_core_vnode_master:command(
+        IndexNode,
+        {store_ss, Key, Snapshot, CommitTime},
+        materializer_vnode_master
+    ).
 
 init([Partition]) ->
     OpsCache = open_table(Partition, ops_cache),
     SnapshotCache = open_table(Partition, snapshot_cache),
     IsReady = case application:get_env(antidote, recover_from_log) of
-                {ok, true} ->
-                    lager:debug("Checking for logs to init materializer ~p", [Partition]),
-                    riak_core_vnode:send_command_after(?LOG_STARTUP_WAIT, load_from_log),
-                    false;
-                _ ->
-                    true
+        {ok, true} ->
+            lager:debug("Checking for logs to init materializer ~p", [Partition]),
+            riak_core_vnode:send_command_after(?LOG_STARTUP_WAIT, load_from_log),
+            false;
+
+        _ ->
+            true
     end,
-    {ok, #mat_state{is_ready = IsReady, partition=Partition, ops_cache=OpsCache, snapshot_cache=SnapshotCache}}.
+    {ok, #mat_state{
+        is_ready = IsReady,
+        ops_cache = OpsCache,
+        partition = Partition,
+        snapshot_cache = SnapshotCache
+    }}.
 
 -spec load_from_log_to_tables(partition_id(), #mat_state{}) -> ok | {error, reason()}.
 load_from_log_to_tables(Partition, State) ->
@@ -147,18 +193,21 @@ loop_until_loaded(Node, LogId, Continuation, Ops, State) ->
 -spec load_ops(dict:dict(), #mat_state{}) -> true.
 load_ops(OpsDict, State) ->
     dict:fold(fun(Key, CommittedOps, _Acc) ->
-                  lists:foreach(fun({_OpId, Op}) ->
-                                    #clocksi_payload{key = Key} = Op,
-                                    op_insert_gc(Key, Op, State)
-                                end, CommittedOps)
-              end, true, OpsDict).
+        lists:foreach(fun({_OpId, Op}) ->
+            #clocksi_payload{key = Key} = Op,
+            op_insert_gc(Key, Op, State)
+        end, CommittedOps)
+    end, true, OpsDict).
 
 -spec open_table(partition_id(), 'ops_cache' | 'snapshot_cache') -> atom() | ets:tid().
 open_table(Partition, Name) ->
     case ets:info(get_cache_name(Partition, Name)) of
         undefined ->
-            ets:new(get_cache_name(Partition, Name),
-                [set, protected, named_table, ?TABLE_CONCURRENCY]);
+            ets:new(
+                get_cache_name(Partition, Name),
+                [set, protected, named_table, ?TABLE_CONCURRENCY]
+            );
+
         _ ->
             %% Other vnode hasn't finished closing tables
             lager:debug("Unable to open ets table in materializer vnode, retrying"),
@@ -207,24 +256,32 @@ handle_command({hello}, _Sender, State) ->
 
 handle_command({check_ready}, _Sender, State = #mat_state{partition=Partition, is_ready=IsReady}) ->
     Result = case ets:info(get_cache_name(Partition, ops_cache)) of
-                 undefined ->
-                     false;
-                 _ ->
-                     case ets:info(get_cache_name(Partition, snapshot_cache)) of
-                         undefined ->
-                             false;
-                         _ ->
-                             true
-                     end
-             end,
+        undefined ->
+            false;
+
+        _ ->
+            case ets:info(get_cache_name(Partition, snapshot_cache)) of
+                undefined ->
+                    false;
+                _ ->
+                    true
+            end
+    end,
     Result2 = Result and IsReady,
     {reply, Result2, State};
 
 handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
     {reply, read(Key, Type, SnapshotTime, Transaction, State), State};
 
+handle_command({pvc_read, Key, Type, SnapshotTime}, _Sender, State) ->
+    {reply, pvc_read(pvc, Key, Type, SnapshotTime, State), State};
+
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
+    {reply, ok, State};
+
+handle_command({pvc_update, Payload}, _Sender, State) ->
+    ok = pvc_bypass_snapshot(Payload, State),
     {reply, ok, State};
 
 handle_command({store_ss, Key, Snapshot, CommitTime}, _Sender, State) ->
@@ -249,11 +306,11 @@ handle_command(load_from_log, _Sender, State=#mat_state{partition=Partition}) ->
                     false
             end,
     ok = case IsReady of
-            false ->
-                riak_core_vnode:send_command_after(?LOG_STARTUP_WAIT, load_from_log),
-                ok;
-            true ->
-                ok
+        false ->
+            riak_core_vnode:send_command_after(?LOG_STARTUP_WAIT, load_from_log),
+            ok;
+        true ->
+            ok
     end,
     {noreply, State#mat_state{is_ready=IsReady}};
 
@@ -304,7 +361,10 @@ handle_coverage(_Req, _KeySpaces, _Sender, State) ->
 handle_exit(_Pid, _Reason, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State=#mat_state{ops_cache=OpsCache, snapshot_cache=SnapshotCache}) ->
+terminate(_Reason, _State=#mat_state{
+    ops_cache=OpsCache,
+    snapshot_cache=SnapshotCache
+}) ->
     try
         ets:delete(OpsCache),
         ets:delete(SnapshotCache)
@@ -317,23 +377,35 @@ terminate(_Reason, _State=#mat_state{ops_cache=OpsCache, snapshot_cache=Snapshot
 
 %%---------------- Internal Functions -------------------%%
 
--spec internal_store_ss(key(), #materialized_snapshot{}, snapshot_time(), boolean(), #mat_state{}) -> boolean().
-internal_store_ss(Key, Snapshot = #materialized_snapshot{last_op_id = NewOpId}, CommitTime, ShouldGc, State = #mat_state{snapshot_cache=SnapshotCache}) ->
+-spec internal_store_ss(key(),
+    #materialized_snapshot{},
+    snapshot_time(),
+    boolean(),
+    #mat_state{}
+) -> boolean().
+
+internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
+    snapshot_cache=SnapshotCache
+}) ->
+
     SnapshotDict = case ets:lookup(SnapshotCache, Key) of
-                       [] ->
-                           vector_orddict:new();
-                       [{_, SnapshotDictA}] ->
-                           SnapshotDictA
-                   end,
+        [] ->
+            vector_orddict:new();
+
+        [{_, SnapshotDictA}] ->
+            SnapshotDictA
+    end,
     %% Check if this snapshot is newer than the ones already in the cache. Since reads are concurrent multiple
     %% insert requests for the same snapshot could have occured
-    ShouldInsert =
-        case vector_orddict:size(SnapshotDict) > 0 of
-            true ->
-                {_Vector, #materialized_snapshot{last_op_id = OldOpId}} = vector_orddict:first(SnapshotDict),
-                ((NewOpId - OldOpId) >= ?MIN_OP_STORE_SS);
-            false -> true
-        end,
+    ShouldInsert = case vector_orddict:size(SnapshotDict) > 0 of
+        false ->
+            true;
+
+        true ->
+            #materialized_snapshot{last_op_id = NewOpId} = Snapshot,
+            {_Vector, FirstSnapshot} = vector_orddict:first(SnapshotDict),
+            ((NewOpId - FirstSnapshot#materialized_snapshot.last_op_id) >= ?MIN_OP_STORE_SS)
+    end,
     case (ShouldInsert or ShouldGc) of
         true ->
             SnapshotDict1 = vector_orddict:insert_bigger(CommitTime, Snapshot, SnapshotDict),
@@ -341,6 +413,40 @@ internal_store_ss(Key, Snapshot = #materialized_snapshot{last_op_id = NewOpId}, 
         false ->
             false
     end.
+
+%% @doc Simplified read for pvc, bypass the materializer and ops cache step
+-spec pvc_internal_read(key(), type(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()}.
+pvc_internal_read(Key, Type=antidote_crdt_lwwreg, MinSnapshotTime, #mat_state{
+    snapshot_cache = SnapshotCache
+}) ->
+    {SnapshotVal, CommitVC} = case ets:lookup(SnapshotCache, Key) of
+        [] ->
+            lager:info("PVC read lookup of snapshot cache empty"),
+
+            Base = #materialized_snapshot{
+                last_op_id = 0,
+                value=Type:new()
+            },
+            {Base, vectorclock_partition:new()};
+
+        [{_, SnapshotDict}] ->
+            lager:info("PVC read lookup of snapshot cache"),
+
+            case vector_orddict:get_smaller(MinSnapshotTime, SnapshotDict) of
+                undefined ->
+                    lager:info("PVC no in-memory snapshot, getting from log"),
+                    #snapshot_get_response{
+                        snapshot_time = Time,
+                        materialized_snapshot = Snapshot
+                    } = get_from_snapshot_log(Key, Type, MinSnapshotTime),
+                    {Snapshot, Time};
+                FoundSnapshot ->
+                    lager:info("PVC found snapshot ~p", [FoundSnapshot]),
+                    {{Time, Snapshot}, _} = FoundSnapshot,
+                    {Snapshot, Time}
+            end
+    end,
+    {ok, SnapshotVal#materialized_snapshot.value, CommitVC}.
 
 %% @doc This function takes care of reading. It is implemented here for not blocking the
 %% vnode when the write function calls it. That is done for garbage collection.
@@ -384,17 +490,17 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
 
         [{_, SnapshotDict}] ->
             case vector_orddict:get_smaller(MinSnaphsotTime, SnapshotDict) of
-                {undefined, _} ->
+                undefined ->
                     %% No in-memory snapshot, get it from replication log
                     get_from_snapshot_log(Key, Type, MinSnaphsotTime);
 
-                FoundVersion ->
+                FoundSnapshot ->
                     %% Snapshot was present, now update it with the operations found in the cache.
                     %%
                     %% Operations are taken from the in-memory cache.
                     %% Any snapshot already in the cache will have more recent operations
                     %% also in the cache, so no need to hit the log.
-                    update_snapshot_from_cache(FoundVersion, Key, OpsCache)
+                    update_snapshot_from_cache(FoundSnapshot, Key, OpsCache)
             end
     end.
 
@@ -433,8 +539,8 @@ store_snapshot(TxId, Key, Snapshot, Time, ShouldGC, MatState) ->
     cache_id()
 ) -> #snapshot_get_response{}.
 
-update_snapshot_from_cache(SnapshotResponse, Key, OpsCache) ->
-    {{SnapshotCommitTime, LatestSnapshot}, IsFirst} = SnapshotResponse,
+update_snapshot_from_cache(Snapshot, Key, OpsCache) ->
+    {{SnapshotCommitTime, LatestSnapshot}, IsFirst} = Snapshot,
     {Ops, OpsLen} = fetch_updates_from_cache(OpsCache, Key),
     #snapshot_get_response{
         ops_list=Ops,
@@ -455,7 +561,7 @@ fetch_updates_from_cache(OpsCache, Key) ->
             {[], 0};
 
         [Tuple] ->
-            {Key, Length, _OpId, _ListLen, CachedOps} = tuple_to_key(Tuple, false),
+            {Key, Length, CachedOps} = tuple_to_cached_ops(Tuple),
             {CachedOps, Length}
     end.
 
@@ -524,61 +630,77 @@ belongs_to_snapshot_op(SSTime, {OpDc, OpCommitTime}, OpSs) ->
 
 %% @doc Operation to insert a Snapshot in the cache and start
 %%      Garbage collection triggered by reads.
--spec snapshot_insert_gc(key(), vector_orddict:vector_orddict(),
-                         boolean(), #mat_state{}) -> true.
-snapshot_insert_gc(Key, SnapshotDict, ShouldGc, #mat_state{snapshot_cache = SnapshotCache, ops_cache = OpsCache})->
+-spec snapshot_insert_gc(key(),
+    vector_orddict:vector_orddict(),
+    boolean(),
+    #mat_state{}
+) -> true.
+
+snapshot_insert_gc(Key, SnapshotDict, ShouldGc, #mat_state{
+    ops_cache = OpsCache,
+    snapshot_cache = SnapshotCache
+}) ->
+
     %% Perform the garbage collection when the size of the snapshot dict passed the threshold
     %% or when a GC is forced (a GC is forced after every ?OPS_THRESHOLD ops are inserted into the cache)
     %% Should check op size here also, when run from op gc
-    case ((vector_orddict:size(SnapshotDict))>=?SNAPSHOT_THRESHOLD) orelse ShouldGc of
+    OverThreshold = vector_orddict:size(SnapshotDict) >= ?SNAPSHOT_THRESHOLD,
+    case OverThreshold orelse ShouldGc of
+        false ->
+            true = ets:insert(SnapshotCache, {Key, SnapshotDict});
+
         true ->
             %% snapshots are no longer totally ordered
             PrunedSnapshots = vector_orddict:sublist(SnapshotDict, 1, ?SNAPSHOT_MIN),
-            FirstOp=vector_orddict:last(PrunedSnapshots),
-            {CT, _S} = FirstOp,
+            {CT, _S} = vector_orddict:last(PrunedSnapshots),
             CommitTime = lists:foldl(fun({CT1, _ST}, Acc) ->
-                                         vectorclock:min([CT1, Acc])
-                                     end, CT, vector_orddict:to_list(PrunedSnapshots)),
-            {Key, Length, OpId, ListLen, OpsDict} =
-                case ets:lookup(OpsCache, Key) of
-                    [] ->
-                        {Key, 0, 0, 0, {}};
-                    [Tuple] ->
-                        tuple_to_key(Tuple, false)
-                end,
-            {NewLength, PrunedOps}=prune_ops({Length, OpsDict}, CommitTime),
+                vectorclock:min([CT1, Acc])
+            end, CT, vector_orddict:to_list(PrunedSnapshots)),
+
+            {Key, Length, OpId, ListLen, OpsDict} = case ets:lookup(OpsCache, Key) of
+                [] ->
+                    {Key, 0, 0, 0, {}};
+                [Tuple] ->
+                    tuple_to_key(Tuple)
+            end,
+            {NewLength, PrunedOps} = prune_ops({Length, OpsDict}, CommitTime),
             true = ets:insert(SnapshotCache, {Key, PrunedSnapshots}),
-        %% Check if the pruned ops are larger or smaller than the previous list size
-        %% if so create a larger or smaller list (by dividing or multiplying by 2)
-        %% (Another option would be to shrink to a more "minimum" size, but need to test to see what is better)
-        NewListLen = case NewLength > ListLen - ?RESIZE_THRESHOLD of
-                         true ->
-                             ListLen * 2;
-                         false ->
-                             HalfListLen = ListLen div 2,
-                         case HalfListLen =< ?OPS_THRESHOLD of
-                             true ->
-                                 %% Don't shrink list, already minimun size
-                                 ListLen;
-                             false ->
-                                 %% Only shrink if shrinking would leave some space for new ops
-                                 case HalfListLen - ?RESIZE_THRESHOLD > NewLength of
-                                     true ->
-                                         HalfListLen;
-                                     false ->
-                                         ListLen
-                                 end
-                         end
-                     end,
-        NewTuple = erlang:make_tuple(?FIRST_OP+NewListLen, 0, [{1, Key}, {2, {NewLength, NewListLen}}, {3, OpId}|PrunedOps]),
-        true = ets:insert(OpsCache, NewTuple);
-    false ->
-        true = ets:insert(SnapshotCache, {Key, SnapshotDict})
+
+            %% Check if the pruned ops are larger or smaller than the previous list size
+            %% if so create a larger or smaller list (by dividing or multiplying by 2)
+            %% (Another option would be to shrink to a more "minimum" size, but need to test to see what is better)
+            NewListLen = case NewLength > ListLen - ?RESIZE_THRESHOLD of
+                true ->
+                    ListLen * 2;
+                false ->
+                    HalfListLen = ListLen div 2,
+                    case HalfListLen =< ?OPS_THRESHOLD of
+                        true ->
+                            %% Don't shrink list, already minimun size
+                            ListLen;
+                        false ->
+                            %% Only shrink if shrinking would leave some space for new ops
+                            case HalfListLen - ?RESIZE_THRESHOLD > NewLength of
+                                true ->
+                                    HalfListLen;
+                                false ->
+                                    ListLen
+                            end
+                    end
+            end,
+            NewTuple = erlang:make_tuple(
+                ?FIRST_OP + NewListLen,
+                0,
+                [{1, Key}, {2, {NewLength, NewListLen}}, {3, OpId} | PrunedOps]
+            ),
+            true = ets:insert(OpsCache, NewTuple)
     end.
 
 %% @doc Remove from OpsDict all operations that have committed before Threshold.
--spec prune_ops({non_neg_integer(), tuple()}, snapshot_time())->
-               {non_neg_integer(), [{non_neg_integer(), op_and_id()}]}.
+-spec prune_ops(
+    {non_neg_integer(), tuple()},
+    snapshot_time()
+) -> {non_neg_integer(), [{non_neg_integer(), op_and_id()}]}.
 prune_ops({Len, OpsTuple}, Threshold)->
     %% should write custom function for this in the vector_orddict
     %% or have to just traverse the entire list?
@@ -588,14 +710,16 @@ prune_ops({Len, OpsTuple}, Threshold)->
     %% Or can have the filter function return a tuple, one vale for stopping
     %% one for including
     {NewSize, NewOps} = check_filter(fun({_OpId, Op}) ->
-                                         OpCommitTime=Op#clocksi_payload.commit_time,
-                                         (belongs_to_snapshot_op(Threshold, OpCommitTime, Op#clocksi_payload.snapshot_time))
-                                     end, ?FIRST_OP, ?FIRST_OP+Len, ?FIRST_OP, OpsTuple, 0, []),
+        OpCommitTime=Op#clocksi_payload.commit_time,
+        belongs_to_snapshot_op(Threshold, OpCommitTime, Op#clocksi_payload.snapshot_time)
+    end, ?FIRST_OP, ?FIRST_OP + Len, ?FIRST_OP, OpsTuple, 0, []),
     case NewSize of
         0 ->
-            First = element(?FIRST_OP+Len, OpsTuple),
+            First = element(?FIRST_OP + Len, OpsTuple),
             {1, [{?FIRST_OP, First}]};
-        _ -> {NewSize, NewOps}
+
+        _ ->
+            {NewSize, NewOps}
     end.
 
 %% This function will go through a tuple of operations, filtering out the operations
@@ -603,9 +727,16 @@ prune_ops({Len, OpsTuple}, Threshold)->
 %% of the remaining operations and the size of that list
 %% It is used during garbage collection to filter out operations that are older than any
 %% of the cached snapshots
--spec check_filter(fun(({non_neg_integer(), #clocksi_payload{}}) -> boolean()), non_neg_integer(), non_neg_integer(),
-           non_neg_integer(), tuple(), non_neg_integer(), [{non_neg_integer(), op_and_id()}]) ->
-              {non_neg_integer(), [{non_neg_integer(), op_and_id()}]}.
+-spec check_filter(
+    fun(({non_neg_integer(), #clocksi_payload{}}) -> boolean()),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    tuple(),
+    non_neg_integer(),
+    [{non_neg_integer(), op_and_id()}]
+) -> {non_neg_integer(), [{non_neg_integer(), op_and_id()}]}.
+
 check_filter(_Fun, Id, Last, _NewId, _Tuple, NewSize, NewOps) when (Id == Last) ->
     {NewSize, NewOps};
 check_filter(Fun, Id, Last, NewId, Tuple, NewSize, NewOps) ->
@@ -617,28 +748,101 @@ check_filter(Fun, Id, Last, NewId, Tuple, NewSize, NewOps) ->
             check_filter(Fun, Id+1, Last, NewId, Tuple, NewSize, NewOps)
     end.
 
+%% @doc Transform a key into the internal represntation used by the ops cache
+-spec key_to_tuple(key()) -> tuple().
+key_to_tuple(Key) ->
+    erlang:make_tuple(
+        ?FIRST_OP + ?OPS_THRESHOLD,
+        0,
+        [{1, Key}, {2, {0, ?OPS_THRESHOLD}}]
+    ).
+
+-spec tuple_to_key(tuple()) -> {key(), integer(), non_neg_integer(), non_neg_integer(), tuple()}.
+tuple_to_key(Tuple) ->
+    tuple_to_key(Tuple, false).
+
 %% This is an internal function used to convert the tuple stored in ets
 %% to a tuple and list usable by the materializer
 %% The second argument if true will convert the ops tuple to a list of ops
 %% Otherwise it will be kept as a tuple
--spec tuple_to_key(tuple(), boolean()) -> {any(), integer(), non_neg_integer(), non_neg_integer(),
-                      [op_and_id()]|tuple()}.
+-spec tuple_to_key(
+    tuple(),
+    boolean()
+) -> {any(), integer(), non_neg_integer(), non_neg_integer(), [op_and_id()] | tuple()}.
+
 tuple_to_key(Tuple, ToList) ->
     Key = element(1, Tuple),
     {Length, ListLen} = element(2, Tuple),
     OpId = element(3, Tuple),
-    Ops =
-        case ToList of
-            true ->
-                tuple_to_key_int(?FIRST_OP, Length+?FIRST_OP, Tuple, []);
-            false ->
-                Tuple
-        end,
+    Ops = case ToList of
+        false ->
+            Tuple;
+        true ->
+            tuple_to_key_int(?FIRST_OP, Length+?FIRST_OP, Tuple, [])
+    end,
     {Key, Length, OpId, ListLen, Ops}.
+
+%% FIXME: Broken since this will always match and return the empty list
 tuple_to_key_int(Next, Next, _Tuple, Acc) ->
     Acc;
+
 tuple_to_key_int(Next, Last, Tuple, Acc) ->
     tuple_to_key_int(Next+1, Last, Tuple, [element(Next, Tuple)|Acc]).
+
+-spec tuple_to_cached_ops(tuple()) -> {key(), integer(), tuple()}.
+tuple_to_cached_ops(Tuple) ->
+    Key = element(1, Tuple),
+    {Length, _} = element(2, Tuple),
+    Ops = Tuple,
+    {Key, Length, Ops}.
+
+%% @doc Simplified materializer update for pvc
+%%
+%%      Instead of storing ops and applying those to the previous
+%%      snapshot on read, materialize that and store it back,
+%%      bypass the ops cache and create a new snapshot, given that
+%%      we only operate on lww registers, the update is the same
+%%      as the value.
+%%
+-spec pvc_bypass_snapshot(clocksi_payload(), #mat_state{}) -> ok.
+pvc_bypass_snapshot(Payload, #mat_state{
+    snapshot_cache = SnapshotCache
+}) ->
+    #clocksi_payload{
+        key = Key,
+        snapshot_time = SnapshotTime,
+        op_param = DownstreamOp
+    } = Payload,
+
+    SnapshotDict = case ets:lookup(SnapshotCache, Key) of
+        [] ->
+            vector_orddict:new();
+
+        [{_, PrevSnapshotDict}] ->
+            PrevSnapshotDict
+    end,
+
+    Snapshot = #materialized_snapshot{
+        %% Placeholder value, we don't use this field in pvc
+        last_op_id = 0,
+        value = DownstreamOp
+    },
+    %% Store in an ordered fashion in the multi-version dict
+    NextSnapshotDict = vector_orddict:insert_bigger(SnapshotTime, Snapshot, SnapshotDict),
+
+    %% To prevent unbound growth, we cap the dict to 10 versions
+    %% If we need to get an older version, we will go to the replication log
+    OverThreshold = vector_orddict:size(NextSnapshotDict) >= ?SNAPSHOT_THRESHOLD,
+    case OverThreshold of
+        false ->
+            true = ets:insert(SnapshotCache, {Key, NextSnapshotDict}),
+            ok;
+        true ->
+            %% Very simplified GC as we don't touch the ops cache
+            Pruned = vector_orddict:sublist(NextSnapshotDict, 1, ?SNAPSHOT_MIN),
+            true = ets:insert(SnapshotCache, {Key, Pruned}),
+            ok
+    end.
 
 %% @doc Insert an operation and start garbage collection triggered by writes.
 %% the mechanism is very simple; when there are more than OPS_THRESHOLD
@@ -646,30 +850,87 @@ tuple_to_key_int(Next, Last, Tuple, Acc) ->
 %% the GC mechanism.
 -spec op_insert_gc(key(), clocksi_payload(), #mat_state{}) -> true.
 op_insert_gc(Key, DownstreamOp, State = #mat_state{ops_cache = OpsCache})->
-    case ets:member(OpsCache, Key) of
-        false ->
-            ets:insert(OpsCache, erlang:make_tuple(?FIRST_OP+?OPS_THRESHOLD, 0, [{1, Key}, {2, {0, ?OPS_THRESHOLD}}]));
+    ok = case ets:member(OpsCache, Key) of
         true ->
+            ok;
+
+        false ->
+            Tuple = key_to_tuple(Key),
+            true = ets:insert(OpsCache, Tuple),
             ok
     end,
-    NewId = ets:update_counter(OpsCache, Key,
-                               {3, 1}),
-    {Length, ListLen} = ets:lookup_element(OpsCache, Key, 2),
+    NewId = faa_next_op_id(OpsCache, Key),
+    {CurrSize, MaxSize} = get_ops_size(OpsCache, Key),
     %% Perform the GC incase the list is full, or every ?OPS_THRESHOLD operations (which ever comes first)
-    case ((Length)>=ListLen) or ((NewId rem ?OPS_THRESHOLD) == 0) of
-        true ->
-            Type=DownstreamOp#clocksi_payload.type,
-            SnapshotTime=DownstreamOp#clocksi_payload.snapshot_time,
-            %% Here is where the GC is done (with the 5th argument being "true", GC is performed by the internal read
-            {_, _} = internal_read(Key, Type, SnapshotTime, ignore, true, State),
-            %% Have to get the new ops dict because the interal_read can change it
-            {Length1, ListLen1} = ets:lookup_element(OpsCache, Key, 2),
-            true = ets:update_element(OpsCache, Key, [{Length1+?FIRST_OP, {NewId, DownstreamOp}}, {2, {Length1+1, ListLen1}}]);
+    case (CurrSize >= MaxSize) or ((NewId rem ?OPS_THRESHOLD) == 0) of
         false ->
-            true = ets:update_element(OpsCache, Key, [{Length+?FIRST_OP, {NewId, DownstreamOp}}, {2, {Length+1, ListLen}}])
+            true = update_key_ops(OpsCache, Key, NewId, DownstreamOp, CurrSize, MaxSize);
+
+        true ->
+            ok = perform_gc(Key, DownstreamOp, State),
+            true = update_key_ops(OpsCache, Key, NewId, DownstreamOp)
     end.
 
+%% @doc Store a new clocksi payload with the given id under the given key
+-spec update_key_ops(cache_id(), key(), non_neg_integer(), clocksi_payload()) -> boolean().
+update_key_ops(OpsCache, Key, NewId, Op) ->
+    {Size, MaxSize} = get_ops_size(OpsCache, Key),
+    update_key_ops(OpsCache, Key, NewId, Op, Size, MaxSize).
+
+%% @doc Same as update_key_ops/4, but leak internals about the key structure
+%%
+%%      Should supply the current and maximum size of the key representation
+%%      in the snapshot cache.
+%%
+-spec update_key_ops(
+    OpsCache :: cache_id(),
+    Key :: key(),
+    NewId :: non_neg_integer(),
+    Op :: clocksi_payload(),
+    Size :: non_neg_integer(),
+    MaxSize :: non_neg_integer()
+) -> boolean().
+
+update_key_ops(OpsCache, Key, NewId, Op, Size, MaxSize) ->
+    EtsOp = [
+        {?FIRST_OP + Size, {NewId, Op}},
+        {2, {Size + 1, MaxSize}}
+    ],
+    ets:update_element(OpsCache, Key, EtsOp).
+
+%% @doc Fetch and add to the next id to be used for clocksi payloads
+-spec faa_next_op_id(cache_id(), key()) -> non_neg_integer().
+faa_next_op_id(OpsCache, Key) ->
+    ets:update_counter(OpsCache, Key, {3, 1}).
+
+%% @doc Get the current (and max) size of the ops list under this key.
+-spec get_ops_size(cache_id(), key()) -> {non_neg_integer(), non_neg_integer()}.
+get_ops_size(OpsCache, Key) ->
+    ets:lookup_element(OpsCache, Key, 2).
+
+%% @doc Garbage collect the snapshots associated with the given key.
+-spec perform_gc(key(), clocksi_payload(), #mat_state{}) -> ok.
+perform_gc(Key, #clocksi_payload{type=Type, snapshot_time=SSTime}, State) ->
+    %% TODO: Extract GC implementation outside of internal read and use that
+    %% with the 5th argument being "true", GC is performed by the internal read
+    {_, _} = internal_read(Key, Type, SSTime, ignore, true, State),
+    ok.
+
 -ifdef(TEST).
+
+serialize_key_test() ->
+    Key = key,
+
+    Ser = key_to_tuple(Key),
+    DeserOps = tuple_to_cached_ops(Ser),
+
+    ?assertMatch({Key, 0, Ser}, DeserOps),
+
+    Deser = tuple_to_key(Ser, false),
+    DeserList = tuple_to_key(Ser, true),
+
+    ?assertMatch({Key, 0, 0, 50, Ser}, Deser),
+    ?assertMatch({Key, 0, 0, 50, []}, DeserList).
 
 %% @doc Testing belongs_to_snapshot returns true when a commit time
 %% is smaller than a snapshot time
