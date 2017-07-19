@@ -49,11 +49,13 @@
          stop_read_servers/2]).
 
 %% Spawn
--record(state, {partition :: partition_id(),
-                id :: non_neg_integer(),
-                mat_state :: #mat_state{},
-                prepared_cache ::  cache_id(),
-                self :: atom()}).
+-record(state, {
+    self :: atom(),
+    id :: non_neg_integer(),
+    mat_state :: #mat_state{},
+    partition :: partition_id(),
+    prepared_cache :: cache_id()
+}).
 
 %% TODO: allow properties for reads
 %% -type external_read_property() :: {external_read, dcid(), dc_and_commit_time(), snapshot_time()}.
