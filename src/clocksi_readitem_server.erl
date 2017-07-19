@@ -244,6 +244,23 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
             ok = perform_read_internal(Coordinator, Key, Type, Tx, [], State)
     end.
 
+-spec pvc_perform_read(pid() | {fsm, pid()}, key(), type(), vectorclock_partition:partition_vc(), #state{}) -> ok.
+pvc_perform_read(Coordinator, Key, Type, MaxVC, #state{mat_state=MatState}) ->
+    lager:info("PVC read will use MaxVC ~p", [dict:to_list(MaxVC)]),
+    case materializer_vnode:pvc_read(pvc, Key, Type, MaxVC, MatState) of
+        {error, Reason} ->
+            reply_to_coordinator(Coordinator, {error, Reason});
+
+        {ok, Snapshot, CommitVC} ->
+            Value = Type:value(Snapshot),
+            lager:info("PVC read Got snapshot ~p at time ~p", [Snapshot, dict:to_list(CommitVC)]),
+            CoordReturn = {pvc_readreturn, {Key, Value, CommitVC, MaxVC}},
+
+            %% TODO(borja): Check when is this triggered
+            ServerReturn = {ok, Value},
+            reply_to_coordinator(Coordinator, CoordReturn, ServerReturn)
+    end.
+
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
 
 -spec pvc_find_maxvc(index_node(), log_id(), #transaction{}) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
@@ -350,21 +367,7 @@ perform_read_internal(Coordinator, Key, Type, Tx = #transaction{transactional_pr
             reply_to_coordinator(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
-            lager:info("PVC read will use MaxVC ~p", [dict:to_list(MaxVC)]),
-
-            case materializer_vnode:pvc_read(pvc, Key, Type, MaxVC, State#state.mat_state) of
-                {error, Reason} ->
-                    reply_to_coordinator(Coordinator, {error, Reason});
-
-                {ok, Snapshot, CommitVC} ->
-                    Value = Type:value(Snapshot),
-                    lager:info("PVC read Got snapshot ~p at time ~p", [Snapshot, dict:to_list(CommitVC)]),
-                    CoordReturn = {pvc_readreturn, {Key, Value, CommitVC, MaxVC}},
-
-                    %% TODO(borja): Check when is this triggered
-                    ServerReturn = {ok, Value},
-                    reply_to_coordinator(Coordinator, CoordReturn, ServerReturn)
-            end
+            pvc_perform_read(Coordinator, Key, Type, MaxVC, State)
     end;
 
 perform_read_internal(Coordinator, Key, Type, Tx, [], State = #state{
