@@ -804,6 +804,14 @@ tuple_to_cached_ops(Tuple) ->
 %%      we only operate on lww registers, the update is the same
 %%      as the value.
 %%
+%% TODO(borja): Will ignore transactions from other DCs
+%% By ignoreing the ops cache, it will miss updates from other
+%% data centers. Right now when a transaction is delivered from
+%% another DC, Antidote will store the updates in the operation
+%% cache of the materializer. It will also store the operations
+%% in the log, so those operations will be there when we perform
+%% the CLog scan (see pvc_find_maxvc/3 in clocksi_readitem_server)
+%%
 -spec pvc_bypass_snapshot(clocksi_payload(), #mat_state{}) -> ok.
 pvc_bypass_snapshot(Payload, #mat_state{
     snapshot_cache = SnapshotCache
