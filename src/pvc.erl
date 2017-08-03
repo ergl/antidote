@@ -43,7 +43,12 @@ start_transaction(_Clock, _Properties, _KeepAlive) ->
     pvc_istart_tx().
 
 commit_transaction(TxId) ->
-    gen_fsm:sync_send_event(TxId#tx_id.server_pid, {prepare, pvc_commit}, ?OP_TIMEOUT).
+    CommitRes = gen_fsm:sync_send_event(TxId#tx_id.server_pid, {prepare, pvc_commit}, ?OP_TIMEOUT),
+    case CommitRes of
+        ok ->
+            {ok, []};
+        Res -> Res
+    end.
 
 abort_transaction(TxId) ->
     cure:abort_transaction(TxId).
