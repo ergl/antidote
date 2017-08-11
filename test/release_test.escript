@@ -23,7 +23,7 @@ main(_) ->
 test_transaction(Tries) ->
     {ok, Pid} = try_connect(10),
     Key = <<"release_test_key">>,
-    Bound_object = {Key, antidote_crdt_counter, <<"release_test_key_bucket">>},
+    Bound_object = {Key, antidote_crdt_lwwreg, <<"release_test_key_bucket">>},
     io:format("Starting Test transaction~n"),
     case antidotec_pb:start_transaction(Pid, ignore, {}) of
         {error, Reason} when Tries > 0 ->
@@ -42,8 +42,8 @@ test_transaction(Tries) ->
                 {ok, [Val]} ->
                     io:format("Commiting transaction~n"),
                     {ok, _} = antidotec_pb:commit_transaction(Pid, Tx),
-                    Value = antidotec_counter:value(Val),
-                    true = Value >= 0,
+                    Value = antidotec_reg:value(Val),
+                    true = (Value =:= <<>>),
                     _Disconnected = antidotec_pb_socket:stop(Pid),
                     io:format("Release is working!~n"),
                     ok
