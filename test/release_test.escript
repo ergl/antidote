@@ -32,10 +32,10 @@ test_transaction(Tries) ->
             io:format("Retrying to start transaction ...~n"),
             test_transaction(Tries - 1);
         {ok, Tx} ->
-            io:format("Reading counter~n"),
+            io:format("Reading register~n"),
             case antidotec_pb:read_objects(Pid, [Bound_object], Tx) of
                 {error, Reason} when Tries > 0 ->
-                    io:format("Could not read Counter: ~p~n", [Reason]),
+                    io:format("Could not read Register: ~p~n", [Reason]),
                     timer:sleep(1000),
                     io:format("Retrying to start transaction ...~n"),
                     test_transaction(Tries - 1);
