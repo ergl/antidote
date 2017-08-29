@@ -45,7 +45,7 @@ change-script() {
 
 adb-rebuild() {
     echo "Rebuilding antidote..."
-    rebuild > /dev/null 2>&1
+    rebuild > /dev/null
     change-script
 }
 
