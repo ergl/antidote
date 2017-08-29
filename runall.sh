@@ -12,6 +12,20 @@ change() {
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd -P)"' "${1}"
 }
 
+simple-ping() {
+    "${TARGET}"/env ping > /dev/null 2>&1
+}
+
+adb-ping() {
+    simple-ping
+    local status=$?
+    if [[ status -eq 0 ]]; then
+        echo "pong"
+    else
+        echo "pang"
+    fi
+}
+
 adb-stop() {
     echo "Stopping antidote..."
     "${TARGET}"/env stop > /dev/null 2>&1
@@ -21,7 +35,7 @@ adb-start() {
     echo "Starting antidote, please wait..."
     "${TARGET}"/env start > /dev/null 2>&1
     sleep 1
-    "${TARGET}"/env ping > /dev/null 2>&1
+    simple-ping
     echo "Done"
 }
 
@@ -42,10 +56,11 @@ adb-full() {
 }
 
 display-help() {
-    echo -e "Usage: ${0##*/} [-frsch]\n\
+    echo -e "Usage: ${0##*/} -frspch\n\
     -f\tRebuild and restart Antidote.
     -r\tRestart Antidote.
     -s\tStop Antidote.
+    -p\tPing Antidote.
     -c\tChange run script.
     -h\tDisplay this message."
 }
@@ -56,7 +71,7 @@ main() {
         exit 0
     fi
 
-    while getopts ":sfrch" opt; do
+    while getopts ":sfrpch" opt; do
         case ${opt} in
             s)
                 adb-stop
@@ -69,6 +84,10 @@ main() {
                 ;;
             f)
                 adb-full
+                exit $?
+                ;;
+            p)
+                adb-ping
                 exit $?
                 ;;
             c)
