@@ -25,10 +25,14 @@ adb-start() {
     echo "Done"
 }
 
+change-script() {
+    change "${TARGET}"/antidote > /dev/null 2>&1
+}
+
 adb-rebuild() {
     echo "Rebuilding antidote..."
     rebuild > /dev/null 2>&1
-    change "${TARGET}"/antidote > /dev/null 2>&1
+    change-script
 }
 
 adb-full() {
@@ -37,11 +41,51 @@ adb-full() {
     adb-start
 }
 
+display-help() {
+    echo -e "Usage: ${0##*/} [-frsch]\n\
+    -f\tRebuild and restart Antidote.
+    -r\tRestart Antidote.
+    -s\tStop Antidote.
+    -c\tChange run script.
+    -h\tDisplay this message."
+}
+
 main() {
     if [[ $# -eq 0 ]]; then
-        adb-full
+        display-help
         exit 0
     fi
+
+    while getopts ":sfrch" opt; do
+        case ${opt} in
+            s)
+                adb-stop
+                exit $?
+                ;;
+            r)
+                adb-stop
+                adb-start
+                exit $?
+                ;;
+            f)
+                adb-full
+                exit $?
+                ;;
+            c)
+                change-script
+                exit $?
+                ;;
+            h)
+                display-help
+                exit 0
+                ;;
+            *)
+                echo "Invalid option: -${OPTARG}"
+                display-help
+                exit 1
+                ;;
+        esac
+    done
 }
 
 main "$@"
