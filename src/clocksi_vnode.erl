@@ -358,7 +358,7 @@ handle_command(pvc_mostrecentvc, _Sender, State = #state{
     {reply, {ok, MostRecentVC}, State};
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
-    lager:info("PVC Partition ~p received prepare", [State#state.partition]),
+    lager:info("PVC prepare. Partition ~p received prepare", [State#state.partition]),
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
@@ -369,12 +369,9 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
     pvc_most_recent_vc = MostRecentVC
 }) ->
 
-    lager:info("PVC Partition ~p received decide(~p)", [Partition, Outcome]),
-
     TxnId = Transaction#transaction.txn_id,
     NewState = case Outcome of
         false ->
-            lager:info("PVC ~p is removing Transaction ~p from commit queue", [Partition, Transaction#transaction.txn_id]),
             %% If the outcome is false, append an abort record to the log
             ok = pvc_append_abort(Partition, TxnId, WriteSet),
             State;
@@ -392,7 +389,6 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
             State#state{pvc_most_recent_vc = NewRecentVC}
 
     end,
-    lager:info("PVC ~p finished decide phase, removing tx from commitqueue", [Partition]),
     {noreply, NewState#state{
         prepared_dict = orddict:erase(TxnId, PreparedTx)
     }};

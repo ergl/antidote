@@ -587,6 +587,7 @@ execute_command(read, {Key, Type}, Sender, State = #tx_coord_state{
 execute_command(read_objects, Objects, Sender, State = #tx_coord_state{
     transactional_protocol=pvc
 }) ->
+    lager:info("PVC read"),
     pvc_read(Objects, Sender, State);
 
 execute_command(read_objects, Objects, Sender, State) ->
@@ -596,6 +597,7 @@ execute_command(read_objects, Objects, Sender, State) ->
 execute_command(update_objects, UpdateOps, Sender, State = #tx_coord_state{
     transactional_protocol=pvc
 }) ->
+    lager:info("PVC update"),
     pvc_update(UpdateOps, Sender, State);
 
 execute_command(update_objects, UpdateOps, Sender, State) ->
@@ -715,6 +717,7 @@ pvc_update(UpdateOps, Sender, State = #tx_coord_state{transaction=_Transaction})
                 AccState#tx_coord_state{return_accumulator=Err};
 
             {NewUpdatedPartitions, NewClientOps} ->
+                lager:info("PVC update. Ops ~p", [NewClientOps]),
                 AccState#tx_coord_state{
                     client_ops=NewClientOps,
                     updated_partitions=NewUpdatedPartitions
@@ -862,7 +865,7 @@ receive_read_objects_result({pvc_readreturn, Msg}, CoordState = #tx_coord_state{
     return_accumulator=ReadKeys
 }) ->
 
-    lager:info("PVC readreturn with message ~p", [Msg]),
+    lager:info("PVC read. Got message ~p", [Msg]),
 
     {Key, Value, VCdep, VCaggr} = Msg,
 
@@ -965,14 +968,14 @@ pvc_prepare(State = #tx_coord_state{
     pvc = State#tx_coord_state.transactional_protocol,
     case UpdatedPartitions of
         [] ->
-            lager:info("PVC Read only"),
+            lager:info("PVC prepare. Read only"),
             %% No need to perform 2pc if read-only
             ok = execute_post_commit_hooks(ClientOps),
             gen_fsm:reply(From, ok),
             {stop, normal, State};
 
         _ ->
-            lager:info("PVC Read/Write, propagating log updates"),
+            lager:info("PVC prepare. RW, propagating log updates"),
             ok = pvc_propagate_updates(Transaction, ClientOps),
             {next_state, pvc_log_responses, State#tx_coord_state{
                 return_accumulator = ok,
