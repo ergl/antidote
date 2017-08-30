@@ -865,9 +865,9 @@ receive_read_objects_result({pvc_readreturn, Msg}, CoordState = #tx_coord_state{
     return_accumulator=ReadKeys
 }) ->
 
-    lager:info("PVC read. Got message ~p", [Msg]),
-
     {Key, Value, VCdep, VCaggr} = Msg,
+
+    lager:info("PVC read. Got message ~p", [{Key, Value, dict:to_list(VCdep), dict:to_list(VCaggr)}]),
 
     UpdatedTransaction = pvc_update_transaction(Key, VCdep, VCaggr, Transaction),
 
@@ -894,7 +894,7 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
     transactional_protocol=pvc
 }) ->
 
-    lager:info("PVC read on updated key with cached value ~p", [Value]),
+    lager:info("PVC read on updated key ~p with cached value ~p", [Key, Value]),
 
     %% No need to update any pvc-related state here
     ReadValues = replace_first(ReadKeys, Key, Value),
