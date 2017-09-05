@@ -721,9 +721,14 @@ pvc_update_materializer(TxnId, WriteSet, CommitVC) ->
 %% @doc Get the list of keys that are owned by this partition.
 -spec pvc_get_partition_keys(partition_id(), list(key())) -> list(key()).
 pvc_get_partition_keys(SelfPartition, WriteSet) ->
-    lists:filter(fun({Key, _, _}) ->
+    lists:filtermap(fun({Key, _, _}) ->
         {Partition, _} = log_utilities:get_key_partition(Key),
-        Partition =:= SelfPartition
+        case Partition of
+            SelfPartition ->
+                {true, Key};
+            _ ->
+                false
+        end
     end, WriteSet).
 
 -spec pvc_is_writeset_disputed(
