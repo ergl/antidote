@@ -1230,7 +1230,7 @@ pvc_decide(State = #tx_coord_state{
     Reply = case Outcome of
         false ->
             lager:info("PVC No consensus, aborting"),
-            {aborted, Transaction#transaction.txn_id};
+            {error, {aborted, Transaction#transaction.txn_id}};
         true ->
             lager:info("PVC All partitions agree, should start decide phase with commit vc ~p", [dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)

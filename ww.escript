@@ -29,10 +29,10 @@ ww1(Node) ->
       _ = collect(1, []),
       halt(1);
 
-    [{aborted, _}, {ok, _}] ->
+    [{error, {aborted, _}}, {ok, _}] ->
       halt(0);
 
-    [{ok, _}, {aborted, _}] ->
+    [{ok, _}, {error, {aborted, _}}] ->
       halt(0)
   end.
 
