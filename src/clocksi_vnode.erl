@@ -243,7 +243,19 @@ commit(ListofNodes, TxId, CommitTime) ->
         )
     end, ok, ListofNodes).
 
-%% @doc Sends a commit request to a Node involved in a tx identified by TxId
+abort(UpdatedPartitions, Tx = #transaction{
+    transactional_protocol = pvc
+}) ->
+    lists:foreach(fun({Node, WriteSet}) ->
+        riak_core_vnode_master:command(
+            Node,
+            {pvc_abort, Tx, WriteSet},
+            {fsm, undefined, self()},
+            ?CLOCKSI_MASTER
+        )
+    end, UpdatedPartitions);
+
+%% @doc Sends an abort request to a Node involved in a tx identified by TxId
 abort(ListofNodes, TxId) ->
     lists:foldl(fun({Node, WriteSet}, _Acc) ->
         riak_core_vnode_master:command(
@@ -392,6 +404,12 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
     {noreply, NewState#state{
         prepared_dict = orddict:erase(TxnId, PreparedTx)
     }};
+
+handle_command({pvc_abort, Transaction, WriteSet}, _Sender, State = #state{
+    partition = Partition
+}) ->
+    ok = pvc_append_abort(Partition, Transaction#transaction.txn_id, WriteSet),
+    {noreply, State};
 
 %% @doc This is the only partition being updated by a transaction,
 %%      thus this function performs both the prepare and commit for the
