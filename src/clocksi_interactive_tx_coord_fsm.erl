@@ -910,11 +910,11 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
             {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0}}
     end;
 
-receive_read_objects_result({error, abort}, _CoordState = #tx_coord_state{
+receive_read_objects_result({error, abort}, CoordState = #tx_coord_state{
     transactional_protocol=pvc
 }) ->
     lager:info("PVC read received abort"),
-    ok.
+    abort(CoordState).
 
 -spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
 pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{
@@ -1357,6 +1357,17 @@ receive_committed(committed, S0 = #tx_coord_state{num_to_ack = NumToAck}) ->
                 num_to_ack = NumToAck - 1
             }}
     end.
+
+abort(CoordState = #tx_coord_state{
+    transactional_protocol = pvc,
+    from=From,
+    transaction = Transaction,
+    updated_partitions = UpdatedPartitions
+}) ->
+    lager:info("PVC Self-initiated abort"),
+    ok = ?CLOCKSI_VNODE:abort(UpdatedPartitions, Transaction),
+    gen_fsm:reply(From, {error, {aborted, Transaction#transaction.txn_id}}),
+    {stop, normal, CoordState};
 
 %% @doc when an error occurs or an updated partition
 %% does not pass the certification check, the transaction aborts.
