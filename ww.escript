@@ -19,14 +19,11 @@ ww1(Node) ->
       end
     ])
   end,
-  S = self(),
-  [_P1, _P2] = [spawn(fun() -> T1(S) end), spawn(fun() -> T2(S) end)],
-  Res = collect(2, []),
+  Res = execute([T1, T2]),
   io:format("Collected ~p from concurrent execution~n", [Res]),
   case Res of
     [{ok, _}, {ok, _}] ->
-      _P3 = spawn(fun() -> T3(S) end),
-      _ = collect(1, []),
+      execute(T3),
       halt(1);
 
     [{error, {aborted, _}}, {ok, _}] ->
@@ -35,6 +32,17 @@ ww1(Node) ->
     [{ok, _}, {error, {aborted, _}}] ->
       halt(0)
   end.
+
+execute(Funs) when is_list(Funs) ->
+  S = self(),
+  lists:foreach(fun(F) ->
+    _ = spawn(fun() -> F(S) end)
+  end, Funs),
+  collect(length(Funs), []);
+
+execute(Fun) ->
+  [Res] = execute([Fun]),
+  Res.
 
 ww(Node) ->
     SummaryKey = ?KEY(<<"$$__SUMMARY__$$">>),
