@@ -46,7 +46,7 @@ commit_transaction(TxId) ->
     CommitRes = gen_fsm:sync_send_event(TxId#tx_id.server_pid, {prepare, pvc_commit}, ?OP_TIMEOUT),
     case CommitRes of
         ok ->
-            lager:info("PVC commit"),
+            lager:info("{~p} PVC commit", [erlang:phash2(TxId)]),
             {ok, []};
         Res -> Res
     end.
@@ -106,10 +106,11 @@ update_objects(_Clock, _Properties, _Updates, _StayAlive) ->
     {error, operation_not_implemented}.
 
 pvc_istart_tx() ->
-    lager:info("PVC start_transaction"),
     {ok, _} = clocksi_interactive_tx_coord_sup:start_fsm([self() | compat_args()]),
     receive
-        {ok, TxId} -> {ok, TxId};
+        {ok, TxId} ->
+            lager:info("{~p} PVC start transaction", [erlang:phash2(TxId)]),
+            {ok, TxId};
         Err -> {error, Err}
     end.
 

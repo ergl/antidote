@@ -370,7 +370,6 @@ handle_command(pvc_mostrecentvc, _Sender, State = #state{
     {reply, {ok, MostRecentVC}, State};
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
-    lager:info("PVC prepare. Partition ~p received prepare", [State#state.partition]),
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
@@ -557,6 +556,8 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     committed_tx = CommittedTransactions
 }) ->
 
+    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
+
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_is_writeset_disputed(PreparedTransactions, WriteSet),
 
@@ -570,17 +571,19 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
         true ->
-            lager:info("PVC writeset disputed [~p] or tx is too fresh [~p]", [WriteSetDisputed, TooFresh]),
+            lager:info("{~p} PVC writeset disputed [~p] or tx is too fresh [~p]", [erlang:phash2(TxnId), WriteSetDisputed, TooFresh]),
             {false, LastPrepared, State};
 
         false ->
-            lager:info("PVC partition ~p: writeset for given transaction was not disputed", [Partition]),
-            lager:info("PVC partition ~p is putting tx ~p in commit queue", [Partition, TxnId]),
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
             SeqNumber = LastPrepared + 1,
             {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
     end,
+    lager:info(
+        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
+        [erlang:phash2(TxnId), Partition, Vote, Seq]
+    ),
     Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
 

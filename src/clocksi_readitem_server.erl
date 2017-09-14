@@ -244,7 +244,7 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
     partition = CurrentPartition
 }) ->
 
-    lager:info("PVC read key ~p on partition ~p", [Key, CurrentPartition]),
+    lager:info("{~p} PVC read ~p from ~p", [erlang:phash2(Tx#transaction.txn_id), Key, CurrentPartition]),
 
     %% Sanity check
     pvc = Tx#transaction.transactional_protocol,
@@ -256,7 +256,7 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
 
         true ->
             VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
-            lager:info("PVC read key ~p was read before, using supplied time ~p", [Key, dict:to_list(VCaggr)]),
+            lager:info("{~p} PVC ~p was read before, using ~p", [erlang:phash2(Tx#transaction.txn_id), Key, dict:to_list(VCaggr)]),
             pvc_perform_read(Coordinator, Key, Type, VCaggr, State)
     end.
 
@@ -283,7 +283,7 @@ pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
 
     VCaggr = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
     {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
-    case pvc_check_time(CurrentPartition, MostRecentVC, VCaggr) of
+    case pvc_check_time(Transaction, CurrentPartition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
             erlang:send_after(WaitTime, self(), {pvc_wait_scan, IndexNode, Coordinator, Transaction, Key, Type}),
             ok;
@@ -297,22 +297,21 @@ pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
 %%      If it is not, will sleep for 1000 ms and try again.
 %%
 -spec pvc_check_time(
+    #transaction{},
     partition_id(),
     vectorclock_partition:partition_vc(),
     vectorclock_partition:partition_vc()
 ) -> ready | {not_ready, non_neg_integer()}.
 
-pvc_check_time(Partition, MostRecentVC, VCaggr) ->
+pvc_check_time(#transaction{txn_id=TxId}, Partition, MostRecentVC, VCaggr) ->
     MostRecentTime = vectorclock_partition:get_partition_time(Partition, MostRecentVC),
     AggregateTime = vectorclock_partition:get_partition_time(Partition, VCaggr),
-    %% lager:info("PVC Will wait until MostRecentVC[i] (~p) >= VCaggr[i] (~p)", [MostRecentTime, AggregateTime]),
     case MostRecentTime < AggregateTime of
         true ->
-            lager:info("PVC read MRVC check, NOT READY, VCaggr (~p) > MostRecentVC (~p)", [AggregateTime, MostRecentTime]),
-            lager:info("PVC read MRVC check, NOT READY, will wait ~p ms", [?PVC_WAIT_MS]),
+            lager:info("{~p} PVC read MRVC check, NOT READY, VCaggr (~p) > MostRecentVC (~p)", [erlang:phash2(TxId), AggregateTime, MostRecentTime]),
             {not_ready, ?PVC_WAIT_MS};
         false ->
-            lager:info("PVC read MRVC check, READY, VCaggr (~p) <= MostRecentVC (~p)", [AggregateTime, MostRecentTime]),
+            lager:info("{~p} PVC read MRVC check, READY, VCaggr (~p) <= MostRecentVC (~p)", [erlang:phash2(TxId), AggregateTime, MostRecentTime]),
             ready
     end.
 
@@ -341,6 +340,7 @@ pvc_scan_and_read(Coordinator, Key, Type, Transaction, State = #state{
             reply_to_coordinator(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
+            lager:info("{~p} PVC read ~p found MaxVC ~p", [erlang:phash2(Transaction#transaction.txn_id), Key, dict:to_list(MaxVC)]),
             pvc_perform_read(Coordinator, Key, Type, MaxVC, State)
     end.
 
@@ -358,8 +358,6 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
         }
     }
 }) ->
-
-    lager:info("PVC read MaxVC search on log ~p", [LogId]),
 
     %% TODO(borja): Could really make this more efficient
     %% For example, pass a cutoff time so it doesn't check the entire log,
@@ -380,10 +378,8 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
             %% ... select the vectors that are older or equal than the current aggregate time...
             ValidCheck = fun(Vector) ->
                 lists:all(fun(P) ->
-                    lager:info("PVC read MaxVC search. Checking for partition ~p", [P]),
                     ThresholdTime = vectorclock_partition:get_partition_time(P, VCaggr),
                     CommittedTime = vectorclock_partition:get_partition_time(P, Vector),
-                    lager:info("PVC read MaxVC search. CommittedTime (~p) =< ThresholdTime (~p)", [CommittedTime, ThresholdTime]),
                     CommittedTime =< ThresholdTime
                 end, ValidPartitions)
             end,
@@ -404,18 +400,12 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
 
             %% ... and keep only the most recent.
             MaxVC = vectorclock_partition:max(ValidVectors),
-            lager:info("PVC read MaxVC search. Found max time ~p", [dict:to_list(MaxVC)]),
 
             %% If the selected time is too old, we should abort the read
             {CurrentPartition, _} = IndexNode,
             MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
             CurrentThresholdTime = vectorclock_partition:get_partition_time(CurrentPartition, VCaggr),
             ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
-
-            lager:info(
-                "PVC read MaxVC search. Time too old? [~p] >= [~p] ~p",
-                [MaxSelectedTime, CurrentThresholdTime, not ValidVersionTime]
-            ),
 
             case ValidVersionTime of
                 true ->
@@ -441,14 +431,12 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
 ) -> ok.
 
 pvc_perform_read(Coordinator, Key, Type, MaxVC, #state{mat_state=MatState}) ->
-    lager:info("PVC read will use MaxVC ~p", [dict:to_list(MaxVC)]),
     case materializer_vnode:pvc_read(pvc, Key, Type, MaxVC, MatState) of
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
 
         {ok, Snapshot, CommitVC} ->
             Value = Type:value(Snapshot),
-            lager:info("PVC read. Got snapshot ~p at time ~p", [Snapshot, dict:to_list(CommitVC)]),
             CoordReturn = {pvc_readreturn, {Key, Value, CommitVC, MaxVC}},
 
             %% TODO(borja): Check when is this triggered

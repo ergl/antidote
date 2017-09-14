@@ -421,8 +421,6 @@ pvc_internal_read(Key, Type=antidote_crdt_lwwreg, MinSnapshotTime, #mat_state{
 }) ->
     {SnapshotVal, CommitVC} = case ets:lookup(SnapshotCache, Key) of
         [] ->
-            lager:info("PVC read lookup of snapshot cache empty"),
-
             Base = #materialized_snapshot{
                 last_op_id = 0,
                 value=Type:new()
@@ -430,18 +428,15 @@ pvc_internal_read(Key, Type=antidote_crdt_lwwreg, MinSnapshotTime, #mat_state{
             {Base, vectorclock_partition:new()};
 
         [{_, SnapshotDict}] ->
-            lager:info("PVC read lookup of snapshot cache"),
-
             case vector_orddict:get_smaller(MinSnapshotTime, SnapshotDict) of
                 undefined ->
-                    lager:info("PVC read. No in-memory snapshot, getting from log"),
+                    lager:debug("No in-memory snapshot, getting from log"),
                     #snapshot_get_response{
                         snapshot_time = Time,
                         materialized_snapshot = Snapshot
                     } = get_from_snapshot_log(Key, Type, MinSnapshotTime),
                     {Snapshot, Time};
                 FoundSnapshot ->
-                    lager:info("PVC read. Found snapshot ~p", [FoundSnapshot]),
                     {{Time, Snapshot}, _} = FoundSnapshot,
                     {Snapshot, Time}
             end
