@@ -28,6 +28,17 @@ auto:
 
 rel:
 	$(REBAR) release
+	./change_script.sh _build/default/rel/antidote/bin/antidote
+
+stop:
+	./_build/default/rel/antidote/bin/env stop
+
+run:
+	./_build/default/rel/antidote/bin/env start
+	sleep 1
+	./_build/default/rel/antidote/bin/env ping
+
+rebuild: relclean rel run
 
 relclean:
 	rm -rf _build/default/rel
