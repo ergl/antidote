@@ -83,7 +83,6 @@ fi
 
 # Assume 127.0.0.1 as bind host.
 if [ -z "$IP" ]; then
-  echo "IP address not set; defaulting to 127.0.0.1."
   export IP=127.0.0.1
 fi
 
@@ -96,11 +95,6 @@ if [ -z "$COOKIE" ]; then
 fi
 
 export RELX_REPLACE_OS_VARS=true
-
-echo "NODE_NAME: ${NODE_NAME}"
-echo "COOKIE: ${COOKIE}"
-echo "IP: ${IP}"
-echo "HOSTNAME: ${HOSTNAME}"
 
 RELNAME="`dirname \"$0\"`"/antidote
 exec ${RELNAME} "$@"
