@@ -256,7 +256,7 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
 
         true ->
             VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
-            lager:info("{~p} PVC ~p was read before, using ~p", [erlang:phash2(Tx#transaction.txn_id), Key, dict:to_list(VCaggr)]),
+            lager:info("{~p} PVC ~p was read before, using ~p", [erlang:phash2(Tx#transaction.txn_id), CurrentPartition, dict:to_list(VCaggr)]),
             pvc_perform_read(Coordinator, Key, Type, VCaggr, State)
     end.
 
