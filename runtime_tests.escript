@@ -6,9 +6,8 @@
 -define (KEY(Key, Bucket), {Key, antidote_crdt_lwwreg, Bucket}).
 -define (KEY(Key), ?KEY(Key, default_bucket)).
 
--define (T(F), fun(N) -> F(N) end).
 -define (TESTS, [
-  ?T(write_write_check)
+  fun(N) -> write_write_check(N) end
 ]).
 
 main(_) ->
