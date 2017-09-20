@@ -4,7 +4,7 @@
 -define (KEY(Key), {Key, antidote_crdt_lwwreg, default_bucket}).
 
 main(_) ->
-    ww1('antidote@127.0.0.1').
+  ww1('antidote@127.0.0.1').
 
 ww1(Node) ->
   ConflictKey = ?KEY(<<"conflicting">>),
@@ -114,24 +114,24 @@ concurrent(Node, SummaryKey, Set, Table) ->
 
 
 collect(Processes, Results) ->
-    case Processes of
-        0 ->
-            Results;
-        N ->
-            receive
-                Message -> collect(N - 1, [Message | Results])
-            after 1 ->
-                collect(N, Results)
-            end
-    end.
+  case Processes of
+    0 ->
+      Results;
+    N ->
+      receive
+        Message -> collect(N - 1, [Message | Results])
+      after 1 ->
+        collect(N, Results)
+      end
+  end.
 
 write(Assignments) when is_list(Assignments) ->
-    lists:map(fun({K, V}) -> {K, assign, V} end, Assignments);
+  lists:map(fun({K, V}) -> {K, assign, V} end, Assignments);
 
 write({Key, Value}) ->
-    [{Key, assign, Value}].
+  [{Key, assign, Value}].
 
 transaction(Node, Dst, Statements) ->
-    {ok, T} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
-    lists:foldl(fun(F, Acc) -> F(T, Acc) end, [], Statements),
-    Dst ! rpc:call(Node, antidote, commit_transaction, [T]).
+  {ok, T} = rpc:call(Node, antidote, start_transaction, [ignore, []]),
+  lists:foldl(fun(F, Acc) -> F(T, Acc) end, [], Statements),
+  Dst ! rpc:call(Node, antidote, commit_transaction, [T]).
