@@ -41,7 +41,7 @@ run:
 rebuild: stop relclean rel run
 
 rtest:
-    test/runtime_tests.escript
+	test/runtime_tests.escript
 
 relclean:
 	rm -rf _build/default/rel
