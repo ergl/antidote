@@ -38,7 +38,7 @@ run:
 	sleep 1
 	./_build/default/rel/antidote/bin/env ping
 
-rebuild: relclean rel run
+rebuild: stop relclean rel run
 
 relclean:
 	rm -rf _build/default/rel
