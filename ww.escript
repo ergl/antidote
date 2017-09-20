@@ -1,37 +1,29 @@
 #!/usr/bin/env escript
-%%! -smp enable -name wwtest@127.0.0.1 -setcookie antidote
+%%! -smp enable -name runtimetests@127.0.0.1 -setcookie antidote
 
--define (KEY(Key), {Key, antidote_crdt_lwwreg, default_bucket}).
+-include_lib("eunit/include/eunit.hrl").
+
+-define (KEY(Key, Bucket), {Key, antidote_crdt_lwwreg, Bucket}).
+-define (KEY(Key), ?KEY(Key, default_bucket)).
+
+-define (T(F), fun(N) -> F(N) end).
+-define (TESTS, [
+  ?T(write_write_check)
+]).
 
 main(_) ->
-  ww1('antidote@127.0.0.1').
+  lists:foreach(fun(El) ->
+    ok = El('antidote@127.0.0.1')
+  end, ?TESTS).
 
-ww1(Node) ->
-  ConflictKey = ?KEY(<<"conflicting">>),
-  T1 = concurrent(Node, ConflictKey, "foo"),
-  T2 = concurrent(Node, ConflictKey, "bar"),
-  T3 = fun(From) ->
-    transaction(Node, From, [
-      fun(T, _) -> rpc:call(Node, antidote, read_objects, [[ConflictKey], T]) end,
-      fun(T, {ok, [Results]}) ->
-        io:format("Conflicting key contains: ~p~n", [Results]),
-        rpc:call(Node, antidote, read_objects, [Results, T])
-      end
-    ])
-  end,
-  Res = execute([T1, T2]),
-  io:format("Collected ~p from concurrent execution~n", [Res]),
-  case Res of
-    [{ok, _}, {ok, _}] ->
-      execute(T3),
-      halt(1);
-
-    [{error, {aborted, _}}, {ok, _}] ->
-      halt(0);
-
-    [{ok, _}, {error, {aborted, _}}] ->
-      halt(0)
-  end.
+write_write_check(Node) ->
+  ConflictKey = ?KEY(conflict),
+  Res = execute([
+    read_write_tx(Node, ConflictKey, 1),
+    read_write_tx(Node, ConflictKey, 2)
+  ]),
+  ?assertNotMatch([{ok, _}, {ok, _}], Res),
+  ?assert(lists:any(fun({error, {aborted, _}}) -> true; (_) -> false end, Res)).
 
 execute(Funs) when is_list(Funs) ->
   S = self(),
@@ -44,74 +36,22 @@ execute(Fun) ->
   [Res] = execute([Fun]),
   Res.
 
-ww(Node) ->
-    SummaryKey = ?KEY(<<"$$__SUMMARY__$$">>),
-
-    SetAKey = ?KEY(<<"$$__tableA__ML_KSET__$$">>),
-    SetBKey = ?KEY(<<"$$__tableB__ML_KSET__$$">>),
-
-    TableAKey = ?KEY(<<"tableA">>),
-    TableBKey = ?KEY(<<"tableB">>),
-
-    T1 = concurrent(Node, SummaryKey, SetAKey, TableAKey),
-    T2 = concurrent(Node, SummaryKey, SetBKey, TableBKey),
-
-    T3 = fun(From) ->
-        transaction(Node, From, [
-            fun(T, _) -> rpc:call(Node, antidote, read_objects, [[SummaryKey], T]) end,
-            fun(T, {ok, [Results]}) ->
-                io:format("SummaryKey contains: ~p~n", [Results]),
-                rpc:call(Node, antidote, read_objects, [Results, T])
-            end
-        ])
-    end,
-
-    S = self(),
-    _ = [spawn(fun() -> T1(S) end), spawn(fun() -> T2(S) end)],
-    Res = collect(2, []),
-    io:format("Collected ~p from concurrent execution~n", [Res]),
-    case Res of
-        [{ok, _}, {ok, _}] ->
-            _ = spawn(fun() -> T3(S) end),
-            _ = collect(1, []),
-            halt(1);
-
-        [{aborted, _}, {ok, _}] ->
-            halt(0);
-
-        [{ok, _}, {aborted, _}] ->
-            halt(0)
-    end.
-
-concurrent(Node, ConflictingKey, Value) ->
+read_write_tx(Node, Key, Value) ->
   fun(From) ->
     transaction(Node, From, [
-      fun(T, _) -> rpc:call(Node, antidote, read_objects, [[ConflictingKey], T]) end,
-      fun(T, _) -> rpc:call(Node, antidote, update_objects, [write({ConflictingKey, Value}), T]) end,
-      fun(T, _) -> rpc:call(Node, antidote, read_objects, [[ConflictingKey], T]) end
+      fun(T, _) -> read_objects(Node, T, Key) end,
+      fun(T, _) -> update_objects(Node, T, {Key, Value}) end
     ])
   end.
 
-concurrent(Node, SummaryKey, Set, Table) ->
-    fun(From) ->
-        transaction(Node, From, [
-            fun(T, _) -> rpc:call(Node, antidote, read_objects, [[SummaryKey], T]) end,
-            fun(T, _) -> rpc:call(Node, antidote, update_objects, [write({SummaryKey, [Set]}), T]) end,
-            fun(T, ok) -> rpc:call(Node, antidote, read_objects, [[SummaryKey], T]) end,
-            fun(T, {ok, [SetKeys]}) ->
-                case SetKeys of
-                    [Set] ->
-                        rpc:call(Node, antidote, read_objects, [[Set], T])
-                end
-            end,
-            fun(T, _) -> rpc:call(Node, antidote, update_objects, [write({Set, [Table]}), T]) end,
-            fun(T, ok) ->
-                Value = unicode:characters_to_list(io_lib:format("table ~p schema", [Table])),
-                rpc:call(Node, antidote, update_objects, [write({Table, Value}), T])
-            end
-        ])
-    end.
+read_objects(Node, Tx, Keys) when is_list(Keys) ->
+  rpc:call(Node, antidote, read_objects, [Keys, Tx]);
 
+read_objects(Node, Tx, Key) ->
+  read_objects(Node, Tx, [Key]).
+
+update_objects(Node, Tx, Assingments) ->
+  rpc:call(Node, antidote, update_objects, [write(Assingments), Tx]).
 
 collect(Processes, Results) ->
   case Processes of
