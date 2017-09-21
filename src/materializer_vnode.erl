@@ -430,7 +430,7 @@ pvc_internal_read(Key, Type=antidote_crdt_lwwreg, MinSnapshotTime, #mat_state{
         [{_, SnapshotDict}] ->
             case vector_orddict:get_smaller(MinSnapshotTime, SnapshotDict) of
                 undefined ->
-                    lager:debug("No in-memory snapshot, getting from log"),
+                    lager:info("No in-memory snapshot for ~p, getting from log", [Key]),
                     #snapshot_get_response{
                         snapshot_time = Time,
                         materialized_snapshot = Snapshot

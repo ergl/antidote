@@ -35,7 +35,7 @@ stop:
 
 run:
 	./_build/default/rel/antidote/bin/env start
-	sleep 1
+	sleep 2
 	./_build/default/rel/antidote/bin/env ping
 
 rebuild: stop relclean rel run
