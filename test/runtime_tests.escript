@@ -82,6 +82,7 @@ read_log_test(Node) ->
   %% the snapshot should no longer be in memory, and has to
   %% be retrieved from the event log.
   {ok, SecondRead} = read_objects(Node, Tx, Key),
+  %% FIXME(borja): Fix read_from_log, it's always returning a base value
   ?assertEqual([BaseValue], SecondRead),
 
   {ok, []} = commit_transaction(Node, Tx),
