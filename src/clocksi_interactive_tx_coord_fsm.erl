@@ -772,7 +772,12 @@ pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
         false ->
             [{Partition, [Update]} | UpdatedPartitions];
         {Partition, WS} ->
-            NewWS = lists:keyreplace(Key, 1, WS, Update),
+            NewWS = case lists:keyfind(Key, 1, WS) of
+                false ->
+                    [Update | WS];
+                _ ->
+                    lists:keyreplace(Key, 1, WS, Update)
+            end,
             lists:keyreplace(Partition, 1, UpdatedPartitions, {Partition, NewWS})
     end.
 
