@@ -9,7 +9,8 @@
 -define (TESTS, [
   fun(N) -> write_write_check(N) end,
   fun(N) -> stress_partition(N) end,
-  fun(N) -> read_log_test(N) end
+  fun(N) -> read_log_test(N) end,
+  fun(N) -> same_partition_test(N) end
 ]).
 
 main(_) ->
@@ -84,6 +85,26 @@ read_log_test(Node) ->
   ?assertEqual([BaseValue], SecondRead),
 
   {ok, []} = commit_transaction(Node, Tx),
+  ok.
+
+same_partition_test(Node) ->
+  KeyA = ?KEY(key_a),
+  ValueA = value_a,
+
+  KeyB = ?KEY(key_b),
+  ValueB = value_b,
+
+  _ = execute_blocking_sequential(
+    blocking_read_write_tx(Node, [{KeyA, ValueA}, {KeyB, ValueB}])
+  ),
+
+  {CT, Read} = execute_blocking_sequential(blocking_read_only_tx(Node, [KeyA, KeyB])),
+  ?assertMatch({ok, []}, CT),
+
+  {Status, [ReadA, ReadB]} = Read,
+  ?assertMatch(ok, Status),
+  ?assertEqual(ValueA, ReadA),
+  ?assertEqual(ValueB, ReadB),
   ok.
 
 %% Util functions
