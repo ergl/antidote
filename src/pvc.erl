@@ -120,13 +120,16 @@ compat_args() ->
 
 format_read_params(ReadObjects) ->
     lists:map(fun({Key, Type, Bucket}) ->
-        {{Key, Bucket}, Type}
+        {format_key(Key, Bucket), Type}
     end, ReadObjects).
 
 format_update_params(Updates) ->
     lists:map(fun({{Key, Type, Bucket}, Op, Param}) ->
-        {{Key, Bucket}, Type, {Op, Param}}
+        {format_key(Key, Bucket), Type, {Op, Param}}
     end, Updates).
+
+format_key(Key, Bucket) ->
+    {Key, Bucket}.
 
 valid_updates(Updates) ->
     lists:all(fun valid_update/1, Updates).
