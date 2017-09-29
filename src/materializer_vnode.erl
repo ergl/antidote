@@ -25,7 +25,8 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
 %% Number of snapshots to trigger GC
--define(SNAPSHOT_THRESHOLD, 10).
+%% FIXME(borja): Change back to 10 once get_from_snapshot_log is fixed
+-define(SNAPSHOT_THRESHOLD, 90).
 %% Number of snapshots to keep after GC
 -define(SNAPSHOT_MIN, 3).
 %% Number of ops to keep before GC
@@ -499,6 +500,7 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
             end
     end.
 
+%% FIXME(borja): Always returning base value
 -spec get_from_snapshot_log(key(), type(), snapshot_time()) -> #snapshot_get_response{}.
 get_from_snapshot_log(Key, Type, SnapshotTime) ->
     LogId = log_utilities:get_logid_from_key(Key),
