@@ -7,6 +7,7 @@
 -define (KEY(Key), ?KEY(Key, default_bucket)).
 
 -define (TESTS, [
+  fun(N) -> connect_test(N) end,
   fun(N) -> write_write_check(N) end,
   fun(N) -> stress_partition(N) end,
   fun(N) -> read_log_test(N) end,
@@ -17,6 +18,20 @@ main(_) ->
   lists:foreach(fun(El) ->
     ok = El('antidote@127.0.0.1')
   end, ?TESTS).
+
+connect_test(Node) ->
+  Key = ?KEY(connect_key),
+  Val = success,
+
+  [_, {CT, Res}] = execute_blocking_sequential([
+    blocking_read_write_tx(Node, {Key, Val}),
+    blocking_read_only_tx(Node, Key)
+  ]),
+
+  ?assertMatch({ok, []}, CT),
+  ?assertEqual({ok, [Val]}, Res),
+
+  ok.
 
 write_write_check(Node) ->
   ConflictKey = ?KEY(conflict),
