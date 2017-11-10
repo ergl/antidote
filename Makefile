@@ -40,6 +40,8 @@ run:
 
 rebuild: stop relclean rel run
 
+restart: relclean rel run
+
 rtest:
 	test/runtime_tests.escript
 
