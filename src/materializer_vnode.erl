@@ -802,7 +802,7 @@ tuple_to_cached_ops(Tuple) ->
 %%      as the value.
 %%
 %% TODO(borja): Will ignore transactions from other DCs
-%% By ignoreing the ops cache, it will miss updates from other
+%% By ignoring the ops cache, it will miss updates from other
 %% data centers. Right now when a transaction is delivered from
 %% another DC, Antidote will store the updates in the operation
 %% cache of the materializer. It will also store the operations
