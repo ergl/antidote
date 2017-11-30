@@ -70,11 +70,11 @@ read_objects(Objects, TxId) ->
     end.
 
 read_objects(_Clock, _Properterties, _Objects) ->
-    %% TODO: Support static transactions
+    %% TODO(borja): Support static transactions
     {error, operation_not_implemented}.
 
 read_objects(_Clock, _Properterties, _Objects, _StayAlive) ->
-    %% TODO: Support static transactions
+    %% TODO(borja): Support static transactions
     {error, operation_not_implemented}.
 
 -spec update_objects([{bound_object(), op_name(), op_param()}], txid()) -> ok | {error, reason()}.
@@ -98,11 +98,11 @@ update_objects(Updates, TxId) ->
     end.
 
 update_objects(_Clock, _Properties, _Updates) ->
-    %% TODO: Support static transactions
+    %% TODO(borja): Support static transactions
     {error, operation_not_implemented}.
 
 update_objects(_Clock, _Properties, _Updates, _StayAlive) ->
-    %% TODO: Support static transactions
+    %% TODO(borja): Support static transactions
     {error, operation_not_implemented}.
 
 pvc_istart_tx() ->

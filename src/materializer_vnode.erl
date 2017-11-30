@@ -500,7 +500,7 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
             end
     end.
 
-%% FIXME(borja): Always returning base value
+%% FIXME(borja): Always returning base value (<<>>) for registers
 -spec get_from_snapshot_log(key(), type(), snapshot_time()) -> #snapshot_get_response{}.
 get_from_snapshot_log(Key, Type, SnapshotTime) ->
     LogId = log_utilities:get_logid_from_key(Key),
@@ -779,7 +779,7 @@ tuple_to_key(Tuple, ToList) ->
     end,
     {Key, Length, OpId, ListLen, Ops}.
 
-%% FIXME: Broken since this will always match and return the empty list
+%% FIXME(borja): Broken since this will always match and return the empty list
 tuple_to_key_int(Next, Next, _Tuple, Acc) ->
     Acc;
 

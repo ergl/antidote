@@ -97,7 +97,9 @@ read_log_test(Node) ->
   %% the snapshot should no longer be in memory, and has to
   %% be retrieved from the event log.
   {ok, SecondRead} = read_objects(Node, Tx, Key),
-  %% FIXME(borja): Fix read_from_log, it's always returning a base value
+
+  %% FIXME(borja): get_from_snapshot_log always returns <<>> after gc
+  %% see materializer_vnode:get_from_snapshot_log/3
   ?assertEqual([BaseValue], SecondRead),
 
   {ok, []} = commit_transaction(Node, Tx),
