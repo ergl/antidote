@@ -25,8 +25,7 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
 %% Number of snapshots to trigger GC
-%% FIXME(borja): Change back to 10 once get_from_snapshot_log is fixed
--define(SNAPSHOT_THRESHOLD, 90).
+-define(SNAPSHOT_THRESHOLD, 10).
 %% Number of snapshots to keep after GC
 -define(SNAPSHOT_MIN, 3).
 %% Number of ops to keep before GC
@@ -432,17 +431,52 @@ pvc_internal_read(Key, Type=antidote_crdt_lwwreg, MinSnapshotTime, #mat_state{
             case vector_orddict:get_smaller(MinSnapshotTime, SnapshotDict) of
                 undefined ->
                     lager:info("No in-memory snapshot for ~p, getting from log", [Key]),
-                    #snapshot_get_response{
-                        snapshot_time = Time,
-                        materialized_snapshot = Snapshot
-                    } = get_from_snapshot_log(Key, Type, MinSnapshotTime),
-                    {Snapshot, Time};
+                    SnapshotResponse = get_from_snapshot_log(Key, Type, MinSnapshotTime),
+                    pvc_materialize_snapshot(Key, Type, SnapshotResponse);
                 FoundSnapshot ->
                     {{Time, Snapshot}, _} = FoundSnapshot,
                     {Snapshot, Time}
             end
     end,
     {ok, SnapshotVal#materialized_snapshot.value, CommitVC}.
+
+%% TODO(borja): Check if PVC gets CommittedOpsForKey with more than 1 op.
+-spec pvc_materialize_snapshot(key(), type(), #snapshot_get_response{}) -> {#materialized_snapshot{}, snapshot_time()}.
+pvc_materialize_snapshot(Key, _Type=antidote_crdt_lwwreg, #snapshot_get_response{
+    %% TODO(borja): Add more checks here
+    %% Was it done by X txid? How many ops to apply?
+    ops_list = CommittedOps,
+    snapshot_time = BaseSnapshotTime,
+    materialized_snapshot = #materialized_snapshot{
+        value = BaseValue
+    }
+}) ->
+
+    Operations = lists:map(fun({_, Payload}) ->
+        #clocksi_payload{
+            %% Sanity Check
+            key = Key,
+            %% TODO(borja): Check why we have an `ok` in here
+            op_param = {ok, Op},
+            snapshot_time = SnapshotTime
+        } = Payload,
+        {Op, SnapshotTime}
+    end, CommittedOps),
+
+    %% Go through all the ops, apply them to the value, and get the max time
+    {FinalValue, FinalSnapshotTime} = lists:foldl(fun({Op, OpSnapshotTime}, {OldValue, OldSnapshotTime}) ->
+        {ok, NewValue} = antidote_crdt_lwwreg:update(Op, OldValue),
+        {NewValue, vectorclock:max([OldSnapshotTime, OpSnapshotTime])}
+    end, {BaseValue, BaseSnapshotTime}, Operations),
+
+    %% Caller expects a wrapped value, so let's do that.
+    %% PVC ignores last_op_id (should it?)
+    MaterializedSnapshot = #materialized_snapshot{
+        last_op_id = 0,
+        value = FinalValue
+    },
+
+    {MaterializedSnapshot, FinalSnapshotTime}.
 
 %% @doc This function takes care of reading. It is implemented here for not blocking the
 %% vnode when the write function calls it. That is done for garbage collection.
@@ -500,7 +534,6 @@ get_from_snapshot_cache(TxId, Key, Type, MinSnaphsotTime, State = #mat_state{
             end
     end.
 
-%% FIXME(borja): Always returning base value (<<>>) for registers
 -spec get_from_snapshot_log(key(), type(), snapshot_time()) -> #snapshot_get_response{}.
 get_from_snapshot_log(Key, Type, SnapshotTime) ->
     LogId = log_utilities:get_logid_from_key(Key),

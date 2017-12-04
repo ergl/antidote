@@ -98,8 +98,6 @@ read_log_test(Node) ->
   %% be retrieved from the event log.
   {ok, SecondRead} = read_objects(Node, Tx, Key),
 
-  %% FIXME(borja): get_from_snapshot_log always returns <<>> after gc
-  %% see materializer_vnode:get_from_snapshot_log/3
   ?assertEqual([BaseValue], SecondRead),
 
   {ok, []} = commit_transaction(Node, Tx),
