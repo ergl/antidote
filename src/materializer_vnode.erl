@@ -868,19 +868,30 @@ pvc_bypass_snapshot(Payload, #mat_state{
     %% Store in an ordered fashion in the multi-version dict
     NextSnapshotDict = vector_orddict:insert_bigger(SnapshotTime, Snapshot, SnapshotDict),
 
-    %% To prevent unbound growth, we cap the dict to 10 versions
-    %% If we need to get an older version, we will go to the replication log
-    OverThreshold = vector_orddict:size(NextSnapshotDict) >= ?SNAPSHOT_THRESHOLD,
-    case OverThreshold of
+    AfterGCSnapshotDict = case pvc_should_gc(NextSnapshotDict) of
         false ->
-            true = ets:insert(SnapshotCache, {Key, NextSnapshotDict}),
-            ok;
+            NextSnapshotDict;
         true ->
             %% Very simplified GC as we don't touch the ops cache
-            Pruned = vector_orddict:sublist(NextSnapshotDict, 1, ?SNAPSHOT_MIN),
-            true = ets:insert(SnapshotCache, {Key, Pruned}),
-            ok
-    end.
+            vector_orddict:sublist(NextSnapshotDict, 1, ?SNAPSHOT_MIN)
+    end,
+
+    true = ets:insert(SnapshotCache, {Key, AfterGCSnapshotDict}),
+    ok.
+
+%% @doc Check if a snapshot dictionary should be pruned.
+%%
+%% To prevent unbound growth, we cap the dict to SNAPSHOT_THRESHOLD versions.
+%% If we need to get an older version, we will go to the replication log
+%%
+%% If the replication log is unavailable (not writing to disk, then don't
+%% perform GC
+%%
+-spec pvc_should_gc(vector_orddict:vector_orddict()) -> boolean().
+pvc_should_gc(SnapshotDict) ->
+    OverThreshold = vector_orddict:size(SnapshotDict) >= ?SNAPSHOT_THRESHOLD,
+    {ok, EnableLoggingToDisk} = application:get_env(antidote, enable_logging),
+    OverThreshold andalso EnableLoggingToDisk.
 
 %% @doc Insert an operation and start garbage collection triggered by writes.
 %% the mechanism is very simple; when there are more than OPS_THRESHOLD
