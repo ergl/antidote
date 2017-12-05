@@ -89,7 +89,11 @@
     %% what time updates from other DCs have been receieved (after crash and restart)
     recovered_vector :: vectorclock(),
     senders_awaiting_ack :: dict:dict(),
-    last_read :: term()
+    last_read :: term(),
+    %% Store commits in memory for the CLog
+    %% (CLog scan during reads)
+    %% TODO(borja): Probably find a better way to do this
+    pvc_commit_cache :: cache_id()
 }).
 
 %% API
@@ -209,10 +213,15 @@ get_all(IndexNode, LogId, Continuation, PrevOps) ->
 
 %% @doc Return all the commit records at the specified Log Id.
 %%
-%% FIXME(borja): Will break if logging is disabled
-%% {enable_logging, false} in antidote.app.src
-%% Make sure this is enabled during benchmarks?
-%% Or put the data somewhere else so we don't have to do that
+%% Will fetch from memory if logging is disabled
+%% ({enable_logging, false} in antidote.app.src)
+%%
+%% This will keep ALL commits in the system on memory,
+%% don't do this for normal operations, otherwise
+%% memory usage will keep increasing with every
+%% transaction committed.
+%%
+%% Make sure this is set to false during benchmarks
 %%
 -spec get_commits(index_node(), log_id()) -> {ok, list()} | {error, reason()}.
 get_commits(IndexNode, LogId) ->
@@ -261,6 +270,7 @@ init([Partition]) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     GrossPreflists = riak_core_ring:all_preflists(Ring, ?N),
     OpIdTable = ets:new(op_id_table, [set]),
+    PVCCommitCache = ets:new(pvc_commit_table, [bag]),
     Preflists = lists:filter(fun(X) -> preflist_member(Partition, X) end, GrossPreflists),
     lager:debug("Opening logs for partition ~w", [Partition]),
     case open_logs(LogFile, Preflists, dict:new(), OpIdTable, vectorclock:new()) of
@@ -274,6 +284,7 @@ init([Partition]) ->
                         op_id_table=OpIdTable,
                         recovered_vector=MaxVector,
                         senders_awaiting_ack=dict:new(),
+                        pvc_commit_cache = PVCCommitCache,
                         enable_log_to_disk=EnableLoggingToDisk,
                         last_read=start}}
     end.
@@ -381,11 +392,14 @@ handle_command({read_from, LogId, _From}, _Sender,
 %%
 %% -spec handle_command({append, log_id(), #log_operation{}, boolean()}, pid(), #state{}) ->
 %%                      {reply, {ok, #op_number{}} #state{}} | {reply, error(), #state{}}.
-handle_command({append, LogId, LogOperation, Sync}, _Sender,
-               #state{logs_map=Map,
-                      op_id_table=OpIdTable,
-                      partition=Partition,
-              enable_log_to_disk=EnableLog}=State) ->
+handle_command({append, LogId, LogOperation, Sync}, _Sender, #state{
+    logs_map = Map,
+    partition = Partition,
+    op_id_table = OpIdTable,
+    enable_log_to_disk = EnableLog,
+    pvc_commit_cache = PVCCommitCache
+} = State) ->
+
     case get_log_from_map(Map, Partition, LogId) of
         {ok, Log} ->
             MyDCID = dc_meta_data_utilities:get_my_dc_id(),
@@ -394,10 +408,21 @@ handle_command({append, LogId, LogOperation, Sync}, _Sender,
             #op_number{local = Local, global = Global} = OpId,
             NewOpId = OpId#op_number{local =  Local + 1, global = Global + 1},
             true = update_ets_op_id({LogId, MyDCID}, NewOpId, OpIdTable),
+
+            %% Set up an in-memory CLog for PVC when log is disabled
+            OperationType = LogOperation#log_operation.op_type,
+            ok = case {OperationType, EnableLog} of
+                 {commit, false} ->
+                    CommitPayload = LogOperation#log_operation.log_payload,
+                    true = ets:insert(PVCCommitCache, {Log, CommitPayload}),
+                    ok;
+                _ ->
+                    ok
+            end,
+
             %% non commit operations update the bucket id number to keep track
             %% of the number of updates per bucket
-            NewBucketOpId =
-            case LogOperation#log_operation.op_type of
+            NewBucketOpId = case OperationType of
                 update ->
                     Bucket = (LogOperation#log_operation.log_payload)#update_log_payload.bucket,
                     BOpId = get_op_id(OpIdTable, {LogId, Bucket, MyDCID}),
@@ -405,15 +430,18 @@ handle_command({append, LogId, LogOperation, Sync}, _Sender,
                     NewBOpId = BOpId#op_number{local = BLocal + 1, global = BGlobal + 1},
                     true = update_ets_op_id({LogId, Bucket, MyDCID}, NewBOpId, OpIdTable),
                     NewBOpId;
+
                 _ ->
                     NewOpId
             end,
+
             LogRecord = #log_record{
                 version = log_utilities:log_record_version(),
                 op_number = NewOpId,
                 bucket_op_number = NewBucketOpId,
                 log_operation = LogOperation
             },
+
             case insert_log_record(Log, LogId, LogRecord, EnableLog) of
                 {ok, NewOpId} ->
                     inter_dc_log_sender_vnode:send(Partition, LogRecord),
@@ -570,14 +598,23 @@ handle_command({get_all, LogId, Continuation, Ops}, _Sender,
 
 handle_command({get_commits, LogId}, _Sender, State = #state{
     logs_map = LogMap,
-    partition = Partition
+    partition = Partition,
+    enable_log_to_disk = EnableLog,
+    pvc_commit_cache = PVCCommitCache
 }) ->
     Response = case get_log_from_map(LogMap, Partition, LogId) of
         {error, Reason} ->
             {error, Reason};
 
         {ok, Log} ->
-            get_commits_from_log(Log)
+            case EnableLog of
+                true ->
+                    get_commits_from_log(Log);
+                false ->
+                    Found = ets:lookup(PVCCommitCache, Log),
+                    Commits = lists:map(fun({_, Record}) -> Record end, Found),
+                    {ok, Commits}
+            end
     end,
     {reply, Response, State};
 
