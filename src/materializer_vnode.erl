@@ -884,7 +884,7 @@ pvc_bypass_snapshot(Payload, #mat_state{
 %% To prevent unbound growth, we cap the dict to SNAPSHOT_THRESHOLD versions.
 %% If we need to get an older version, we will go to the replication log
 %%
-%% If the replication log is unavailable (not writing to disk, then don't
+%% If the replication log is unavailable (not writing to disk), then don't
 %% perform GC
 %%
 -spec pvc_should_gc(vector_orddict:vector_orddict()) -> boolean().
