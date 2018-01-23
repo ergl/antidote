@@ -3,10 +3,11 @@ set -e
 
 if [ ! -f /opt/antidote/releases/0.0.1/setup_ok ]; then
   cd /opt/antidote/releases/0.0.1/
-  cp vm.args vm.args_backup
   if [ "$SHORT_NAME" = "true" ]; then
-    sed "s/-name /-sname /" vm.args_backup > vm.args
+    sed -i.backup "s|^-name |-sname |g" vm.args
   fi
+  cd /opt/antidote/bin/
+  sed -i.backup "s|^#!/bin/sh|#!/bin/bash|" antidote
   touch setup_ok
 fi
 
