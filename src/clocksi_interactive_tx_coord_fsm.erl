@@ -705,7 +705,7 @@ clocksi_update(UpdateOps, Sender, State = #tx_coord_state{transaction=Transactio
             {next_state, receive_logging_responses, LoggingState, 0}
     end.
 
-pvc_update(UpdateOps, Sender, State = #tx_coord_state{transaction=Transaction}) ->
+pvc_update(UpdateOps, Sender, State) ->
     PerformUpdates = fun(Op, AccState=#tx_coord_state{
         client_ops=ClientOps,
         updated_partitions=UpdatedPartitions
@@ -735,12 +735,12 @@ pvc_update(UpdateOps, Sender, State = #tx_coord_state{transaction=Transaction}) 
                     %% Shouldn't happen anyway, static transactions are unsupported for PVC
                     prepare(NewCoordState);
                 false ->
-                    FinalOps = NewCoordState#tx_coord_state.client_ops,
-                    PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
-                    lager:info(
-                        "{~p} PVC update with ops ~p",
-                        [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
-                    ),
+%%                    FinalOps = NewCoordState#tx_coord_state.client_ops,
+%%                    PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
+%%                    lager:info(
+%%                        "{~p} PVC update with ops ~p",
+%%                        [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
+%%                    ),
                     gen_fsm:reply(Sender, ok),
                     {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}
             end
@@ -875,10 +875,10 @@ receive_read_objects_result({pvc_readreturn, Msg}, CoordState = #tx_coord_state{
 
     {Key, Value, VCdep, VCaggr} = Msg,
 
-    lager:info(
-        "{~p} PVC read ~p with value ~p (VCdep=~p, VCaggr=~p)",
-        [erlang:phash2(Transaction#transaction.txn_id), Key, Value, dict:to_list(VCdep), dict:to_list(VCaggr)]
-    ),
+%%    lager:info(
+%%        "{~p} PVC read ~p with value ~p (VCdep=~p, VCaggr=~p)",
+%%        [erlang:phash2(Transaction#transaction.txn_id), Key, Value, dict:to_list(VCdep), dict:to_list(VCaggr)]
+%%    ),
 
     UpdatedTransaction = pvc_update_transaction(Key, VCdep, VCaggr, Transaction),
 
@@ -905,8 +905,8 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
     transactional_protocol=pvc
 }) ->
 
-    TxId = CoordState#tx_coord_state.transaction#transaction.txn_id,
-    lager:info("{~p} PVC read ~p with cached value ~p", [erlang:phash2(TxId), Key, Value]),
+%%    TxId = CoordState#tx_coord_state.transaction#transaction.txn_id,
+%%    lager:info("{~p} PVC read ~p with cached value ~p", [erlang:phash2(TxId), Key, Value]),
 
     %% No need to update any pvc-related state here
     ReadValues = replace_first(ReadKeys, Key, Value),
@@ -923,10 +923,10 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
     end;
 
 receive_read_objects_result({error, abort}, CoordState = #tx_coord_state{
-    transaction=Transaction,
+%%    transaction=Transaction,
     transactional_protocol=pvc
 }) ->
-    lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
+%%    lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
     abort(CoordState).
 
 -spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
@@ -981,7 +981,7 @@ pvc_prepare(State = #tx_coord_state{
     pvc = State#tx_coord_state.transactional_protocol,
     case UpdatedPartitions of
         [] ->
-            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
+%%            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
             %% No need to perform 2pc if read-only
             ok = execute_post_commit_hooks(ClientOps),
             gen_fsm:reply(From, ok),
@@ -1022,7 +1022,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
         false ->
             case Status of
                 ok ->
-                    lager:info("{~p} PVC prepare", [erlang:phash2(Transaction#transaction.txn_id)]),
+%%                    lager:info("{~p} PVC prepare", [erlang:phash2(Transaction#transaction.txn_id)]),
 
                     ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
@@ -1243,10 +1243,10 @@ pvc_decide(State = #tx_coord_state{
     TxId = Transaction#transaction.txn_id,
     Reply = case Outcome of
         false ->
-            lager:info("{~p} PVC aborted prepare", [erlang:phash2(TxId)]),
+%%            lager:info("{~p} PVC aborted prepare", [erlang:phash2(TxId)]),
             {error, {aborted, TxId}};
         true ->
-            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
+%%            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
     ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
@@ -1378,7 +1378,7 @@ abort(CoordState = #tx_coord_state{
     transaction = Transaction,
     updated_partitions = UpdatedPartitions
 }) ->
-    lager:info("PVC Self-initiated abort"),
+%%    lager:info("PVC Self-initiated abort"),
     ok = ?CLOCKSI_VNODE:abort(UpdatedPartitions, Transaction),
     gen_fsm:reply(From, {error, {aborted, Transaction#transaction.txn_id}}),
     {stop, normal, CoordState};

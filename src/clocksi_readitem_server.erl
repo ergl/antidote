@@ -244,7 +244,7 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
     partition = CurrentPartition
 }) ->
 
-    lager:info("{~p} PVC read ~p from ~p", [erlang:phash2(Tx#transaction.txn_id), Key, CurrentPartition]),
+%%    lager:info("{~p} PVC read ~p from ~p", [erlang:phash2(Tx#transaction.txn_id), Key, CurrentPartition]),
 
     %% Sanity check
     pvc = Tx#transaction.transactional_protocol,
@@ -256,7 +256,7 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
 
         true ->
             VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
-            lager:info("{~p} PVC ~p was read before, using ~p", [erlang:phash2(Tx#transaction.txn_id), CurrentPartition, dict:to_list(VCaggr)]),
+%%            lager:info("{~p} PVC ~p was read before, using ~p", [erlang:phash2(Tx#transaction.txn_id), CurrentPartition, dict:to_list(VCaggr)]),
             pvc_perform_read(Coordinator, Key, Type, VCaggr, State)
     end.
 
@@ -303,15 +303,15 @@ pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
     vectorclock_partition:partition_vc()
 ) -> ready | {not_ready, non_neg_integer()}.
 
-pvc_check_time(#transaction{txn_id=TxId}, Partition, MostRecentVC, VCaggr) ->
+pvc_check_time(_, Partition, MostRecentVC, VCaggr) ->
     MostRecentTime = vectorclock_partition:get_partition_time(Partition, MostRecentVC),
     AggregateTime = vectorclock_partition:get_partition_time(Partition, VCaggr),
     case MostRecentTime < AggregateTime of
         true ->
-            lager:info("{~p} PVC read MRVC check, NOT READY, VCaggr (~p) > MostRecentVC (~p)", [erlang:phash2(TxId), AggregateTime, MostRecentTime]),
+%%            lager:info("{~p} PVC read MRVC check, NOT READY, VCaggr (~p) > MostRecentVC (~p)", [erlang:phash2(TxId), AggregateTime, MostRecentTime]),
             {not_ready, ?PVC_WAIT_MS};
         false ->
-            lager:info("{~p} PVC read MRVC check, READY, VCaggr (~p) <= MostRecentVC (~p)", [erlang:phash2(TxId), AggregateTime, MostRecentTime]),
+%%            lager:info("{~p} PVC read MRVC check, READY, VCaggr (~p) <= MostRecentVC (~p)", [erlang:phash2(TxId), AggregateTime, MostRecentTime]),
             ready
     end.
 
@@ -340,7 +340,7 @@ pvc_scan_and_read(Coordinator, Key, Type, Transaction, State = #state{
             reply_to_coordinator(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
-            lager:info("{~p} PVC read ~p found MaxVC ~p", [erlang:phash2(Transaction#transaction.txn_id), Key, dict:to_list(MaxVC)]),
+%%            lager:info("{~p} PVC read ~p found MaxVC ~p", [erlang:phash2(Transaction#transaction.txn_id), Key, dict:to_list(MaxVC)]),
             pvc_perform_read(Coordinator, Key, Type, MaxVC, State)
     end.
 

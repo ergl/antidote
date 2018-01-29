@@ -556,7 +556,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     committed_tx = CommittedTransactions
 }) ->
 
-    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
+%%    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
 
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_is_writeset_disputed(PreparedTransactions, WriteSet),
@@ -571,7 +571,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
         true ->
-            lager:info("{~p} PVC writeset disputed [~p] or tx is too fresh [~p]", [erlang:phash2(TxnId), WriteSetDisputed, TooFresh]),
+%%            lager:info("{~p} PVC writeset disputed [~p] or tx is too fresh [~p]", [erlang:phash2(TxnId), WriteSetDisputed, TooFresh]),
             {false, LastPrepared, State};
 
         false ->
@@ -580,10 +580,10 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
             SeqNumber = LastPrepared + 1,
             {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
     end,
-    lager:info(
-        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
-        [erlang:phash2(TxnId), Partition, Vote, Seq]
-    ),
+%%    lager:info(
+%%        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
+%%        [erlang:phash2(TxnId), Partition, Vote, Seq]
+%%    ),
     Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
 
