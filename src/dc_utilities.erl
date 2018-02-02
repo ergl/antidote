@@ -243,10 +243,6 @@ get_stable_snapshot() ->
             get_stable_snapshot();
         SS ->
             case application:get_env(antidote, txn_prot) of
-                {ok, pvc} ->
-                    %% TODO(borja): Find what the stable snapshot should be
-                    {ok, SS};
-
                 {ok, clocksi} ->
                     %% This is fine if transactions coordinators exists on the ring (i.e. they have access
                     %% to riak core meta-data) otherwise will have to change this
