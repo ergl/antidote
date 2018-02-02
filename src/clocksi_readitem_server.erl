@@ -289,7 +289,7 @@ pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
             ok;
 
         ready ->
-            pvc_scan_and_read(Coordinator, Key, Type, Transaction, State)
+            pvc_scan_and_read(Coordinator, Key, Type, MostRecentVC, Transaction, State)
     end.
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
@@ -325,34 +325,37 @@ pvc_check_time(_, Partition, MostRecentVC, VCaggr) ->
     {fsm, pid()} | pid(),
     key(),
     type(),
+    vectorclock_partition:partition_vc(),
     #transaction{},
     #state{}
 ) -> ok.
 
-pvc_scan_and_read(Coordinator, Key, Type, Transaction, State = #state{
+pvc_scan_and_read(Coordinator, Key, Type, MostRecentVC, Transaction, State = #state{
     partition = Partition
 }) ->
     %% Sanity check
     {Partition, _}=Node = log_utilities:get_key_partition(Key),
-    LogId = log_utilities:get_logid_from_key(Key),
     T1 = erlang:timestamp(),
-    MaxVCRes= pvc_find_maxvc(Node, LogId, Transaction),
+    MaxVCRes = pvc_find_maxvc(Node, MostRecentVC, Transaction),
     T2 = erlang:timestamp(),
-    lager:info("PVC pvc_fin_maxvc took ~p microseconds~n", [timer:now_diff(T2, T1)]),
+    lager:info("PVC pvc_find_maxvc took ~p microseconds~n", [timer:now_diff(T2, T1)]),
     case MaxVCRes of
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
-%%            lager:info("{~p} PVC read ~p found MaxVC ~p", [erlang:phash2(Transaction#transaction.txn_id), Key, dict:to_list(MaxVC)]),
+            %% lager:info("{~p} PVC read ~p found MaxVC ~p", [erlang:phash2(Transaction#transaction.txn_id), Key, dict:to_list(MaxVC)]),
             pvc_perform_read(Coordinator, Key, Type, MaxVC, State)
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
--spec pvc_find_maxvc(index_node(), log_id(), #transaction{}) -> {ok, vectorclock_partition:partition_vc()}
-                                                              | {error, reason()}.
+-spec pvc_find_maxvc(
+    index_node(),
+    vectorclock_partition:partition_vc(),
+    #transaction{}) -> {ok, vectorclock_partition:partition_vc()}
+                     | {error, reason()}.
 
-pvc_find_maxvc(IndexNode, LogId, #transaction{
+pvc_find_maxvc({CurrentPartition, _} = IndexNode, MostRecentVC, #transaction{
     %% Sanity check
     transactional_protocol = pvc,
     pvc_meta = #pvc_tx_meta{
@@ -363,61 +366,32 @@ pvc_find_maxvc(IndexNode, LogId, #transaction{
     }
 }) ->
 
-    %% TODO(borja): Could really make this more efficient
-    %% For example, pass a cutoff time so it doesn't check the entire log,
-    %% Or pass a select function to get_commits so it only captures the ones
-    %% we want.
+    %% Got to CLog anyway, verify correctness
+    %% If this always holds, we can optimize here
+    {ok, MaxVC} = logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr),
+    true = case sets:size(HasRead) of
+        0 ->
+            %% If this is the first partition we read, we should get the current MRVC
+            IsEq = vectorclock:eq(MaxVC, MostRecentVC),
+            lager:info("This is the first read, both should be equal: ~p (~p||~p)", [IsEq, dict:to_list(MaxVC), dict:to_list(MostRecentVC)]),
+            IsEq;
+        _ ->
+            %% Otherwise, the given MaxVC should be less or equal
+            IsLe = vectorclock:le(MaxVC, MostRecentVC),
+            lager:info("In another partition, MaxVC should be <= than MRVC: ~p", [IsLe]),
+            IsLe
+    end,
 
-    %% Gather all the commit records in the log
-    GetCommits = logging_vnode:get_commits(IndexNode, LogId),
+    %% If the selected time is too old, we should abort the read
+    MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
+    CurrentThresholdTime = vectorclock_partition:get_partition_time(CurrentPartition, VCaggr),
+    ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
+    case ValidVersionTime of
+        true ->
+            {ok, MaxVC};
 
-    case GetCommits of
-        {error, Reason} ->
-            {error, Reason};
-
-        {ok, Commits} ->
-            %% For all the partitions that have been read...
-            ValidPartitions = sets:to_list(HasRead),
-
-            %% ... select the vectors that are older or equal than the current aggregate time...
-            ValidCheck = fun(Vector) ->
-                lists:all(fun(P) ->
-                    ThresholdTime = vectorclock_partition:get_partition_time(P, VCaggr),
-                    CommittedTime = vectorclock_partition:get_partition_time(P, Vector),
-                    CommittedTime =< ThresholdTime
-                end, ValidPartitions)
-            end,
-
-            %% ... accumulate all the valid vectors...
-            ValidVectors = lists:foldl(fun(CommitRecord, Acc) ->
-                #commit_log_payload{pvc_metadata=#pvc_time{
-                    vcaggr = CommittedVCaggr
-                }} = CommitRecord,
-
-                case ValidCheck(CommittedVCaggr) of
-                    true ->
-                        [CommittedVCaggr | Acc];
-                    false ->
-                        Acc
-                end
-            end, [], Commits),
-
-            %% ... and keep only the most recent.
-            MaxVC = vectorclock_partition:max(ValidVectors),
-
-            %% If the selected time is too old, we should abort the read
-            {CurrentPartition, _} = IndexNode,
-            MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
-            CurrentThresholdTime = vectorclock_partition:get_partition_time(CurrentPartition, VCaggr),
-            ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
-
-            case ValidVersionTime of
-                true ->
-                    {ok, MaxVC};
-
-                false ->
-                    {error, abort}
-            end
+        false ->
+            {error, abort}
     end.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot

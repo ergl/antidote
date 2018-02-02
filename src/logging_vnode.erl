@@ -47,7 +47,7 @@
          read_from/3,
          get/5,
          get_all/4,
-         get_commits/2,
+         pvc_get_max_vc/3,
          request_bucket_op_id/4,
          request_op_id/3]).
 
@@ -91,9 +91,9 @@
     senders_awaiting_ack :: dict:dict(),
     last_read :: term(),
     %% Store commits in memory for the CLog
-    %% (CLog scan during reads)
-    %% TODO(borja): Probably find a better way to do this
-    pvc_commit_cache :: cache_id()
+    %% We should find a way to cleanup, otherwise
+    %% this will keep growing with each committed tx
+    pvc_clog :: pvc_commit_log:clog()
 }).
 
 %% API
@@ -211,23 +211,12 @@ get_all(IndexNode, LogId, Continuation, PrevOps) ->
                                         ?LOGGING_MASTER,
                                         infinity).
 
-%% @doc Return all the commit records at the specified Log Id.
-%%
-%% Will fetch from memory if logging is disabled
-%% ({enable_logging, false} in antidote.app.src)
-%%
-%% This will keep ALL commits in the system on memory,
-%% don't do this for normal operations, otherwise
-%% memory usage will keep increasing with every
-%% transaction committed.
-%%
-%% Make sure this is set to false during benchmarks
-%%
--spec get_commits(index_node(), log_id()) -> {ok, list()} | {error, reason()}.
-get_commits(IndexNode, LogId) ->
+%% @doc Scan the CLog for the MaxVC
+-spec pvc_get_max_vc(index_node(), [partition_id()], vectorclock()) -> {ok, vectorclock()} | {error, reason()}.
+pvc_get_max_vc(IndexNode, ReadPartitions, VCAggr) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
-        {get_commits, LogId},
+        {pvc_max_vc, ReadPartitions, VCAggr},
         ?LOGGING_MASTER,
         infinity
     ).
@@ -270,21 +259,21 @@ init([Partition]) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     GrossPreflists = riak_core_ring:all_preflists(Ring, ?N),
     OpIdTable = ets:new(op_id_table, [set]),
-    PVCCommitCache = ets:new(pvc_commit_table, [bag]),
+    PVCLog = pvc_commit_log:new_at(Partition),
     Preflists = lists:filter(fun(X) -> preflist_member(Partition, X) end, GrossPreflists),
     lager:debug("Opening logs for partition ~w", [Partition]),
-    case open_logs(LogFile, Preflists, dict:new(), OpIdTable, vectorclock:new()) of
+    case open_logs(LogFile, Preflists, OpIdTable, PVCLog) of
         {error, Reason} ->
             lager:error("ERROR: opening logs for partition ~w, reason ~w", [Partition, Reason]),
             {error, Reason};
-        {Map, MaxVector} ->
+        {Map, MaxVector, LatestPVCLog} ->
             {ok, EnableLoggingToDisk} = application:get_env(antidote, enable_logging),
             {ok, #state{partition=Partition,
                         logs_map=Map,
                         op_id_table=OpIdTable,
                         recovered_vector=MaxVector,
                         senders_awaiting_ack=dict:new(),
-                        pvc_commit_cache = PVCCommitCache,
+                        pvc_clog = LatestPVCLog,
                         enable_log_to_disk=EnableLoggingToDisk,
                         last_read=start}}
     end.
@@ -397,10 +386,13 @@ handle_command({append, LogId, LogOperation, Sync}, _Sender, #state{
     partition = Partition,
     op_id_table = OpIdTable,
     enable_log_to_disk = EnableLog,
-    pvc_commit_cache = PVCCommitCache
+    pvc_clog = PVCLog
 } = State) ->
 
     case get_log_from_map(Map, Partition, LogId) of
+        {error, Reason} ->
+            {reply, {error, Reason}, State};
+
         {ok, Log} ->
             MyDCID = dc_meta_data_utilities:get_my_dc_id(),
             %% all operations update the per log, operation id
@@ -409,15 +401,14 @@ handle_command({append, LogId, LogOperation, Sync}, _Sender, #state{
             NewOpId = OpId#op_number{local =  Local + 1, global = Global + 1},
             true = update_ets_op_id({LogId, MyDCID}, NewOpId, OpIdTable),
 
-            %% Set up an in-memory CLog for PVC when log is disabled
+            %% Set up an in-memory CLog for PVC
             OperationType = LogOperation#log_operation.op_type,
-            ok = case {OperationType, EnableLog} of
-                 {commit, false} ->
-                    CommitPayload = LogOperation#log_operation.log_payload,
-                    true = ets:insert(PVCCommitCache, {Log, CommitPayload}),
-                    ok;
+            NewPVCLog = case OperationType of
+                 commit ->
+                    add_to_pvc_log(LogOperation#log_operation.log_payload, PVCLog);
+
                 _ ->
-                    ok
+                    PVCLog
             end,
 
             %% non commit operations update the bucket id number to keep track
@@ -442,25 +433,26 @@ handle_command({append, LogId, LogOperation, Sync}, _Sender, #state{
                 log_operation = LogOperation
             },
 
+            NewState = State#state{pvc_clog = NewPVCLog},
             case insert_log_record(Log, LogId, LogRecord, EnableLog) of
+                {error, Reason} ->
+                    {reply, {error, Reason}, NewState};
+
                 {ok, NewOpId} ->
                     inter_dc_log_sender_vnode:send(Partition, LogRecord),
                     case Sync of
-                    true ->
-                        case disk_log:sync(Log) of
-                        ok ->
-                            {reply, {ok, OpId}, State};
-                        {error, Reason} ->
-                            {reply, {error, Reason}, State}
-                        end;
-                    false ->
-                        {reply, {ok, OpId}, State}
-                    end;
-                {error, Reason} ->
-                    {reply, {error, Reason}, State}
-            end;
-        {error, Reason} ->
-            {reply, {error, Reason}, State}
+                        false ->
+                            {reply, {ok, OpId}, NewState};
+
+                        true ->
+                            case disk_log:sync(Log) of
+                                ok ->
+                                    {reply, {ok, OpId}, NewState};
+                                {error, Reason} ->
+                                    {reply, {error, Reason}, NewState}
+                            end
+                    end
+            end
     end;
 
 %% Currently this should be only used for external operations
@@ -596,27 +588,11 @@ handle_command({get_all, LogId, Continuation, Ops}, _Sender,
             {reply, {error, Reason}, State}
     end;
 
-handle_command({get_commits, LogId}, _Sender, State = #state{
-    logs_map = LogMap,
-    partition = Partition,
-    enable_log_to_disk = EnableLog,
-    pvc_commit_cache = PVCCommitCache
+handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State = #state{
+    pvc_clog = PVCLog
 }) ->
-    Response = case get_log_from_map(LogMap, Partition, LogId) of
-        {error, Reason} ->
-            {error, Reason};
-
-        {ok, Log} ->
-            case EnableLog of
-                true ->
-                    get_commits_from_log(Log);
-                false ->
-                    Found = ets:lookup(PVCCommitCache, Log),
-                    Commits = lists:map(fun({_, Record}) -> Record end, Found),
-                    {ok, Commits}
-            end
-    end,
-    {reply, Response, State};
+    MaxVC = pvc_commit_log:get_smaller_from_dots(ReadPartitions, VCAggr, PVCLog),
+    {reply, {ok, MaxVC}, State};
 
 handle_command(_Message, _Sender, State) ->
     {noreply, State}.
@@ -645,25 +621,63 @@ reverse_and_add_op_id([Next|Rest], Id, Acc) ->
 
 %% Gets the id of the last operation that was put in the log
 %% and the maximum vectorclock of the commited transactions stored in the log
--spec get_last_op_from_log(log_id(), disk_log:continuation() | start, cache_id(), vectorclock()) -> {eof, vectorclock()} | {error, term()}.
-get_last_op_from_log(Log, Continuation, ClockTable, PrevMaxVector) ->
+-spec get_last_op_from_log(
+    log_id(),
+    disk_log:continuation() | start,
+    cache_id(),
+    vectorclock(),
+    pvc_commit_log:clog()
+) -> {ok, vectorclock()} | {error, term()}.
+
+get_last_op_from_log(Log, Continuation, ClockTable, PrevMaxVector, PVCLog) ->
     ok = disk_log:sync(Log),
     case disk_log:chunk(Log, Continuation) of
-        eof ->
-            {eof, PrevMaxVector};
         {error, Reason} ->
             {error, Reason};
+
+        eof ->
+            {ok, PrevMaxVector, PVCLog};
+
         {NewContinuation, NewTerms} ->
+            NewPVCLog = fill_pvc_log(NewTerms, PVCLog),
             NewMaxVector = get_max_op_numbers(NewTerms, ClockTable, PrevMaxVector),
-            get_last_op_from_log(Log, NewContinuation, ClockTable, NewMaxVector);
+            get_last_op_from_log(Log, NewContinuation, ClockTable, NewMaxVector, NewPVCLog);
+
         {NewContinuation, NewTerms, BadBytes} ->
             case BadBytes > 0 of
-                true -> {error, bad_bytes};
+                true ->
+                    {error, bad_bytes};
                 false ->
-                NewMaxVector = get_max_op_numbers(NewTerms, ClockTable, PrevMaxVector),
-                get_last_op_from_log(Log, NewContinuation, ClockTable, NewMaxVector)
+                    NewPVCLog = fill_pvc_log(NewTerms, PVCLog),
+                    NewMaxVector = get_max_op_numbers(NewTerms, ClockTable, PrevMaxVector),
+                    get_last_op_from_log(Log, NewContinuation, ClockTable, NewMaxVector, NewPVCLog)
             end
     end.
+
+-spec fill_pvc_log([{log_id(), #log_record{}}], pvc_commit_log:clog()) -> pvc_commit_log:clog().
+fill_pvc_log([], PVCLog) ->
+    PVCLog;
+
+fill_pvc_log([{_, LogRecord}], PVCLog) ->
+    #log_record{
+        log_operation = LogOperation
+    } = log_utilities:check_log_record_version(LogRecord),
+
+    #log_operation{
+        op_type = OpType,
+        log_payload = LogPayload
+    } = LogOperation,
+
+    case OpType of
+        commit ->
+            add_to_pvc_log(LogPayload, PVCLog);
+        _ ->
+            PVCLog
+    end.
+
+-spec add_to_pvc_log(#commit_log_payload{}, pvc_commit_log:clog()) -> pvc_commit_log:clog().
+add_to_pvc_log(#commit_log_payload{pvc_metadata = PVCTime}, PVCLog) ->
+    pvc_commit_log:insert(PVCTime#pvc_time.vcaggr, PVCLog).
 
 %% This is called when the vnode starts and loads into the cache
 %% the id of the last operation appened to the log, so that new ops will
@@ -671,26 +685,36 @@ get_last_op_from_log(Log, Continuation, ClockTable, PrevMaxVector) ->
 -spec get_max_op_numbers([{log_id(), #log_record{}}], cache_id(), vectorclock()) -> vectorclock().
 get_max_op_numbers([], _ClockTable, MaxVector) ->
     MaxVector;
-get_max_op_numbers([{LogId, LogRecord}|Rest], ClockTable, PrevMaxVector) ->
-    #log_record{op_number = NewOp, bucket_op_number = NewBucketOp, log_operation = LogOperation}
-        = log_utilities:check_log_record_version(LogRecord),
-    #log_operation{op_type = OpType,
-                   log_payload = LogPayload
-           } = LogOperation,
+
+get_max_op_numbers([{LogId, LogRecord} | Rest], ClockTable, PrevMaxVector) ->
+    #log_record{
+        op_number = NewOp,
+        bucket_op_number = NewBucketOp,
+        log_operation = LogOperation
+    } = log_utilities:check_log_record_version(LogRecord),
+
+    #log_operation{
+        op_type = OpType,
+        log_payload = LogPayload
+    } = LogOperation,
+
     #op_number{node = {_, DCID}} = NewBucketOp,
-    NewMaxVector =
-        case OpType of
-            commit ->
-                #commit_log_payload{commit_time = {DCID, TxCommitTime}} = LogPayload,
-                vectorclock:set_clock_of_dc(DCID, TxCommitTime, PrevMaxVector);
-            update ->
-                %% Update the per bucket opid count
-                Bucket = LogPayload#update_log_payload.bucket,
-                true = update_ets_op_id({LogId, Bucket, DCID}, NewBucketOp, ClockTable),
-                PrevMaxVector;
-            _ ->
-                PrevMaxVector
-        end,
+
+    NewMaxVector = case OpType of
+        commit ->
+            #commit_log_payload{commit_time = {DCID, TxCommitTime}} = LogPayload,
+            vectorclock:set_clock_of_dc(DCID, TxCommitTime, PrevMaxVector);
+
+        update ->
+            %% Update the per bucket opid count
+            Bucket = LogPayload#update_log_payload.bucket,
+            true = update_ets_op_id({LogId, Bucket, DCID}, NewBucketOp, ClockTable),
+            PrevMaxVector;
+
+        _ ->
+            PrevMaxVector
+    end,
+
     %% Update the total opid count
     true = update_ets_op_id({LogId, DCID}, NewOp, ClockTable),
     get_max_op_numbers(Rest, ClockTable, NewMaxVector).
@@ -737,51 +761,6 @@ get_ops_from_log(Log, Key, MinSnapshotTime, LoadType) ->
                 error -> []
             end,
             {ok, Ops}
-    end.
-
--spec get_commits_from_log(log()) -> {ok, list()} | {error, reason()}.
-get_commits_from_log(Log) ->
-    get_commits_from_log(Log, start, []).
-
--spec get_commits_from_log(log(), start | disk_log:continuation(), list()) -> {ok, list()} | {error, reason()}.
-get_commits_from_log(Log, Continuation, Acc) ->
-    case disk_log:chunk(Log, Continuation) of
-        {error, Reason} ->
-            {error, Reason};
-
-        eof ->
-            {ok, Acc};
-
-        {NewContinuation, NewTerms} ->
-            Commits = filter_commits(NewTerms),
-            get_commits_from_log(Log, NewContinuation, Acc ++ Commits);
-
-        {NewContinuation, NewTerms, BadBytes} ->
-            case BadBytes > 0 of
-                true ->
-                    {error, bad_bytes};
-                false ->
-                    Commits = filter_commits(NewTerms),
-                    get_commits_from_log(Log, NewContinuation, Acc ++ Commits)
-            end
-    end.
-
--spec filter_commits([{non_neg_integer(), #log_record{}}]) -> list().
-filter_commits(Terms) ->
-    filter_commits(Terms, []).
-
--spec filter_commits([{non_neg_integer(), #log_record{}}], list()) -> list().
-filter_commits([], Acc) ->
-    Acc;
-
-filter_commits([{_, LogRecord} | Terms], Acc) ->
-    #log_record{log_operation = LogOperation} = log_utilities:check_log_record_version(LogRecord),
-    #log_operation{op_type = OpType, log_payload = OpPayload} = LogOperation,
-    case OpType of
-        commit ->
-            filter_commits(Terms, [OpPayload | Acc]);
-        _ ->
-            filter_commits(Terms, Acc)
     end.
 
 %% @doc This method successively calls disk_log:chunk so all the log is read.
@@ -1025,21 +1004,31 @@ no_elements([LogId|Rest], Map) ->
     end.
 
 %% @doc open_logs: open one log per partition in which the vnode is primary
-%%      Input:  LogFile: Partition concat with the atom log
-%%                      Preflists: A list with the preflist in which
-%%                                 the vnode is involved
-%%                      Initial: Initial log identifier. Non negative
-%%                               integer. Consecutive ids for the logs.
-%%                      Map: The ongoing map of preflist->log. dict:dict()
-%%                           type.
-%%      Return:         LogsMap: Maps the  preflist and actual name of
-%%                               the log in the system. dict:dict() type.
-%%                      MaxVector: The version vector time of the last
-%%                               operation appended to the logs
--spec open_logs(string(), [preflist()], dict:dict(), cache_id(), vectorclock()) -> {dict:dict(), vectorclock()} | {error, reason()}.
-open_logs(_LogFile, [], Map, _ClockTable, MaxVector) ->
-    {Map, MaxVector};
-open_logs(LogFile, [Next|Rest], Map, ClockTable, MaxVector)->
+%%
+%%      Input:
+%%          LogFile: Partition concat with the atom log
+%%          Preflists: A list with the preflist in which the vnode is involved
+%%          ClockTable: ETS cache for operation identifiers
+%%          PVCCacheTable: ETS cache for commit operations (used in PVC)
+%%
+%%      Returns {LogsMap, MaxVector} | {error, _}, where:
+%%          LogsMap: Maps the preflist and actual name of the log in the system.
+%%
+%%          MaxVector: The version vector time of the last operation appended
+%%                     to the logs.
+%%
+%%          In addition, both ClockTable and PVCCacheTable will be updated with
+%%          entries from the opened log.
+%%
+-spec open_logs(string(), [preflist()], cache_id(), pvc_commit_log:clog()) -> {dict:dict(), vectorclock(), pvc_commit_log:clog()} | {error, reason()}.
+open_logs(LogFile, PrefLists, OpIdTable, PVCLog) ->
+    open_logs(LogFile, PrefLists, dict:new(), OpIdTable, vectorclock:new(), PVCLog).
+
+-spec open_logs(string(), [preflist()], dict:dict(), cache_id(), vectorclock(), pvc_commit_log:clog()) -> {dict:dict(), vectorclock(), pvc_commit_log:clog()} | {error, reason()}.
+open_logs(_LogFile, [], Map, _ClockTable, MaxVector, PVCLog) ->
+    {Map, MaxVector, PVCLog};
+
+open_logs(LogFile, [Next|Rest], Map, ClockTable, MaxVector, PVCLog)->
     PartitionList = log_utilities:remove_node_from_preflist(Next),
     PreflistString = string:join(
                        lists:map(fun erlang:integer_to_list/1, PartitionList), "-"),
@@ -1048,15 +1037,15 @@ open_logs(LogFile, [Next|Rest], Map, ClockTable, MaxVector)->
                 app_helper:get_env(riak_core, platform_data_dir), LogId),
     case disk_log:open([{name, LogPath}]) of
         {ok, Log} ->
-            {eof, NewMaxVector} = get_last_op_from_log(Log, start, ClockTable, MaxVector),
+            {ok, NewMaxVector, NewPVCLog} = get_last_op_from_log(Log, start, ClockTable, MaxVector, PVCLog),
             lager:debug("Opened log ~p, last op ids are ~p, max vector is ~p", [Log, ets:tab2list(ClockTable), dict:to_list(NewMaxVector)]),
             Map2 = dict:store(PartitionList, Log, Map),
-            open_logs(LogFile, Rest, Map2, ClockTable, MaxVector);
+            open_logs(LogFile, Rest, Map2, ClockTable, MaxVector, NewPVCLog);
         {repaired, Log, _, _} ->
-            {eof, NewMaxVector} = get_last_op_from_log(Log, start, ClockTable, MaxVector),
+            {ok, NewMaxVector, NewPVCLog} = get_last_op_from_log(Log, start, ClockTable, MaxVector, PVCLog),
             lager:debug("Repaired log ~p, last op ids are ~p, max vector is ~p", [Log, ets:tab2list(ClockTable), dict:to_list(NewMaxVector)]),
             Map2 = dict:store(PartitionList, Log, Map),
-            open_logs(LogFile, Rest, Map2, ClockTable, NewMaxVector);
+            open_logs(LogFile, Rest, Map2, ClockTable, NewMaxVector, NewPVCLog);
         {error, Reason} ->
             {error, Reason}
     end.
