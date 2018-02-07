@@ -38,6 +38,12 @@ run:
 	sleep 2
 	./_build/default/rel/antidote/bin/env ping
 
+ping:
+	./_build/default/rel/antidote/bin/env ping
+
+attach:
+	./_build/default/rel/antidote/bin/env attach
+
 rebuild: stop relclean rel run
 
 restart: relclean rel run
