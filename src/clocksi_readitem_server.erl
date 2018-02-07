@@ -335,10 +335,7 @@ pvc_scan_and_read(Coordinator, Key, Type, MostRecentVC, Transaction, State = #st
 }) ->
     %% Sanity check
     {Partition, _}=Node = log_utilities:get_key_partition(Key),
-    T1 = erlang:timestamp(),
     MaxVCRes = pvc_find_maxvc(Node, MostRecentVC, Transaction),
-    T2 = erlang:timestamp(),
-    lager:info("PVC pvc_find_maxvc took ~p microseconds~n", [timer:now_diff(T2, T1)]),
     case MaxVCRes of
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
