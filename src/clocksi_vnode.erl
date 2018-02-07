@@ -76,9 +76,10 @@
     prepared_tx :: cache_id(),
     committed_tx :: cache_id(),
     read_servers :: non_neg_integer(),
+    %% TODO(borja): Change this to ets
     prepared_dict :: orddict:orddict(),
-    pvc_most_recent_vc :: vectorclock_partition:partition_vc() | undefined,
-    pvc_last_prepared :: non_neg_integer() | undefined
+    atomic_pvc_mrvc :: cache_id(),
+    atomic_pvc_last_prepared :: cache_id()
 }).
 
 %%%===================================================================
@@ -274,14 +275,19 @@ get_cache_name(Partition, Base) ->
 init([Partition]) ->
     PreparedTx = open_table(Partition),
     CommittedTx = ets:new(committed_tx, [set]),
+
+    MRVC_Table = pvc_mrvc_init(),
+    LastPrep_Table = pvc_lastprep_init(Partition),
+
     {ok, #state{
         partition = Partition,
         prepared_tx = PreparedTx,
         committed_tx = CommittedTx,
         read_servers = ?READ_CONCURRENCY,
         prepared_dict = orddict:new(),
-        pvc_most_recent_vc = vectorclock_partition:new(),
-        pvc_last_prepared = 0
+
+        atomic_pvc_mrvc = MRVC_Table,
+        atomic_pvc_last_prepared = LastPrep_Table
     }}.
 
 %% @doc The table holding the prepared transactions is shared with concurrent
@@ -364,10 +370,8 @@ handle_command({check_servers_ready}, _Sender, SD0 = #state{partition = Partitio
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
-handle_command(pvc_mostrecentvc, _Sender, State = #state{
-    pvc_most_recent_vc = MostRecentVC
-}) ->
-    {reply, {ok, MostRecentVC}, State};
+handle_command(pvc_mostrecentvc, _Sender, State) ->
+    {reply, {ok, pvc_get_mrvc(State)}, State};
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
@@ -377,30 +381,30 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
     partition = Partition,
     committed_tx = ComittedTx,
     prepared_dict = PreparedTx,
-    pvc_most_recent_vc = MostRecentVC
+    atomic_pvc_mrvc = MRVC_Table
 }) ->
 
     TxnId = Transaction#transaction.txn_id,
-    NewState = case Outcome of
+    ok = case Outcome of
         {false, _} ->
             %% If the outcome is false, append an abort record to the log
-            ok = pvc_append_abort(Partition, TxnId, WriteSet),
-            State;
+            pvc_append_abort(Partition, TxnId, WriteSet);
 
         true ->
             %% Propagate commit records to the logs
+            MostRecentVC = pvc_get_mrvc(MRVC_Table),
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
+            ok = pvc_update_mrvc(Partition, MRVC_Table, NewRecentVC),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
 
             %% Update the materializer snapshot cache
             ok = pvc_update_materializer(TxnId, WriteSet, CommitVC),
 
             %% Cache the commit time for the keys
-            ok = pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC),
-            State#state{pvc_most_recent_vc = NewRecentVC}
-
+            pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC)
     end,
-    {noreply, NewState#state{
+    {noreply, State#state{
+        %% TODO(borja): Change this to ets tab
         prepared_dict = orddict:erase(TxnId, PreparedTx)
     }};
 
@@ -497,6 +501,37 @@ terminate(_Reason, #state{partition = Partition} = _State) ->
 %%% Internal Functions
 %%%===================================================================
 
+-spec pvc_lastprep_init(partition_id()) -> cache_id().
+pvc_lastprep_init(Partition) ->
+    LastPrep_Table = ets:new(pvc_seq_number, [ordered_set]),
+    true = ets:insert(LastPrep_Table, {Partition, 0}),
+    LastPrep_Table.
+
+-spec pvc_faa_lastprep(partition_id(), cache_id()) -> non_neg_integer().
+pvc_faa_lastprep(Partition, LastPrep_Table) ->
+    ets:update_counter(LastPrep_Table, Partition, 1).
+
+-spec pvc_mrvc_init() -> cache_id().
+pvc_mrvc_init() ->
+    %% Index by seq number at this partition, to get the most
+    %% up to date, use ets:last
+    MRVC_Table = ets:new(pvc_mrvc, [ordered_set]),
+    true = ets:insert(MRVC_Table, {0, vectorclock_partition:new()}),
+    MRVC_Table.
+
+-spec pvc_get_mrvc(#state{} | cache_id()) -> vectorclock().
+pvc_get_mrvc(#state{atomic_pvc_mrvc = MRVC_Table}) ->
+    pvc_get_mrvc(MRVC_Table);
+
+pvc_get_mrvc(MRVC_Table) ->
+    ets:lookup_element(MRVC_Table, ets:last(MRVC_Table), 2).
+
+-spec pvc_update_mrvc(partition_id(), cache_id(), vectorclock()) -> ok.
+pvc_update_mrvc(Partition, MRVC_Table, NewVC) ->
+    Pos = vectorclock_partition:get_partition_time(Partition, NewVC),
+    true = ets:insert(MRVC_Table, {Pos, NewVC}),
+    ok.
+
 do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
     prepared_dict = PreparedTimes,
     prepared_tx = PreparedTransactions,
@@ -551,9 +586,9 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
 
 pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
     partition = Partition,
-    pvc_last_prepared = LastPrepared,
+    committed_tx = CommittedTransactions,
     prepared_dict = PreparedTransactions,
-    committed_tx = CommittedTransactions
+    atomic_pvc_last_prepared = LastPrep_Table
 }) ->
 
 %%    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
@@ -578,13 +613,14 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
                     pvc_stale_vc
             end,
 %%            lager:info("{~p} PVC writeset disputed [~p] or tx is too fresh [~p]", [erlang:phash2(TxnId), WriteSetDisputed, TooFresh]),
-            {{false, Reason}, LastPrepared, State};
+            {{false, Reason}, ignore, State};
 
         false ->
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
-            SeqNumber = LastPrepared + 1,
-            {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
+            SeqNumber = pvc_faa_lastprep(Partition, LastPrep_Table),
+            %% TODO(borja): Change prepared_dict to ets
+            {true, SeqNumber, State#state{prepared_dict = NewPrepared}}
     end,
 %%    lager:info(
 %%        "{~p} PVC prepare ~p votes ~p with sequence number ~p",

@@ -838,7 +838,7 @@ tuple_to_cached_ops(Tuple) ->
 %% another DC, Antidote will store the updates in the operation
 %% cache of the materializer. It will also store the operations
 %% in the log, so those operations will be there when we perform
-%% the CLog scan (see pvc_find_maxvc/3 in clocksi_readitem_server)
+%% the CLog scan (see pvc_find_maxvc/2 in clocksi_readitem_server)
 %%
 -spec pvc_bypass_snapshot(clocksi_payload(), #mat_state{}) -> ok.
 pvc_bypass_snapshot(Payload, #mat_state{snapshot_cache = SnapshotCache}) ->

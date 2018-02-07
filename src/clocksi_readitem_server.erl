@@ -289,7 +289,7 @@ pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
             ok;
 
         ready ->
-            pvc_scan_and_read(Coordinator, Key, Type, MostRecentVC, Transaction, State)
+            pvc_scan_and_read(Coordinator, Key, Type, Transaction, State)
     end.
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
@@ -325,17 +325,16 @@ pvc_check_time(_, Partition, MostRecentVC, VCaggr) ->
     {fsm, pid()} | pid(),
     key(),
     type(),
-    vectorclock_partition:partition_vc(),
     #transaction{},
     #state{}
 ) -> ok.
 
-pvc_scan_and_read(Coordinator, Key, Type, MostRecentVC, Transaction, State = #state{
+pvc_scan_and_read(Coordinator, Key, Type, Transaction, State = #state{
     partition = Partition
 }) ->
     %% Sanity check
     {Partition, _}=Node = log_utilities:get_key_partition(Key),
-    MaxVCRes = pvc_find_maxvc(Node, MostRecentVC, Transaction),
+    MaxVCRes = pvc_find_maxvc(Node, Transaction),
     case MaxVCRes of
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
@@ -346,13 +345,10 @@ pvc_scan_and_read(Coordinator, Key, Type, MostRecentVC, Transaction, State = #st
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
--spec pvc_find_maxvc(
-    index_node(),
-    vectorclock_partition:partition_vc(),
-    #transaction{}) -> {ok, vectorclock_partition:partition_vc()}
-                     | {error, reason()}.
+-spec pvc_find_maxvc(index_node(), #transaction{}) -> {ok, vectorclock_partition:partition_vc()}
+                                                    | {error, reason()}.
 
-pvc_find_maxvc({CurrentPartition, _} = IndexNode, MostRecentVC, #transaction{
+pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
     %% Sanity check
     transactional_protocol = pvc,
     pvc_meta = #pvc_tx_meta{
@@ -363,6 +359,7 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, MostRecentVC, #transaction{
     }
 }) ->
 
+    {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
     %% Got to CLog anyway, verify correctness
     %% If this always holds, we can optimize here
     {ok, MaxVC} = logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr),
