@@ -602,9 +602,9 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
         .vcdep,
 
     PartitionKeys = pvc_get_partition_keys(Partition, WriteSet),
-    TooFresh = pvc_are_keys_too_fresh(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
+    StaleTx = pvc_are_keys_stale(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
 
-    {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
+    {Vote, Seq, NewState} = case WriteSetDisputed orelse StaleTx of
         true ->
             Reason = case WriteSetDisputed of
                 true ->
@@ -612,7 +612,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
                 _ ->
                     pvc_stale_vc
             end,
-%%            lager:info("{~p} PVC writeset disputed [~p] or tx is too fresh [~p]", [erlang:phash2(TxnId), WriteSetDisputed, TooFresh]),
+            lager:info("{~p} PVC writeset disputed [~p] or tx is too stale [~p]", [erlang:phash2(TxnId), WriteSetDisputed, StaleTx]),
             {{false, Reason}, ignore, State};
 
         false ->
@@ -629,15 +629,15 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
 
-%% @doc Check if any of the keys in a transaction writeset are too fresh with
+%% @doc Check if any of the keys in a transaction writeset are too stale with
 %%      respect to the most recent committed version.
 %%
--spec pvc_are_keys_too_fresh(partition_id(), list(key()), vectorclock_partition:partition_vc(), cache_id()) -> boolean().
-pvc_are_keys_too_fresh(_, [], _, _) ->
+-spec pvc_are_keys_stale(partition_id(), list(key()), vectorclock_partition:partition_vc(), cache_id()) -> boolean().
+pvc_are_keys_stale(_, [], _, _) ->
     false;
 
-pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
-    IsTooFresh = case ets:lookup(CommittedTx, Key) of
+pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
+    StaleKey = case ets:lookup(CommittedTx, Key) of
         [] ->
             false;
 
@@ -646,12 +646,12 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
             PrepareTime = vectorclock_partition:get_partition_time(SelfPartition, PrepareVC),
             CommitTime > PrepareTime
     end,
-    case IsTooFresh of
+    case StaleKey of
         true ->
             true;
 
         false ->
-            pvc_are_keys_too_fresh(SelfPartition, Keys, PrepareVC, CommittedTx)
+            pvc_are_keys_stale(SelfPartition, Keys, PrepareVC, CommittedTx)
     end.
 
 -spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
