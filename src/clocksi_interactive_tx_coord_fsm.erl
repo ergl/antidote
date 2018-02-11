@@ -981,7 +981,7 @@ pvc_prepare(State = #tx_coord_state{
     pvc = State#tx_coord_state.transactional_protocol,
     case UpdatedPartitions of
         [] ->
-%%            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
+            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
             %% No need to perform 2pc if read-only
             ok = execute_post_commit_hooks(ClientOps),
             gen_fsm:reply(From, ok),
@@ -1022,7 +1022,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
         false ->
             case Status of
                 ok ->
-%%                    lager:info("{~p} PVC prepare", [erlang:phash2(Transaction#transaction.txn_id)]),
+                    lager:info("{~p} PVC prepare", [erlang:phash2(Transaction#transaction.txn_id)]),
 
                     ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
@@ -1191,9 +1191,12 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
     end.
 
 pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
+    transaction = Tx,
     num_to_ack = NumToAck,
     return_accumulator = [{pvc, Acc}]
 }) ->
+
+    lager:info("{~p} PVC received VOTE(~p, ~p) from ~p", [erlang:phash2(Tx#transaction.txn_id), Outcome, SeqNumber, From]),
 
     case Outcome of
         {false, _} ->
@@ -1240,13 +1243,13 @@ pvc_decide(State = #tx_coord_state{
         commit_vc = CommitVC
     }}]
 }) ->
-    _TxId = Transaction#transaction.txn_id,
+    TxId = Transaction#transaction.txn_id,
     Reply = case Outcome of
         {false, Reason} ->
-%%            lager:info("{~p} PVC aborted prepare", [erlang:phash2(TxId)]),
+            lager:info("{~p} PVC aborted prepare", [erlang:phash2(TxId)]),
             {error, Reason};
         true ->
-%%            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
+            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
     ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),

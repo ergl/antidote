@@ -392,7 +392,15 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
 
         true ->
             %% Propagate commit records to the logs
+            lager:info(
+                "{~p} PVC upon decide with commitVC ~p",
+                [erlang:phash2(Transaction#transaction.txn_id), dict:to_list(CommitVC)]
+            ),
             MostRecentVC = pvc_get_mrvc(MRVC_Table),
+            lager:info(
+                "{~p} PVC upon decide fetched MRVC~p",
+                [erlang:phash2(Transaction#transaction.txn_id), dict:to_list(MostRecentVC)]
+            ),
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
             ok = pvc_update_mrvc(Partition, MRVC_Table, NewRecentVC),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
@@ -591,7 +599,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     atomic_pvc_last_prepared = LastPrep_Table
 }) ->
 
-%%    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
+    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
 
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_is_writeset_disputed(PreparedTransactions, WriteSet),
@@ -622,10 +630,10 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
             %% TODO(borja): Change prepared_dict to ets
             {true, SeqNumber, State#state{prepared_dict = NewPrepared}}
     end,
-%%    lager:info(
-%%        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
-%%        [erlang:phash2(TxnId), Partition, Vote, Seq]
-%%    ),
+    lager:info(
+        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
+        [erlang:phash2(TxnId), Partition, Vote, Seq]
+    ),
     Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
 
