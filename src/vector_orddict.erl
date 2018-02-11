@@ -113,6 +113,10 @@ get_smaller_from_id_internal(Id, Time, [{Clock, Val}|Rest]) ->
             get_smaller_from_id_internal(Id, Time, Rest)
     end.
 
+%% @doc Insert a snapshot in the vector, at the appropiate position
+%%
+%%      Snapshots are ordered from more recent to less recent, left to right
+%%
 -spec insert(vectorclock(), term(), vector_orddict()) -> vector_orddict().
 insert(Vector, Val, {List, Size}) ->
     NewSize = Size + 1,
@@ -139,6 +143,11 @@ insert_internal(Vector, Val, All, Acc) ->
             insert_internal(Vector, Val, Rest, [Version | Acc])
     end.
 
+%% @doc Insert a snapshot in the vector, if it's the biggest of all, do nothing otherwise
+%%
+%%      insert_bigger(Clock, _V, Dict) will insert {Clock, _V} if Clock > max(Dict),
+%%      or if Dict is empty.
+%%
 -spec insert_bigger(vectorclock(), term(), vector_orddict()) -> nonempty_vector_orddict().
 insert_bigger(Vector, Val, {List, Size}) ->
     insert_bigger_internal(Vector, Val, List, Size).
