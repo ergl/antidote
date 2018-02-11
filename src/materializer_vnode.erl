@@ -859,7 +859,7 @@ pvc_bypass_snapshot(Payload, #mat_state{snapshot_cache = SnapshotCache}) ->
                                       value = DownstreamOp},
 
     %% Store in an ordered fashion in the multi-version dict
-    NextSnapshotDict = vector_orddict:insert_bigger(SnapshotTime, Snapshot, SnapshotDict),
+    NextSnapshotDict = vector_orddict:insert(SnapshotTime, Snapshot, SnapshotDict),
 
     AfterGCSnapshotDict = case pvc_should_gc(NextSnapshotDict) of
         false ->
