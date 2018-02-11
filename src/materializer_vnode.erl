@@ -131,9 +131,7 @@ update(Key, DownstreamOp) ->
     ).
 
 -spec pvc_update(clocksi_payload()) -> ok | {error, reason()}.
-pvc_update(Payload = #clocksi_payload{
-    key = Key
-}) ->
+pvc_update(Payload = #clocksi_payload{key = Key}) ->
     IndexNode = log_utilities:get_key_partition(Key),
     riak_core_vnode_master:sync_command(
         IndexNode,
@@ -843,14 +841,10 @@ tuple_to_cached_ops(Tuple) ->
 %% the CLog scan (see pvc_find_maxvc/3 in clocksi_readitem_server)
 %%
 -spec pvc_bypass_snapshot(clocksi_payload(), #mat_state{}) -> ok.
-pvc_bypass_snapshot(Payload, #mat_state{
-    snapshot_cache = SnapshotCache
-}) ->
-    #clocksi_payload{
-        key = Key,
-        snapshot_time = SnapshotTime,
-        op_param = DownstreamOp
-    } = Payload,
+pvc_bypass_snapshot(Payload, #mat_state{snapshot_cache = SnapshotCache}) ->
+    #clocksi_payload{key = Key,
+                     op_param = DownstreamOp,
+                     snapshot_time = SnapshotTime} = Payload,
 
     SnapshotDict = case ets:lookup(SnapshotCache, Key) of
         [] ->
@@ -860,11 +854,10 @@ pvc_bypass_snapshot(Payload, #mat_state{
             PrevSnapshotDict
     end,
 
-    Snapshot = #materialized_snapshot{
-        %% Placeholder value, we don't use this field in pvc
-        last_op_id = 0,
-        value = DownstreamOp
-    },
+    %% last_op_id is a placeholder value, we don't use this field in pvc
+    Snapshot = #materialized_snapshot{last_op_id = 0,
+                                      value = DownstreamOp},
+
     %% Store in an ordered fashion in the multi-version dict
     NextSnapshotDict = vector_orddict:insert_bigger(SnapshotTime, Snapshot, SnapshotDict),
 
