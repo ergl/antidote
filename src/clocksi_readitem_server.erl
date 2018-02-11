@@ -359,22 +359,15 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
     }
 }) ->
 
-    {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
     %% Got to CLog anyway, verify correctness
     %% If this always holds, we can optimize here
     {ok, MaxVC} = logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr),
-    true = case sets:size(HasRead) of
-        0 ->
-            %% If this is the first partition we read, we should get the current MRVC
-            IsEq = vectorclock:eq(MaxVC, MostRecentVC),
-            lager:info("This is the first read, both should be equal: ~p (~p||~p)", [IsEq, dict:to_list(MaxVC), dict:to_list(MostRecentVC)]),
-            IsEq;
-        _ ->
-            %% Otherwise, the given MaxVC should be less or equal
-            IsLe = vectorclock:le(MaxVC, MostRecentVC),
-            lager:info("In another partition, MaxVC should be <= than MRVC: ~p", [IsLe]),
-            IsLe
-    end,
+    {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
+
+    %% If this is the first partition we read, we should get the current MRVC
+    %% If sets:size(HasRead) == 0 then pick MostRecentVC instead
+    true = vectorclock:le(MaxVC, MostRecentVC),
+    lager:info("Invariant: ~p =< ~p", [dict:to_list(MaxVC), dict:to_list(MostRecentVC)]),
 
     %% If the selected time is too old, we should abort the read
     MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
