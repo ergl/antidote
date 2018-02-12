@@ -392,10 +392,6 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
 
         true ->
             %% Propagate commit records to the logs
-            lager:info(
-                "{~p} PVC upon decide with commitVC ~p",
-                [erlang:phash2(Transaction#transaction.txn_id), dict:to_list(CommitVC)]
-            ),
             MostRecentVC = pvc_get_mrvc(MRVC_Table),
             lager:info(
                 "{~p} PVC upon decide fetched MRVC~p",
@@ -625,6 +621,10 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 
         false ->
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
+            lager:info(
+                "{~p} PVC CommitQueue.put(~p, <~p, ~p>) := ~p",
+                [erlang:phash2(TxnId), erlang:phash2(TxnId), dict:to_list(PrepareVC), WriteSet, orddict:to_list(NewPrepared)]
+            ),
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
             SeqNumber = pvc_faa_lastprep(Partition, LastPrep_Table),
             %% TODO(borja): Change prepared_dict to ets
