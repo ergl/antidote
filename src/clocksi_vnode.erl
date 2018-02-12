@@ -391,6 +391,10 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
             pvc_append_abort(Partition, TxnId, WriteSet);
 
         true ->
+            %% First, apply update to the VLog,
+            %% updating the materializer snapshot cache
+            ok = pvc_vlog_apply(TxnId, WriteSet, CommitVC),
+
             %% Propagate commit records to the logs
             MostRecentVC = pvc_get_mrvc(MRVC_Table),
             lager:info(
@@ -400,9 +404,6 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
             NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
             ok = pvc_update_mrvc(Partition, MRVC_Table, NewRecentVC),
             ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
-
-            %% Update the materializer snapshot cache
-            ok = pvc_update_materializer(TxnId, WriteSet, CommitVC),
 
             %% Cache the commit time for the keys
             pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC)
@@ -755,15 +756,13 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
     end, ordsets:new(), WriteSet).
 
 %% @doc Update the materializer cache with the newest snapshots (VLog)
--spec pvc_update_materializer(txid(), list(), vectorclock_partition:partition_vc()) -> ok | error.
-pvc_update_materializer(TxnId, WriteSet, CommitVC) ->
+-spec pvc_vlog_apply(txid(), list(), vectorclock_partition:partition_vc()) -> ok | error.
+pvc_vlog_apply(TxnId, WriteSet, CommitVC) ->
+    DCId = dc_meta_data_utilities:get_my_dc_id(),
+
     Update = fun({Key, Type, Op}, Acc) ->
-        DCId = dc_meta_data_utilities:get_my_dc_id(),
-        {Partition, _} = log_utilities:get_key_partition(Key),
-        CommitTime = vectorclock_partition:get_partition_time(
-            Partition,
-            CommitVC
-        ),
+        {KeyPartition, _} = log_utilities:get_key_partition(Key),
+        CommitTime = vectorclock_partition:get_partition_time(KeyPartition, CommitVC),
 
         {ok, DownstreamOp} = Type:downstream(Op, Type:new()),
 
