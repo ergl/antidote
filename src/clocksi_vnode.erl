@@ -422,16 +422,26 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
     {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(CQueue),
     ok = case ReadyTx of
         [] ->
+%%            lager:info("[~p] PVC no ready at head", [Partition]),
             %% No transactions to process
             ok;
 
         Entries ->
             lists:foreach(fun({Id, WS, VC}) ->
+%%                lager:info(
+%%                    "[~p] PVC found entry ~p with time ~p",
+%%                    [Partition, erlang:phash2(Id), dict:to_list(VC)]
+%%                ),
+
                 %% First, apply update to the VLog (materializer)
                 ok = pvc_vlog_apply(Id, WS, VC),
 
                 %% Now, update MRVC with the max of the old value and our VC
                 PrevMRVC = pvc_get_mrvc(MRVC_Table),
+%%                lager:info(
+%%                    "[~p] PVC fetched MRVC ~p",
+%%                    [Partition, dict:to_list(PrevMRVC)]
+%%                ),
                 MRVC = vectorclock_partition:max([VC, PrevMRVC]),
                 ok = pvc_update_mrvc(Partition, MRVC_Table, MRVC),
 
@@ -621,7 +631,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     atomic_pvc_last_prepared = LastPrep_Table
 }) ->
 
-    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
+%%    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
 
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_commit_queue:contains_disputed(WriteSet, CommitQueue),
@@ -649,13 +659,14 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
             SeqNumber = pvc_faa_lastprep(Partition, LastPrep_Table),
 
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
+%%            lager:info("{~p} PVC prepare enqueue itself", [erlang:phash2(Transaction#transaction.txn_id)]),
             NewCommitQueue = pvc_commit_queue:enqueue(TxnId, WriteSet, CommitQueue),
             {true, SeqNumber, State#state{pvc_commitqueue = NewCommitQueue}}
     end,
-    lager:info(
-        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
-        [erlang:phash2(TxnId), Partition, Vote, Seq]
-    ),
+%%    lager:info(
+%%        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
+%%        [erlang:phash2(TxnId), Partition, Vote, Seq]
+%%    ),
     Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
 

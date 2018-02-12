@@ -367,7 +367,7 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
     %% If this is the first partition we read, we should get the current MRVC
     %% If sets:size(HasRead) == 0 then pick MostRecentVC instead
     true = vectorclock:le(MaxVC, MostRecentVC),
-    lager:info("Invariant: ~p =< ~p", [dict:to_list(MaxVC), dict:to_list(MostRecentVC)]),
+%%    lager:info("Invariant: ~p =< ~p", [dict:to_list(MaxVC), dict:to_list(MostRecentVC)]),
 
     %% If the selected time is too old, we should abort the read
     MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),

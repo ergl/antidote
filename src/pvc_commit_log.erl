@@ -45,7 +45,7 @@ new_at(AtId) ->
 -spec insert(vectorclock_partition:partition_vc(), clog()) -> clog().
 insert(VC, {Id, Tree}) ->
     Key = vectorclock_partition:get_partition_time(Id, VC),
-    lager:info("[~p] Inserting ~p at ~p", [Id, dict:to_list(VC), Key]),
+%%    lager:info("[~p] Inserting ~p at ~p", [Id, dict:to_list(VC), Key]),
     {Id, gb_trees:insert(Key, VC, Tree)}.
 
 %% Given a VC and a list of indexes to check, get the maximum entry in the log
@@ -65,10 +65,10 @@ get_smaller_from_dots([], _, {_, Tree}) ->
 get_smaller_from_dots(Dots, VC, {_, Tree}) ->
     case catch get_smaller_from_dots(Dots, VC, gb_trees:balance(Tree), vectorclock_partition:new()) of
         {found, Max} ->
-            lager:info("get_smaller_from_dots found ~p", [dict:to_list(Max)]),
+%%            lager:info("get_smaller_from_dots found ~p", [dict:to_list(Max)]),
             Max;
         Default ->
-            lager:info("get_smaller_from_dots defaulted ~p", [dict:to_list(Default)]),
+%%            lager:info("get_smaller_from_dots defaulted ~p", [dict:to_list(Default)]),
             Default
     end.
 
@@ -79,11 +79,11 @@ get_smaller_from_dots(Dots, VC, Tree, Acc) ->
     case get_root(Tree) of
         none ->
             Acc;
-        {K, Value} ->
-            lager:info("smaller_from_dots comparing at ~p", [K]),
+        {_K, Value} ->
+%%            lager:info("smaller_from_dots comparing at ~p", [K]),
             case vc_ge_for_dots(Dots, Value, VC) of
                 false ->
-                    lager:info("Too big, going left"),
+%%                    lager:info("Too big, going left"),
                     %% Given VC is too large, try in a previous entry
                     get_smaller_from_dots(Dots, VC, left(Tree), Acc);
                 true ->
@@ -93,10 +93,10 @@ get_smaller_from_dots(Dots, VC, Tree, Acc) ->
                     Selected = vectorclock:max([Acc, Value]),
                     case vectorclock:eq(Selected, Acc) of
                         true ->
-                            lager:info("Too small, raise found"),
+%%                            lager:info("Too small, raise found"),
                             throw({found, Selected});
                         false ->
-                            lager:info("Small enough, acc and going rigth"),
+%%                            lager:info("Small enough, acc and going rigth"),
                             get_smaller_from_dots(Dots, VC, right(Tree), Selected)
                     end
             end
