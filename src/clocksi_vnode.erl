@@ -443,7 +443,7 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
 %%                    [Partition, dict:to_list(PrevMRVC)]
 %%                ),
                 MRVC = vectorclock_partition:max([VC, PrevMRVC]),
-                ok = pvc_update_mrvc(Partition, MRVC_Table, MRVC),
+                ok = pvc_update_mrvc(MRVC_Table, MRVC),
 
                 %% Store commits, update CLog
                 ok = pvc_append_commits(Partition, Id, WS, VC, MRVC),
@@ -553,10 +553,8 @@ pvc_faa_lastprep(Partition, LastPrep_Table) ->
 
 -spec pvc_mrvc_init() -> cache_id().
 pvc_mrvc_init() ->
-    %% Index by seq number at this partition, to get the most
-    %% up to date, use ets:last
-    MRVC_Table = ets:new(pvc_mrvc, [ordered_set]),
-    true = ets:insert(MRVC_Table, {0, vectorclock_partition:new()}),
+    MRVC_Table = ets:new(pvc_mrvc, [set]),
+    true = ets:insert(MRVC_Table, {mrvc, vectorclock_partition:new()}),
     MRVC_Table.
 
 -spec pvc_get_mrvc(#state{} | cache_id()) -> vectorclock().
@@ -564,12 +562,11 @@ pvc_get_mrvc(#state{atomic_pvc_mrvc = MRVC_Table}) ->
     pvc_get_mrvc(MRVC_Table);
 
 pvc_get_mrvc(MRVC_Table) ->
-    ets:lookup_element(MRVC_Table, ets:last(MRVC_Table), 2).
+    ets:lookup_element(MRVC_Table, mrvc, 2).
 
--spec pvc_update_mrvc(partition_id(), cache_id(), vectorclock()) -> ok.
-pvc_update_mrvc(Partition, MRVC_Table, NewVC) ->
-    Pos = vectorclock_partition:get_partition_time(Partition, NewVC),
-    true = ets:insert(MRVC_Table, {Pos, NewVC}),
+-spec pvc_update_mrvc(cache_id(), vectorclock()) -> ok.
+pvc_update_mrvc(MRVC_Table, NewVC) ->
+    true = ets:update_element(MRVC_Table, mrvc, {2, NewVC}),
     ok.
 
 do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
