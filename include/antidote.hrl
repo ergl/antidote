@@ -358,5 +358,8 @@
     partition :: partition_id(),
     ops_cache :: cache_id(),
     snapshot_cache :: cache_id(),
-    is_ready :: boolean()
+    is_ready :: boolean(),
+
+    %% PVC only
+    pvc_vlog_cache :: cache_id() | undefined
 }).

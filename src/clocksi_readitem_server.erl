@@ -401,8 +401,7 @@ pvc_perform_read(Coordinator, Key, Type, MaxVC, #state{mat_state=MatState}) ->
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
 
-        {ok, Snapshot, CommitVC} ->
-            Value = Type:value(Snapshot),
+        {ok, Value, CommitVC} ->
             CoordReturn = {pvc_readreturn, {Key, Value, CommitVC, MaxVC}},
 
             %% TODO(borja): Check when is this triggered

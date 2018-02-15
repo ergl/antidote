@@ -794,12 +794,13 @@ pvc_vlog_apply(TxnId, WriteSet, CommitVC) ->
         CommitTime = vectorclock_partition:get_partition_time(KeyPartition, CommitVC),
 
         {ok, DownstreamOp} = Type:downstream(Op, Type:new()),
+        Value = Type:value(DownstreamOp),
 
         Payload = #clocksi_payload{
             txid = TxnId,
             key = Key,
             type = Type,
-            op_param = DownstreamOp,
+            op_param = Value,
             snapshot_time = CommitVC,
             commit_time = {DCId, CommitTime}
         },
