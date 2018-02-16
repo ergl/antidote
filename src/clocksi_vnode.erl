@@ -79,8 +79,7 @@
     read_servers :: non_neg_integer(),
     prepared_dict :: orddict:orddict(),
 
-    atomic_pvc_mrvc :: cache_id(),
-    atomic_pvc_last_prepared :: cache_id(),
+    pvc_atomic_state :: cache_id(),
     pvc_commitqueue :: pvc_commit_queue:cqueue()
 }).
 
@@ -282,9 +281,8 @@ init([Partition]) ->
     PreparedTx = open_table(Partition),
     CommittedTx = ets:new(committed_tx, [set]),
 
-    MRVC_Table = pvc_mrvc_init(),
+    PVCTable = pvc_atomic_state_init(),
     CommitQueue = pvc_commit_queue:new(),
-    LastPrep_Table = pvc_lastprep_init(Partition),
 
     {ok, #state{
         partition = Partition,
@@ -293,9 +291,8 @@ init([Partition]) ->
         read_servers = ?READ_CONCURRENCY,
         prepared_dict = orddict:new(),
 
-        atomic_pvc_mrvc = MRVC_Table,
-        pvc_commitqueue = CommitQueue,
-        atomic_pvc_last_prepared = LastPrep_Table
+        pvc_atomic_state = PVCTable,
+        pvc_commitqueue = CommitQueue
     }}.
 
 %% @doc The table holding the prepared transactions is shared with concurrent
@@ -416,7 +413,7 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
     partition = Partition,
     pvc_commitqueue = CQueue,
     committed_tx = CommittedTx,
-    atomic_pvc_mrvc = MRVC_Table
+    pvc_atomic_state = PVCState
 }) ->
     %% TODO(borja): Don't dequeue just yet, but wait until we're done here?
     {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(CQueue),
@@ -437,13 +434,13 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
                 ok = pvc_vlog_apply(Id, WS, VC),
 
                 %% Now, update MRVC with the max of the old value and our VC
-                PrevMRVC = pvc_get_mrvc(MRVC_Table),
                 lager:info(
                     "[~p] PVC fetched MRVC ~p",
                     [Partition, dict:to_list(PrevMRVC)]
                 ),
+                PrevMRVC = pvc_get_mrvc(PVCState),
                 MRVC = vectorclock_partition:max([VC, PrevMRVC]),
-                ok = pvc_update_mrvc(MRVC_Table, MRVC),
+                ok = pvc_update_mrvc(PVCState, MRVC),
 
                 %% Store commits, update CLog
                 ok = pvc_append_commits(Partition, Id, WS, VC, MRVC),
@@ -541,32 +538,26 @@ terminate(_Reason, #state{partition = Partition} = _State) ->
 %%% Internal Functions
 %%%===================================================================
 
--spec pvc_lastprep_init(partition_id()) -> cache_id().
-pvc_lastprep_init(Partition) ->
-    LastPrep_Table = ets:new(pvc_seq_number, [ordered_set]),
-    true = ets:insert(LastPrep_Table, {Partition, 0}),
-    LastPrep_Table.
+-spec pvc_atomic_state_init() -> cache_id().
+pvc_atomic_state_init() ->
+    PVCTable = ets:new(pvc_state_table, [set]),
+    true = ets:insert(PVCTable, [{seq_number, 0}, {mrvc, vectorclock:new()}]),
+    PVCTable.
 
--spec pvc_faa_lastprep(partition_id(), cache_id()) -> non_neg_integer().
-pvc_faa_lastprep(Partition, LastPrep_Table) ->
-    ets:update_counter(LastPrep_Table, Partition, 1).
-
--spec pvc_mrvc_init() -> cache_id().
-pvc_mrvc_init() ->
-    MRVC_Table = ets:new(pvc_mrvc, [set]),
-    true = ets:insert(MRVC_Table, {mrvc, vectorclock_partition:new()}),
-    MRVC_Table.
+-spec pvc_faa_lastprep(cache_id()) -> non_neg_integer().
+pvc_faa_lastprep(PVCTable) ->
+    ets:update_counter(PVCTable, seq_number, 1).
 
 -spec pvc_get_mrvc(#state{} | cache_id()) -> vectorclock().
-pvc_get_mrvc(#state{atomic_pvc_mrvc = MRVC_Table}) ->
-    pvc_get_mrvc(MRVC_Table);
+pvc_get_mrvc(#state{pvc_atomic_state = PVCTable}) ->
+    pvc_get_mrvc(PVCTable);
 
-pvc_get_mrvc(MRVC_Table) ->
-    ets:lookup_element(MRVC_Table, mrvc, 2).
+pvc_get_mrvc(PVCTable) ->
+    ets:lookup_element(PVCTable, mrvc, 2).
 
 -spec pvc_update_mrvc(cache_id(), vectorclock()) -> ok.
-pvc_update_mrvc(MRVC_Table, NewVC) ->
-    true = ets:update_element(MRVC_Table, mrvc, {2, NewVC}),
+pvc_update_mrvc(PVCTable, NewVC) ->
+    true = ets:update_element(PVCTable, mrvc, {2, NewVC}),
     ok.
 
 do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
@@ -624,8 +615,9 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
 pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
     partition = Partition,
     committed_tx = CommittedTransactions,
-    pvc_commitqueue = CommitQueue,
-    atomic_pvc_last_prepared = LastPrep_Table
+
+    pvc_atomic_state = PVCState,
+    pvc_commitqueue = CommitQueue
 }) ->
 
 %%    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
@@ -653,7 +645,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
             {{false, Reason}, ignore, State};
 
         false ->
-            SeqNumber = pvc_faa_lastprep(Partition, LastPrep_Table),
+            SeqNumber = pvc_faa_lastprep(PVCState),
 
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
 %%            lager:info("{~p} PVC prepare enqueue itself", [erlang:phash2(Transaction#transaction.txn_id)]),
