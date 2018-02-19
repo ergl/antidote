@@ -820,7 +820,7 @@ pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
 
     %% TODO(borja): Implement GC in the future
     NextVersionLog = pvc_version_log:insert(SnapshotTime, DownstreamOp, VersionLog),
-    lager:info("VLog.apply(~p, ~p)", [Key, pvc_version_log:to_list(NextVersionLog)]),
+%%    lager:info("VLog.apply(~p, ~p)", [Key, pvc_version_log:to_list(NextVersionLog)]),
     true = ets:insert(VLogCache, {Key, NextVersionLog}),
     ok.
 

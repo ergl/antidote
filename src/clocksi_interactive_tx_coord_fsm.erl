@@ -981,7 +981,7 @@ pvc_prepare(State = #tx_coord_state{
     pvc = State#tx_coord_state.transactional_protocol,
     case UpdatedPartitions of
         [] ->
-            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
+%%            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
             %% No need to perform 2pc if read-only
             ok = execute_post_commit_hooks(ClientOps),
             gen_fsm:reply(From, ok),
@@ -1247,7 +1247,6 @@ pvc_decide(State = #tx_coord_state{
     Reply = case Outcome of
         {false, Reason} ->
 %%            lager:info("{~p} PVC aborted prepare", [erlang:phash2(TxId)]),
-            lager:info("PVC aborted prepare"),
             {error, Reason};
         true ->
 %%            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
