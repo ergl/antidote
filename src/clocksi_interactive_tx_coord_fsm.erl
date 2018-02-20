@@ -538,8 +538,8 @@ async_log_propagation(Partition, TxId, Key, Type, Record) ->
         log_payload=#update_log_payload{key=Key, type=Type, op=Record}
     },
 
-    LogId = ?LOG_UTIL:get_logid_from_key(Key),
-    ?LOGGING_VNODE:asyn_append(Partition, LogId, LogRecord, {fsm, undefined, self()}).
+    LogId = log_utilities:get_logid_from_key(Key),
+    logging_vnode:asyn_append(Partition, LogId, LogRecord, {fsm, undefined, self()}).
 
 %% @doc Contact the leader computed in the prepare state for it to execute the
 %%      operation, wait for it to finish (synchronous) and go to the prepareOP
@@ -613,7 +613,7 @@ pvc_read(Objects, Sender, State = #tx_coord_state{
         UpdatedOp = pvc_key_was_updated(ClientOps, Key),
         ok = case UpdatedOp of
             false ->
-                Partition = ?LOG_UTIL:get_key_partition(Key),
+                Partition = log_utilities:get_key_partition(Key),
                 %% If the key has never been updated, request the most
                 %% recent compatible version of the key to the holding
                 %% partition.
@@ -736,7 +736,7 @@ pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
     {NewUpdatedPartitions, UpdatedOps}.
 
 pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
-    Partition = ?LOG_UTIL:get_key_partition(Key),
+    Partition = log_utilities:get_key_partition(Key),
     case lists:keyfind(Partition, 1, UpdatedPartitions) of
         false ->
             [{Partition, [Update]} | UpdatedPartitions];
@@ -909,7 +909,7 @@ pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{
     }
 }) ->
 
-    {Partition, _Node} = ?LOG_UTIL:get_key_partition(Key),
+    {Partition, _Node} = log_utilities:get_key_partition(Key),
     NewHasRead = sets:add_element(Partition, HasRead),
 
     NewVCdep = vectorclock_partition:max([TVCdep, VCdep]),
@@ -992,7 +992,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
                 ok ->
 %%                    lager:info("{~p} PVC prepare", [erlang:phash2(Transaction#transaction.txn_id)]),
 
-                    ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
+                    ok = clocksi_vnode:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
 
                     InitialCommitVC = Transaction#transaction
@@ -1015,7 +1015,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
 -spec pvc_propagate_updates(tx(), list({key(), type(), op()})) -> ok.
 pvc_propagate_updates(#transaction{txn_id=TxId}, Ops) ->
     lists:foreach(fun({Key, Type, Update}) ->
-        Partition = ?LOG_UTIL:get_key_partition(Key),
+        Partition = log_utilities:get_key_partition(Key),
         DownstreamOp = Type:downstream(Update, Type:new()),
         ok = async_log_propagation(
             Partition,
@@ -1220,7 +1220,7 @@ pvc_decide(State = #tx_coord_state{
 %%            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
-    ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
+    ok = clocksi_vnode:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
     gen_fsm:reply(From, Reply),
     {stop, normal, State}.
 
@@ -1350,7 +1350,7 @@ abort(CoordState = #tx_coord_state{from = From,
                                    updated_partitions = UpdatedPartitions}) ->
 
 %%    lager:info("PVC Self-initiated abort"),
-    ok = ?CLOCKSI_VNODE:abort(UpdatedPartitions, Transaction),
+    ok = clocksi_vnode:abort(UpdatedPartitions, Transaction),
     AbortMsg = case AbortReason of
         [{pvc_msg, Msg}] ->
             Msg;
