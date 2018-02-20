@@ -445,7 +445,7 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
                 ok = pvc_append_commits(Partition, Id, WS, VC, MRVC),
 
                 %% Cache last commit time for the WS keys (for stale VC check)
-                ok = pvc_store_key_commitvc(Partition, CommittedTx, WS, VC)
+                ok = pvc_store_key_commitvc(CommittedTx, WS, VC)
             end, Entries)
     end,
     {noreply, State#state{pvc_commitqueue = NewQueue}};
@@ -629,7 +629,8 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
         .time#pvc_time
         .vcdep,
 
-    PartitionKeys = pvc_get_partition_keys(Partition, WriteSet),
+    %% Get the keys in the writeset
+    PartitionKeys = [Key || {Key, _, _} <- WriteSet],
     StaleTx = pvc_are_keys_stale(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse StaleTx of
@@ -683,10 +684,9 @@ pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
             pvc_are_keys_stale(SelfPartition, Keys, PrepareVC, CommittedTx)
     end.
 
--spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
-pvc_store_key_commitvc(SelfPartition, CommittedTx, WriteSet, CommitVC) ->
-    Keys = pvc_get_partition_keys(SelfPartition, WriteSet),
-    Objects = [{Key, CommitVC} || Key <- Keys],
+-spec pvc_store_key_commitvc(cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
+pvc_store_key_commitvc(CommittedTx, WriteSet, CommitVC) ->
+    Objects = [{Key, CommitVC} || {Key, _, _} <- WriteSet],
     true = ets:insert(CommittedTx, Objects),
     ok.
 
@@ -808,19 +808,6 @@ pvc_vlog_apply(TxnId, WriteSet, CommitVC) ->
         false ->
             ok
     end.
-
-%% @doc Get the list of keys that are owned by this partition.
--spec pvc_get_partition_keys(partition_id(), list(key())) -> list(key()).
-pvc_get_partition_keys(SelfPartition, WriteSet) ->
-    lists:filtermap(fun({Key, _, _}) ->
-        {Partition, _} = log_utilities:get_key_partition(Key),
-        case Partition of
-            SelfPartition ->
-                {true, Key};
-            _ ->
-                false
-        end
-    end, WriteSet).
 
 prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict) ->
     TxId = Transaction#transaction.txn_id,
