@@ -729,21 +729,14 @@ pvc_update(UpdateOps, Sender, State) ->
             abort(NewCoordState);
 
         _ ->
-            IsStatic = NewCoordState#tx_coord_state.is_static,
-            case IsStatic of
-                true ->
-                    %% Shouldn't happen anyway, static transactions are unsupported for PVC
-                    prepare(NewCoordState);
-                false ->
-%%                    FinalOps = NewCoordState#tx_coord_state.client_ops,
-%%                    PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
-%%                    lager:info(
-%%                        "{~p} PVC update with ops ~p",
-%%                        [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
-%%                    ),
-                    gen_fsm:reply(Sender, ok),
-                    {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}
-            end
+            %%FinalOps = NewCoordState#tx_coord_state.client_ops,
+            %%PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
+            %%lager:info(
+            %%    "{~p} PVC update with ops ~p",
+            %%    [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
+            %%),
+            gen_fsm:reply(Sender, ok),
+            {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}
     end.
 
 pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
