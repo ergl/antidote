@@ -532,11 +532,11 @@ append_updated_partitions(UpdatedPartitions, WriteSet, Partition, Update) ->
 
 -spec async_log_propagation(index_node(), txid(), key(), type(), op()) -> ok.
 async_log_propagation(Partition, TxId, Key, Type, Record) ->
-    LogRecord = #log_operation{
-        op_type=update,
-        tx_id=TxId,
-        log_payload=#update_log_payload{key=Key, type=Type, op=Record}
-    },
+    LogRecord = #log_operation{tx_id = TxId,
+                               op_type = update,
+                               log_payload = #update_log_payload{key=Key,
+                                                                 type=Type,
+                                                                 op=Record}},
 
     LogId = log_utilities:get_logid_from_key(Key),
     logging_vnode:asyn_append(Partition, LogId, LogRecord, {fsm, undefined, self()}).
@@ -950,7 +950,7 @@ pvc_prepare(State = #tx_coord_state{
     pvc = State#tx_coord_state.transactional_protocol,
     case UpdatedPartitions of
         [] ->
-%%            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
+            %%lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
             %% No need to perform 2pc if read-only
             gen_fsm:reply(From, ok),
             {stop, normal, State};
@@ -1017,13 +1017,11 @@ pvc_propagate_updates(#transaction{txn_id=TxId}, Ops) ->
     lists:foreach(fun({Key, Type, Update}) ->
         Partition = log_utilities:get_key_partition(Key),
         DownstreamOp = Type:downstream(Update, Type:new()),
-        ok = async_log_propagation(
-            Partition,
-            TxId,
-            Key,
-            Type,
-            DownstreamOp
-        )
+        ok = async_log_propagation(Partition,
+                                   TxId,
+                                   Key,
+                                   Type,
+                                   DownstreamOp)
     end, Ops).
 
 %% @doc this function sends a prepare message to all updated partitions and goes
