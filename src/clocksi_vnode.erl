@@ -104,7 +104,6 @@ read_data_item(Node, TxId, Key, Type, Updates) ->
     end.
 
 async_read_data_item(Node, Transaction, Key, Type) ->
-    %% TODO(borja): Move Coordinator={fsm, self()} to the caller
     clocksi_readitem_server:async_read_data_item(
         Node,
         Key,
