@@ -891,7 +891,7 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
             {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0}}
     end;
 
-receive_read_objects_result({error, abort}, CoordState = #tx_coord_state{
+receive_read_objects_result({error, maxvc_bad_vc}, CoordState = #tx_coord_state{
 %%    transaction=Transaction,
     transactional_protocol=pvc
 }) ->

@@ -380,7 +380,7 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
             {ok, MaxVC};
 
         false ->
-            {error, abort}
+            {error, maxvc_bad_vc}
     end.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
