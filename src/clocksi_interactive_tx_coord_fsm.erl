@@ -710,54 +710,30 @@ pvc_update(UpdateOps, Sender, State) ->
         client_ops=ClientOps,
         updated_partitions=UpdatedPartitions
     }) ->
-        case pvc_perform_update(Op, UpdatedPartitions, ClientOps) of
-            {error, _Reason}=Err ->
-                AccState#tx_coord_state{return_accumulator=Err};
-
-            {NewUpdatedPartitions, NewClientOps} ->
-                AccState#tx_coord_state{
-                    client_ops=NewClientOps,
-                    updated_partitions=NewUpdatedPartitions
-                }
-        end
+        {NewUpdatedPartitions, NewClientOps} = pvc_perform_update(Op, UpdatedPartitions, ClientOps),
+        AccState#tx_coord_state{
+            client_ops=NewClientOps,
+            updated_partitions=NewUpdatedPartitions
+        }
     end,
 
     NewCoordState = lists:foldl(PerformUpdates, State, UpdateOps),
-    AccRes = NewCoordState#tx_coord_state.return_accumulator,
-    case AccRes of
-        {error, _} ->
-            abort(NewCoordState);
-
-        _ ->
-            %%FinalOps = NewCoordState#tx_coord_state.client_ops,
-            %%PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
-            %%lager:info(
-            %%    "{~p} PVC update with ops ~p",
-            %%    [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
-            %%),
-            gen_fsm:reply(Sender, ok),
-            {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}
-    end.
+    %%FinalOps = NewCoordState#tx_coord_state.client_ops,
+    %%PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
+    %%lager:info(
+    %%    "{~p} PVC update with ops ~p",
+    %%    [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
+    %%),
+    gen_fsm:reply(Sender, ok),
+    {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}.
 
 pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
-    %% Sanity check, already disallowed at the user level
-    {Key, Type=antidote_crdt_lwwreg, Update} = Op,
-
-    case antidote_hooks:execute_pre_commit_hook(Key, Type, Update) of
-        {error, Reason} ->
-            lager:debug("Execute pre-commit hook failed ~p", [Reason]),
-            {error, Reason};
-
-        {Key, Type, _PostHookUpdate}=GeneratedUpdate ->
-
-            %% Don't read snapshot, will do that at commit time
-            %% As we only allow lww-registers, we don't need to keep track of all
-            %% generated updates, so we just keep the most recent one.
-            NewUpdatedPartitions = pvc_swap_writeset(UpdatedPartitions, GeneratedUpdate),
-            UpdatedOps = pvc_swap_operations(ClientOps, GeneratedUpdate),
-
-            {NewUpdatedPartitions, UpdatedOps}
-    end.
+    %% Don't read snapshot, will do that at commit time
+    %% As we only allow lww-registers, we don't need to keep track of all
+    %% generated updates, so we just keep the most recent one.
+    NewUpdatedPartitions = pvc_swap_writeset(UpdatedPartitions, Op),
+    UpdatedOps = pvc_swap_operations(ClientOps, Op),
+    {NewUpdatedPartitions, UpdatedOps}.
 
 pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
     Partition = ?LOG_UTIL:get_key_partition(Key),
@@ -976,7 +952,6 @@ pvc_prepare(State = #tx_coord_state{
         [] ->
 %%            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
             %% No need to perform 2pc if read-only
-            ok = execute_post_commit_hooks(ClientOps),
             gen_fsm:reply(From, ok),
             {stop, normal, State};
 
