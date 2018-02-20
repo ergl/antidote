@@ -892,10 +892,10 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
     end;
 
 receive_read_objects_result({error, maxvc_bad_vc}, CoordState = #tx_coord_state{
-%%    transaction=Transaction,
+    transaction=Transaction,
     transactional_protocol=pvc
 }) ->
-%%    lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
+    lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
     abort(CoordState#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]}).
 
 -spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
@@ -1347,7 +1347,7 @@ abort(CoordState = #tx_coord_state{from = From,
                                    return_accumulator = AbortReason,
                                    updated_partitions = UpdatedPartitions}) ->
 
-%%    lager:info("PVC Self-initiated abort"),
+    lager:info("PVC Self-initiated abort"),
     ok = clocksi_vnode:abort(UpdatedPartitions, Transaction),
     AbortMsg = case AbortReason of
         [{pvc_msg, Msg}] ->
