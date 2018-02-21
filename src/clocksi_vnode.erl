@@ -382,7 +382,7 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
 
     TxnId = Transaction#transaction.txn_id,
     NewState = case Outcome of
-        false ->
+        {false, _} ->
             %% If the outcome is false, append an abort record to the log
             ok = pvc_append_abort(Partition, TxnId, WriteSet),
             State;
@@ -571,8 +571,14 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
         true ->
+            Reason = case WriteSetDisputed of
+                true ->
+                    pvc_conflict;
+                _ ->
+                    pvc_stale_vc
+            end,
 %%            lager:info("{~p} PVC writeset disputed [~p] or tx is too fresh [~p]", [erlang:phash2(TxnId), WriteSetDisputed, TooFresh]),
-            {false, LastPrepared, State};
+            {{false, Reason}, LastPrepared, State};
 
         false ->
             NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),

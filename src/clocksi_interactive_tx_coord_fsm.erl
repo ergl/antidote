@@ -927,7 +927,7 @@ receive_read_objects_result({error, abort}, CoordState = #tx_coord_state{
     transactional_protocol=pvc
 }) ->
 %%    lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
-    abort(CoordState).
+    abort(CoordState#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]}).
 
 -spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
 pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{
@@ -1196,7 +1196,7 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
 }) ->
 
     case Outcome of
-        false ->
+        {false, _} ->
             pvc_decide(State#tx_coord_state{
                 num_to_ack = 0,
                 return_accumulator = [{pvc, #pvc_decide_meta{
@@ -1240,11 +1240,11 @@ pvc_decide(State = #tx_coord_state{
         commit_vc = CommitVC
     }}]
 }) ->
-    TxId = Transaction#transaction.txn_id,
+    _TxId = Transaction#transaction.txn_id,
     Reply = case Outcome of
-        false ->
+        {false, Reason} ->
 %%            lager:info("{~p} PVC aborted prepare", [erlang:phash2(TxId)]),
-            {error, {aborted, TxId}};
+            {error, Reason};
         true ->
 %%            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
@@ -1372,15 +1372,21 @@ receive_committed(committed, S0 = #tx_coord_state{num_to_ack = NumToAck}) ->
             }}
     end.
 
-abort(CoordState = #tx_coord_state{
-    transactional_protocol = pvc,
-    from=From,
-    transaction = Transaction,
-    updated_partitions = UpdatedPartitions
-}) ->
+abort(CoordState = #tx_coord_state{from = From,
+                                   transaction = Transaction,
+                                   transactional_protocol = pvc,
+                                   return_accumulator = AbortReason,
+                                   updated_partitions = UpdatedPartitions}) ->
+
 %%    lager:info("PVC Self-initiated abort"),
     ok = ?CLOCKSI_VNODE:abort(UpdatedPartitions, Transaction),
-    gen_fsm:reply(From, {error, {aborted, Transaction#transaction.txn_id}}),
+    AbortMsg = case AbortReason of
+        [{pvc_msg, Msg}] ->
+            Msg;
+        _ ->
+            {aborted, Transaction#transaction.txn_id}
+    end,
+    gen_fsm:reply(From, {error, AbortMsg}),
     {stop, normal, CoordState};
 
 %% @doc when an error occurs or an updated partition
