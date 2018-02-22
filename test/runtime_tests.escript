@@ -11,7 +11,8 @@
   fun(N) -> write_write_check(N) end,
   fun(N) -> stress_partition(N) end,
   fun(N) -> read_log_test(N) end,
-  fun(N) -> same_partition_test(N) end
+  fun(N) -> same_partition_test(N) end,
+  fun(N) -> clog_test(N) end
 ]).
 
 main(_) ->
@@ -121,6 +122,69 @@ same_partition_test(Node) ->
   ?assertMatch(ok, Status),
   ?assertEqual(ValueA, ReadA),
   ?assertEqual(ValueB, ReadB),
+  ok.
+
+clog_test(Node) ->
+  KeyA = ?KEY(partition_a),
+  KeyB = ?KEY(partition_b),
+  KeyC = ?KEY(partition_c),
+
+  %% Set the clock to <2, 1, 1>
+  _ = execute_blocking_sequential([
+    %% <1, 0, 0> || <0, 0, 0> || <0, 0, 0>
+    blocking_read_write_tx(Node, {KeyA, <<"Aa">>}),
+    %% <2, 1, 1> || <2, 1, 1> || <2, 1, 1>
+    blocking_read_write_tx(Node, [{KeyA, <<"Ab">>}, {KeyB, <<"Ba">>}, {KeyC, <<"Ca">>}])
+  ]),
+
+  %% Now start a long-running transaction
+  {ok, Tx} = start_transaction(Node),
+
+  %% Pick up dependency clock <_, 1, 1>
+  {ok, ReadBC} = read_objects(Node, Tx, [KeyB, KeyC]),
+  ?assertEqual([<<"Ba">>, <<"Ca">>], ReadBC),
+
+  %% Now, interleave a bunch of transactions on both A, B and C
+  %% Final MRVC should be <5, 7, 4>
+  _ = execute_blocking_sequential([
+    %% <3, 1, 1> || <2, 1, 1> || <2, 1, 1>
+    %% We should pick up this value in Tx
+    blocking_read_write_tx(Node, {KeyA, <<"Ac">>}),
+
+    %% <4, 2, 1> || <4, 2, 1> || <2, 1, 1>
+    blocking_read_write_tx(Node, [{KeyA, <<"Ad">>}, {KeyB, <<"Bb">>}]),
+
+    %% Two only C
+    %% <4, 2, 1> || <4, 2, 1> || <2, 1, 2>
+    blocking_read_write_tx(Node, {KeyC, <<"Cb">>}),
+    %% <4, 2, 1> || <4, 2, 1> || <2, 1, 3>
+    blocking_read_write_tx(Node, {KeyC, <<"Cc">>}),
+
+    %% Four only B
+    %% <4, 2, 1> || <4, 3, 1> || <2, 1, 3>
+    blocking_read_write_tx(Node, {KeyB, <<"Bc">>}),
+    %% <4, 2, 1> || <4, 4, 1> || <2, 1, 3>
+    blocking_read_write_tx(Node, {KeyB, <<"Bd">>}),
+    %% <4, 2, 1> || <4, 5, 1> || <2, 1, 3>
+    blocking_read_write_tx(Node, {KeyB, <<"Be">>}),
+    %% <4, 2, 1> || <4, 6, 1> || <2, 1, 3>
+    blocking_read_write_tx(Node, {KeyB, <<"Bf">>}),
+
+    %% Now another with the three
+    %% <5, 7, 4> || <5, 7, 4> || <5, 7, 4>
+    blocking_read_write_tx(Node, [{KeyA, <<"Ae">>}, {KeyB, <<"Bg">>}, {KeyC, <<"Cd">>}])
+  ]),
+
+  %% Using <_, 1, 1> at A, we should pick up clock <3,1,1>
+  {ok, ReadA} = read_objects(Node, Tx, KeyA),
+  ?assertEqual([<<"Ac">>], ReadA),
+
+  %% Repeatable read check
+  {ok, ReadBC_2} = read_objects(Node, Tx, [KeyB, KeyC]),
+  ?assertEqual([<<"Ba">>, <<"Ca">>], ReadBC_2),
+
+  {ok, []} = commit_transaction(Node, Tx),
+
   ok.
 
 %% Util functions

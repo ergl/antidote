@@ -532,14 +532,14 @@ append_updated_partitions(UpdatedPartitions, WriteSet, Partition, Update) ->
 
 -spec async_log_propagation(index_node(), txid(), key(), type(), op()) -> ok.
 async_log_propagation(Partition, TxId, Key, Type, Record) ->
-    LogRecord = #log_operation{
-        op_type=update,
-        tx_id=TxId,
-        log_payload=#update_log_payload{key=Key, type=Type, op=Record}
-    },
+    LogRecord = #log_operation{tx_id = TxId,
+                               op_type = update,
+                               log_payload = #update_log_payload{key=Key,
+                                                                 type=Type,
+                                                                 op=Record}},
 
-    LogId = ?LOG_UTIL:get_logid_from_key(Key),
-    ?LOGGING_VNODE:asyn_append(Partition, LogId, LogRecord, {fsm, undefined, self()}).
+    LogId = log_utilities:get_logid_from_key(Key),
+    logging_vnode:asyn_append(Partition, LogId, LogRecord, {fsm, undefined, self()}).
 
 %% @doc Contact the leader computed in the prepare state for it to execute the
 %%      operation, wait for it to finish (synchronous) and go to the prepareOP
@@ -613,7 +613,7 @@ pvc_read(Objects, Sender, State = #tx_coord_state{
         UpdatedOp = pvc_key_was_updated(ClientOps, Key),
         ok = case UpdatedOp of
             false ->
-                Partition = ?LOG_UTIL:get_key_partition(Key),
+                Partition = log_utilities:get_key_partition(Key),
                 %% If the key has never been updated, request the most
                 %% recent compatible version of the key to the holding
                 %% partition.
@@ -710,64 +710,33 @@ pvc_update(UpdateOps, Sender, State) ->
         client_ops=ClientOps,
         updated_partitions=UpdatedPartitions
     }) ->
-        case pvc_perform_update(Op, UpdatedPartitions, ClientOps) of
-            {error, _Reason}=Err ->
-                AccState#tx_coord_state{return_accumulator=Err};
-
-            {NewUpdatedPartitions, NewClientOps} ->
-                AccState#tx_coord_state{
-                    client_ops=NewClientOps,
-                    updated_partitions=NewUpdatedPartitions
-                }
-        end
+        {NewUpdatedPartitions, NewClientOps} = pvc_perform_update(Op, UpdatedPartitions, ClientOps),
+        AccState#tx_coord_state{
+            client_ops=NewClientOps,
+            updated_partitions=NewUpdatedPartitions
+        }
     end,
 
     NewCoordState = lists:foldl(PerformUpdates, State, UpdateOps),
-    AccRes = NewCoordState#tx_coord_state.return_accumulator,
-    case AccRes of
-        {error, _} ->
-            abort(NewCoordState);
-
-        _ ->
-            IsStatic = NewCoordState#tx_coord_state.is_static,
-            case IsStatic of
-                true ->
-                    %% Shouldn't happen anyway, static transactions are unsupported for PVC
-                    prepare(NewCoordState);
-                false ->
-%%                    FinalOps = NewCoordState#tx_coord_state.client_ops,
-%%                    PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
-%%                    lager:info(
-%%                        "{~p} PVC update with ops ~p",
-%%                        [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
-%%                    ),
-                    gen_fsm:reply(Sender, ok),
-                    {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}
-            end
-    end.
+    %%FinalOps = NewCoordState#tx_coord_state.client_ops,
+    %%PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
+    %%lager:info(
+    %%    "{~p} PVC update with ops ~p",
+    %%    [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
+    %%),
+    gen_fsm:reply(Sender, ok),
+    {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}.
 
 pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
-    %% Sanity check, already disallowed at the user level
-    {Key, Type=antidote_crdt_lwwreg, Update} = Op,
-
-    case antidote_hooks:execute_pre_commit_hook(Key, Type, Update) of
-        {error, Reason} ->
-            lager:debug("Execute pre-commit hook failed ~p", [Reason]),
-            {error, Reason};
-
-        {Key, Type, _PostHookUpdate}=GeneratedUpdate ->
-
-            %% Don't read snapshot, will do that at commit time
-            %% As we only allow lww-registers, we don't need to keep track of all
-            %% generated updates, so we just keep the most recent one.
-            NewUpdatedPartitions = pvc_swap_writeset(UpdatedPartitions, GeneratedUpdate),
-            UpdatedOps = pvc_swap_operations(ClientOps, GeneratedUpdate),
-
-            {NewUpdatedPartitions, UpdatedOps}
-    end.
+    %% Don't read snapshot, will do that at commit time
+    %% As we only allow lww-registers, we don't need to keep track of all
+    %% generated updates, so we just keep the most recent one.
+    NewUpdatedPartitions = pvc_swap_writeset(UpdatedPartitions, Op),
+    UpdatedOps = pvc_swap_operations(ClientOps, Op),
+    {NewUpdatedPartitions, UpdatedOps}.
 
 pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
-    Partition = ?LOG_UTIL:get_key_partition(Key),
+    Partition = log_utilities:get_key_partition(Key),
     case lists:keyfind(Partition, 1, UpdatedPartitions) of
         false ->
             [{Partition, [Update]} | UpdatedPartitions];
@@ -922,11 +891,11 @@ receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_
             {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0}}
     end;
 
-receive_read_objects_result({error, abort}, CoordState = #tx_coord_state{
-%%    transaction=Transaction,
+receive_read_objects_result({error, maxvc_bad_vc}, CoordState = #tx_coord_state{
+    transaction=Transaction,
     transactional_protocol=pvc
 }) ->
-%%    lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
+    lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
     abort(CoordState#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]}).
 
 -spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
@@ -940,7 +909,7 @@ pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{
     }
 }) ->
 
-    {Partition, _Node} = ?LOG_UTIL:get_key_partition(Key),
+    {Partition, _Node} = log_utilities:get_key_partition(Key),
     NewHasRead = sets:add_element(Partition, HasRead),
 
     NewVCdep = vectorclock_partition:max([TVCdep, VCdep]),
@@ -981,9 +950,8 @@ pvc_prepare(State = #tx_coord_state{
     pvc = State#tx_coord_state.transactional_protocol,
     case UpdatedPartitions of
         [] ->
-%%            lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
+            %%lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
             %% No need to perform 2pc if read-only
-            ok = execute_post_commit_hooks(ClientOps),
             gen_fsm:reply(From, ok),
             {stop, normal, State};
 
@@ -1024,7 +992,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
                 ok ->
 %%                    lager:info("{~p} PVC prepare", [erlang:phash2(Transaction#transaction.txn_id)]),
 
-                    ok = ?CLOCKSI_VNODE:prepare(Partitions, Transaction),
+                    ok = clocksi_vnode:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
 
                     InitialCommitVC = Transaction#transaction
@@ -1047,15 +1015,13 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
 -spec pvc_propagate_updates(tx(), list({key(), type(), op()})) -> ok.
 pvc_propagate_updates(#transaction{txn_id=TxId}, Ops) ->
     lists:foreach(fun({Key, Type, Update}) ->
-        Partition = ?LOG_UTIL:get_key_partition(Key),
+        Partition = log_utilities:get_key_partition(Key),
         DownstreamOp = Type:downstream(Update, Type:new()),
-        ok = async_log_propagation(
-            Partition,
-            TxId,
-            Key,
-            Type,
-            DownstreamOp
-        )
+        ok = async_log_propagation(Partition,
+                                   TxId,
+                                   Key,
+                                   Type,
+                                   DownstreamOp)
     end, Ops).
 
 %% @doc this function sends a prepare message to all updated partitions and goes
@@ -1191,9 +1157,12 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
     end.
 
 pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
+%%    transaction = Tx,
     num_to_ack = NumToAck,
     return_accumulator = [{pvc, Acc}]
 }) ->
+
+%%    lager:info("{~p} PVC received VOTE(~p, ~p) from ~p", [erlang:phash2(Tx#transaction.txn_id), Outcome, SeqNumber, From]),
 
     case Outcome of
         {false, _} ->
@@ -1249,7 +1218,7 @@ pvc_decide(State = #tx_coord_state{
 %%            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
-    ok = ?CLOCKSI_VNODE:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
+    ok = clocksi_vnode:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
     gen_fsm:reply(From, Reply),
     {stop, normal, State}.
 
@@ -1378,8 +1347,8 @@ abort(CoordState = #tx_coord_state{from = From,
                                    return_accumulator = AbortReason,
                                    updated_partitions = UpdatedPartitions}) ->
 
-%%    lager:info("PVC Self-initiated abort"),
-    ok = ?CLOCKSI_VNODE:abort(UpdatedPartitions, Transaction),
+    lager:info("PVC Self-initiated abort"),
+    ok = clocksi_vnode:abort(UpdatedPartitions, Transaction),
     AbortMsg = case AbortReason of
         [{pvc_msg, Msg}] ->
             Msg;

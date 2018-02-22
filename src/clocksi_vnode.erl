@@ -53,7 +53,8 @@
     handle_coverage/4,
     handle_exit/3]).
 
--export([pvc_get_most_recent_vc/1]).
+-export([pvc_process_cqueue/1,
+         pvc_get_most_recent_vc/1]).
 
 -ignore_xref([start_vnode/1]).
 
@@ -77,8 +78,9 @@
     committed_tx :: cache_id(),
     read_servers :: non_neg_integer(),
     prepared_dict :: orddict:orddict(),
-    pvc_most_recent_vc :: vectorclock_partition:partition_vc() | undefined,
-    pvc_last_prepared :: non_neg_integer() | undefined
+
+    pvc_atomic_state :: cache_id(),
+    pvc_commitqueue :: pvc_commit_queue:cqueue()
 }).
 
 %%%===================================================================
@@ -102,7 +104,6 @@ read_data_item(Node, TxId, Key, Type, Updates) ->
     end.
 
 async_read_data_item(Node, Transaction, Key, Type) ->
-    %% TODO(borja): Move Coordinator={fsm, self()} to the caller
     clocksi_readitem_server:async_read_data_item(
         Node,
         Key,
@@ -120,6 +121,10 @@ async_read_data_item(Node, Transaction, Key, Type) ->
 -spec pvc_get_most_recent_vc(index_node()) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
 pvc_get_most_recent_vc(Node) ->
     riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER).
+
+-spec pvc_process_cqueue(index_node()) -> ok.
+pvc_process_cqueue(Node) ->
+    riak_core_vnode_master:command(Node, pvc_process_cqueue, ?CLOCKSI_MASTER).
 
 %% @doc Return active transactions in prepare state with their preparetime for a given key
 %% should be run from same physical node
@@ -274,14 +279,19 @@ get_cache_name(Partition, Base) ->
 init([Partition]) ->
     PreparedTx = open_table(Partition),
     CommittedTx = ets:new(committed_tx, [set]),
+
+    PVCTable = pvc_atomic_state_init(),
+    CommitQueue = pvc_commit_queue:new(),
+
     {ok, #state{
         partition = Partition,
         prepared_tx = PreparedTx,
         committed_tx = CommittedTx,
         read_servers = ?READ_CONCURRENCY,
         prepared_dict = orddict:new(),
-        pvc_most_recent_vc = vectorclock_partition:new(),
-        pvc_last_prepared = 0
+
+        pvc_atomic_state = PVCTable,
+        pvc_commitqueue = CommitQueue
     }}.
 
 %% @doc The table holding the prepared transactions is shared with concurrent
@@ -364,10 +374,8 @@ handle_command({check_servers_ready}, _Sender, SD0 = #state{partition = Partitio
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
-handle_command(pvc_mostrecentvc, _Sender, State = #state{
-    pvc_most_recent_vc = MostRecentVC
-}) ->
-    {reply, {ok, MostRecentVC}, State};
+handle_command(pvc_mostrecentvc, _Sender, State) ->
+    {reply, {ok, pvc_get_mrvc(State)}, State};
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
@@ -375,40 +383,72 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
 
 handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, State = #state{
     partition = Partition,
-    committed_tx = ComittedTx,
-    prepared_dict = PreparedTx,
-    pvc_most_recent_vc = MostRecentVC
+    pvc_commitqueue = CQueue
 }) ->
 
     TxnId = Transaction#transaction.txn_id,
-    NewState = case Outcome of
+    NewQueue = case Outcome of
         {false, _} ->
             %% If the outcome is false, append an abort record to the log
             ok = pvc_append_abort(Partition, TxnId, WriteSet),
-            State;
+            pvc_commit_queue:remove(TxnId, CQueue);
 
         true ->
-            %% Propagate commit records to the logs
-            NewRecentVC = vectorclock_partition:max([MostRecentVC, CommitVC]),
-            ok = pvc_append_commits(Partition, TxnId, WriteSet, CommitVC, NewRecentVC),
-
-            %% Update the materializer snapshot cache
-            ok = pvc_update_materializer(TxnId, WriteSet, CommitVC),
-
-            %% Cache the commit time for the keys
-            ok = pvc_store_key_commitvc(Partition, ComittedTx, WriteSet, CommitVC),
-            State#state{pvc_most_recent_vc = NewRecentVC}
-
+            %% Append to CommitLog
+            ReadyQueue = pvc_commit_queue:ready(TxnId, CommitVC, CQueue),
+            OwnNode = {Partition, node()},
+            ok = pvc_process_cqueue(OwnNode),
+            ReadyQueue
     end,
-    {noreply, NewState#state{
-        prepared_dict = orddict:erase(TxnId, PreparedTx)
-    }};
+    {noreply, State#state{pvc_commitqueue = NewQueue}};
 
 handle_command({pvc_abort, Transaction, WriteSet}, _Sender, State = #state{
     partition = Partition
 }) ->
     ok = pvc_append_abort(Partition, Transaction#transaction.txn_id, WriteSet),
     {noreply, State};
+
+handle_command(pvc_process_cqueue, _Sender, State = #state{
+    partition = Partition,
+    pvc_commitqueue = CQueue,
+    committed_tx = CommittedTx,
+    pvc_atomic_state = PVCState
+}) ->
+    %% TODO(borja): Don't dequeue just yet, but wait until we're done here?
+    {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(CQueue),
+    ok = case ReadyTx of
+        [] ->
+%%            lager:info("[~p] PVC no ready at head", [Partition]),
+            %% No transactions to process
+            ok;
+
+        Entries ->
+            lists:foreach(fun({Id, WS, VC}) ->
+%%                lager:info(
+%%                    "[~p] PVC found entry ~p with time ~p",
+%%                    [Partition, erlang:phash2(Id), dict:to_list(VC)]
+%%                ),
+
+                %% First, apply update to the VLog (materializer)
+                ok = pvc_vlog_apply(Id, WS, VC),
+
+                %% Now, update MRVC with the max of the old value and our VC
+                PrevMRVC = pvc_get_mrvc(PVCState),
+%%                lager:info(
+%%                    "[~p] PVC fetched MRVC ~p",
+%%                    [Partition, dict:to_list(PrevMRVC)]
+%%                ),
+                MRVC = vectorclock_partition:max([VC, PrevMRVC]),
+                ok = pvc_update_mrvc(PVCState, MRVC),
+
+                %% Store commits, update CLog
+                ok = pvc_append_commits(Partition, Id, WS, VC, MRVC),
+
+                %% Cache last commit time for the WS keys (for stale VC check)
+                ok = pvc_store_key_commitvc(CommittedTx, WS, VC)
+            end, Entries)
+    end,
+    {noreply, State#state{pvc_commitqueue = NewQueue}};
 
 %% @doc This is the only partition being updated by a transaction,
 %%      thus this function performs both the prepare and commit for the
@@ -497,6 +537,28 @@ terminate(_Reason, #state{partition = Partition} = _State) ->
 %%% Internal Functions
 %%%===================================================================
 
+-spec pvc_atomic_state_init() -> cache_id().
+pvc_atomic_state_init() ->
+    PVCTable = ets:new(pvc_state_table, [set]),
+    true = ets:insert(PVCTable, [{seq_number, 0}, {mrvc, vectorclock:new()}]),
+    PVCTable.
+
+-spec pvc_faa_lastprep(cache_id()) -> non_neg_integer().
+pvc_faa_lastprep(PVCTable) ->
+    ets:update_counter(PVCTable, seq_number, 1).
+
+-spec pvc_get_mrvc(#state{} | cache_id()) -> vectorclock().
+pvc_get_mrvc(#state{pvc_atomic_state = PVCTable}) ->
+    pvc_get_mrvc(PVCTable);
+
+pvc_get_mrvc(PVCTable) ->
+    ets:lookup_element(PVCTable, mrvc, 2).
+
+-spec pvc_update_mrvc(cache_id(), vectorclock()) -> ok.
+pvc_update_mrvc(PVCTable, NewVC) ->
+    true = ets:update_element(PVCTable, mrvc, {2, NewVC}),
+    ok.
+
 do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
     prepared_dict = PreparedTimes,
     prepared_tx = PreparedTransactions,
@@ -551,25 +613,27 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
 
 pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
     partition = Partition,
-    pvc_last_prepared = LastPrepared,
-    prepared_dict = PreparedTransactions,
-    committed_tx = CommittedTransactions
+    committed_tx = CommittedTransactions,
+
+    pvc_atomic_state = PVCState,
+    pvc_commitqueue = CommitQueue
 }) ->
 
 %%    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
 
     %% Check if any our writeset intersects with any of the prepared transactions
-    WriteSetDisputed = pvc_is_writeset_disputed(PreparedTransactions, WriteSet),
+    WriteSetDisputed = pvc_commit_queue:contains_disputed(WriteSet, CommitQueue),
 
     PrepareVC = Transaction#transaction
         .pvc_meta#pvc_tx_meta
         .time#pvc_time
         .vcdep,
 
-    PartitionKeys = pvc_get_partition_keys(Partition, WriteSet),
-    TooFresh = pvc_are_keys_too_fresh(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
+    %% Get the keys in the writeset
+    PartitionKeys = [Key || {Key, _, _} <- WriteSet],
+    StaleTx = pvc_are_keys_stale(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
 
-    {Vote, Seq, NewState} = case WriteSetDisputed orelse TooFresh of
+    {Vote, Seq, NewState} = case WriteSetDisputed orelse StaleTx of
         true ->
             Reason = case WriteSetDisputed of
                 true ->
@@ -577,14 +641,16 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
                 _ ->
                     pvc_stale_vc
             end,
-%%            lager:info("{~p} PVC writeset disputed [~p] or tx is too fresh [~p]", [erlang:phash2(TxnId), WriteSetDisputed, TooFresh]),
-            {{false, Reason}, LastPrepared, State};
+%%            lager:info("{~p} PVC writeset disputed [~p] or tx is too stale [~p]", [erlang:phash2(TxnId), WriteSetDisputed, StaleTx]),
+            {{false, Reason}, ignore, State};
 
         false ->
-            NewPrepared = orddict:store(TxnId, {PrepareVC, WriteSet}, PreparedTransactions),
+            SeqNumber = pvc_faa_lastprep(PVCState),
+
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
-            SeqNumber = LastPrepared + 1,
-            {true, SeqNumber, State#state{prepared_dict=NewPrepared, pvc_last_prepared=SeqNumber}}
+%%            lager:info("{~p} PVC prepare enqueue itself", [erlang:phash2(Transaction#transaction.txn_id)]),
+            NewCommitQueue = pvc_commit_queue:enqueue(TxnId, WriteSet, CommitQueue),
+            {true, SeqNumber, State#state{pvc_commitqueue = NewCommitQueue}}
     end,
 %%    lager:info(
 %%        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
@@ -593,15 +659,15 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
 
-%% @doc Check if any of the keys in a transaction writeset are too fresh with
+%% @doc Check if any of the keys in a transaction writeset are too stale with
 %%      respect to the most recent committed version.
 %%
--spec pvc_are_keys_too_fresh(partition_id(), list(key()), vectorclock_partition:partition_vc(), cache_id()) -> boolean().
-pvc_are_keys_too_fresh(_, [], _, _) ->
+-spec pvc_are_keys_stale(partition_id(), list(key()), vectorclock_partition:partition_vc(), cache_id()) -> boolean().
+pvc_are_keys_stale(_, [], _, _) ->
     false;
 
-pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
-    IsTooFresh = case ets:lookup(CommittedTx, Key) of
+pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
+    StaleKey = case ets:lookup(CommittedTx, Key) of
         [] ->
             false;
 
@@ -610,20 +676,19 @@ pvc_are_keys_too_fresh(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
             PrepareTime = vectorclock_partition:get_partition_time(SelfPartition, PrepareVC),
             CommitTime > PrepareTime
     end,
-    case IsTooFresh of
+    case StaleKey of
         true ->
             true;
 
         false ->
-            pvc_are_keys_too_fresh(SelfPartition, Keys, PrepareVC, CommittedTx)
+            pvc_are_keys_stale(SelfPartition, Keys, PrepareVC, CommittedTx)
     end.
 
--spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
-pvc_store_key_commitvc(SelfPartition, CommittedTx, WriteSet, CommitVC) ->
-    Keys = pvc_get_partition_keys(SelfPartition, WriteSet),
-    lists:foreach(fun(Key) ->
-        true = ets:insert(CommittedTx, {Key, CommitVC})
-    end, Keys).
+-spec pvc_store_key_commitvc(cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
+pvc_store_key_commitvc(CommittedTx, WriteSet, CommitVC) ->
+    Objects = [{Key, CommitVC} || {Key, _, _} <- WriteSet],
+    true = ets:insert(CommittedTx, Objects),
+    ok.
 
 %% @doc Propagate prepare log records for all keys in this partition with the given prepare time.
 -spec pvc_append_prepare(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
@@ -711,23 +776,22 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
     end, ordsets:new(), WriteSet).
 
 %% @doc Update the materializer cache with the newest snapshots (VLog)
--spec pvc_update_materializer(txid(), list(), vectorclock_partition:partition_vc()) -> ok | error.
-pvc_update_materializer(TxnId, WriteSet, CommitVC) ->
+-spec pvc_vlog_apply(txid(), list(), vectorclock_partition:partition_vc()) -> ok | error.
+pvc_vlog_apply(TxnId, WriteSet, CommitVC) ->
+    DCId = dc_meta_data_utilities:get_my_dc_id(),
+
     Update = fun({Key, Type, Op}, Acc) ->
-        DCId = dc_meta_data_utilities:get_my_dc_id(),
-        {Partition, _} = log_utilities:get_key_partition(Key),
-        CommitTime = vectorclock_partition:get_partition_time(
-            Partition,
-            CommitVC
-        ),
+        {KeyPartition, _} = log_utilities:get_key_partition(Key),
+        CommitTime = vectorclock_partition:get_partition_time(KeyPartition, CommitVC),
 
         {ok, DownstreamOp} = Type:downstream(Op, Type:new()),
+        Value = Type:value(DownstreamOp),
 
         Payload = #clocksi_payload{
             txid = TxnId,
             key = Key,
             type = Type,
-            op_param = DownstreamOp,
+            op_param = Value,
             snapshot_time = CommitVC,
             commit_time = {DCId, CommitTime}
         },
@@ -743,46 +807,6 @@ pvc_update_materializer(TxnId, WriteSet, CommitVC) ->
             error;
         false ->
             ok
-    end.
-
-%% @doc Get the list of keys that are owned by this partition.
--spec pvc_get_partition_keys(partition_id(), list(key())) -> list(key()).
-pvc_get_partition_keys(SelfPartition, WriteSet) ->
-    lists:filtermap(fun({Key, _, _}) ->
-        {Partition, _} = log_utilities:get_key_partition(Key),
-        case Partition of
-            SelfPartition ->
-                {true, Key};
-            _ ->
-                false
-        end
-    end, WriteSet).
-
--spec pvc_is_writeset_disputed(
-    orddict:orddict(txid(), {vectorclock_partition:partition_vc(), list()}),
-    list()
-) -> boolean().
-pvc_is_writeset_disputed([], _Key) ->
-    false;
-
-pvc_is_writeset_disputed([{_TxId, {_CommitTime, PreparedWS}} | TxIds], WS) ->
-    case pvc_writeset_intersect(PreparedWS, WS) of
-        false ->
-            pvc_is_writeset_disputed(TxIds, WS);
-        true ->
-            true
-    end.
-
--spec pvc_writeset_intersect(list(), list()) -> boolean().
-pvc_writeset_intersect([], _) ->
-    false;
-
-pvc_writeset_intersect([{Key, _, _} | WS1], WS2) ->
-    case lists:keyfind(Key, 1, WS2) of
-        false ->
-            pvc_writeset_intersect(WS1, WS2);
-        _ ->
-            true
     end.
 
 prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict) ->

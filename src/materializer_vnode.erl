@@ -101,8 +101,8 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
 %%      Will also bypass the ops cache as we don't need it.
 %%
 -spec pvc_read(pvc, key(), type(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
-pvc_read(pvc, Key, Type, SnapshotTime, MatState = #mat_state{snapshot_cache = SnapshotCache}) ->
-    case ets:info(SnapshotCache) of
+pvc_read(pvc, Key, Type, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) ->
+    case ets:info(VLogCache) of
         undefined ->
             riak_core_vnode_master:sync_command(
                 {MatState#mat_state.partition, node()},
@@ -162,11 +162,21 @@ init([Partition]) ->
         _ ->
             true
     end,
+
+    PVCCache = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
+        {ok, pvc} ->
+            open_table(Partition, pvc_snapshot_cache);
+        _ ->
+            undefined
+    end,
+
     {ok, #mat_state{
         is_ready = IsReady,
         ops_cache = OpsCache,
         partition = Partition,
-        snapshot_cache = SnapshotCache
+        snapshot_cache = SnapshotCache,
+
+        pvc_vlog_cache = PVCCache
     }}.
 
 -spec load_from_log_to_tables(partition_id(), #mat_state{}) -> ok | {error, reason()}.
@@ -279,7 +289,7 @@ handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     {reply, ok, State};
 
 handle_command({pvc_update, Payload}, _Sender, State) ->
-    ok = pvc_bypass_snapshot(Payload, State),
+    ok = pvc_update_ops_bypass(Payload, State),
     {reply, ok, State};
 
 handle_command({store_ss, Key, Snapshot, CommitTime}, _Sender, State) ->
@@ -413,68 +423,19 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
     end.
 
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
--spec pvc_internal_read(key(), type(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()}.
+-spec pvc_internal_read(key(), type(), snapshot_time(), #mat_state{}) -> {ok, term(), snapshot_time()}.
 pvc_internal_read(Key, Type=antidote_crdt_lwwreg, MinSnapshotTime, #mat_state{
-    snapshot_cache = SnapshotCache
+    pvc_vlog_cache = VLogCache
 }) ->
-    {SnapshotVal, CommitVC} = case ets:lookup(SnapshotCache, Key) of
+    {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
         [] ->
-            Base = #materialized_snapshot{
-                last_op_id = 0,
-                value=Type:new()
-            },
-            {Base, vectorclock_partition:new()};
+            BaseValue = Type:value(Type:new()),
+            {BaseValue, vectorclock:new()};
 
-        [{_, SnapshotDict}] ->
-            case vector_orddict:get_smaller(MinSnapshotTime, SnapshotDict) of
-                undefined ->
-                    lager:info("No in-memory snapshot for ~p, getting from log", [Key]),
-                    SnapshotResponse = get_from_snapshot_log(Key, Type, MinSnapshotTime),
-                    pvc_materialize_snapshot(Key, Type, SnapshotResponse);
-                FoundSnapshot ->
-                    {{Time, Snapshot}, _} = FoundSnapshot,
-                    {Snapshot, Time}
-            end
+        [{_, PrevVersionLog}] ->
+            pvc_version_log:get_smaller(MinSnapshotTime, PrevVersionLog)
     end,
-    {ok, SnapshotVal#materialized_snapshot.value, CommitVC}.
-
-%% TODO(borja): Check if PVC gets CommittedOpsForKey with more than 1 op.
--spec pvc_materialize_snapshot(key(), type(), #snapshot_get_response{}) -> {#materialized_snapshot{}, snapshot_time()}.
-pvc_materialize_snapshot(Key, _Type=antidote_crdt_lwwreg, #snapshot_get_response{
-    %% TODO(borja): Add more checks here
-    %% Was it done by X txid? How many ops to apply?
-    ops_list = CommittedOps,
-    snapshot_time = BaseSnapshotTime,
-    materialized_snapshot = #materialized_snapshot{
-        value = BaseValue
-    }
-}) ->
-
-    Operations = lists:map(fun({_, Payload}) ->
-        #clocksi_payload{
-            %% Sanity Check
-            key = Key,
-            %% TODO(borja): Check why we have an `ok` in here
-            op_param = {ok, Op},
-            snapshot_time = SnapshotTime
-        } = Payload,
-        {Op, SnapshotTime}
-    end, CommittedOps),
-
-    %% Go through all the ops, apply them to the value, and get the max time
-    {FinalValue, FinalSnapshotTime} = lists:foldl(fun({Op, OpSnapshotTime}, {OldValue, OldSnapshotTime}) ->
-        {ok, NewValue} = antidote_crdt_lwwreg:update(Op, OldValue),
-        {NewValue, vectorclock:max([OldSnapshotTime, OpSnapshotTime])}
-    end, {BaseValue, BaseSnapshotTime}, Operations),
-
-    %% Caller expects a wrapped value, so let's do that.
-    %% PVC ignores last_op_id (should it?)
-    MaterializedSnapshot = #materialized_snapshot{
-        last_op_id = 0,
-        value = FinalValue
-    },
-
-    {MaterializedSnapshot, FinalSnapshotTime}.
+    {ok, Val, CommitVC}.
 
 %% @doc This function takes care of reading. It is implemented here for not blocking the
 %% vnode when the write function calls it. That is done for garbage collection.
@@ -838,53 +799,30 @@ tuple_to_cached_ops(Tuple) ->
 %% another DC, Antidote will store the updates in the operation
 %% cache of the materializer. It will also store the operations
 %% in the log, so those operations will be there when we perform
-%% the CLog scan (see pvc_find_maxvc/3 in clocksi_readitem_server)
+%% the CLog scan (see pvc_find_maxvc/2 in clocksi_readitem_server)
 %%
--spec pvc_bypass_snapshot(clocksi_payload(), #mat_state{}) -> ok.
-pvc_bypass_snapshot(Payload, #mat_state{snapshot_cache = SnapshotCache}) ->
+-spec pvc_update_ops_bypass(clocksi_payload(), #mat_state{}) -> ok.
+pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
+                                          pvc_vlog_cache = VLogCache}) ->
+
     #clocksi_payload{key = Key,
+                     type = Type,
                      op_param = DownstreamOp,
                      snapshot_time = SnapshotTime} = Payload,
 
-    SnapshotDict = case ets:lookup(SnapshotCache, Key) of
+    VersionLog = case ets:lookup(VLogCache, Key) of
         [] ->
-            vector_orddict:new();
+            pvc_version_log:new(Partition, Type);
 
-        [{_, PrevSnapshotDict}] ->
-            PrevSnapshotDict
+        [{_, PrevVersionLog}] ->
+            PrevVersionLog
     end,
 
-    %% last_op_id is a placeholder value, we don't use this field in pvc
-    Snapshot = #materialized_snapshot{last_op_id = 0,
-                                      value = DownstreamOp},
-
-    %% Store in an ordered fashion in the multi-version dict
-    NextSnapshotDict = vector_orddict:insert(SnapshotTime, Snapshot, SnapshotDict),
-
-    AfterGCSnapshotDict = case pvc_should_gc(NextSnapshotDict) of
-        false ->
-            NextSnapshotDict;
-        true ->
-            %% Very simplified GC as we don't touch the ops cache
-            vector_orddict:sublist(NextSnapshotDict, 1, ?SNAPSHOT_MIN)
-    end,
-
-    true = ets:insert(SnapshotCache, {Key, AfterGCSnapshotDict}),
+    %% TODO(borja): Implement GC in the future
+    NextVersionLog = pvc_version_log:insert(SnapshotTime, DownstreamOp, VersionLog),
+%%    lager:info("VLog.apply(~p, ~p)", [Key, pvc_version_log:to_list(NextVersionLog)]),
+    true = ets:insert(VLogCache, {Key, NextVersionLog}),
     ok.
-
-%% @doc Check if a snapshot dictionary should be pruned.
-%%
-%% To prevent unbound growth, we cap the dict to SNAPSHOT_THRESHOLD versions.
-%% If we need to get an older version, we will go to the replication log
-%%
-%% If the replication log is unavailable (not writing to disk), then don't
-%% perform GC
-%%
--spec pvc_should_gc(vector_orddict:vector_orddict()) -> boolean().
-pvc_should_gc(SnapshotDict) ->
-    OverThreshold = vector_orddict:size(SnapshotDict) >= ?SNAPSHOT_THRESHOLD,
-    {ok, EnableLoggingToDisk} = application:get_env(antidote, enable_logging),
-    OverThreshold andalso EnableLoggingToDisk.
 
 %% @doc Insert an operation and start garbage collection triggered by writes.
 %% the mechanism is very simple; when there are more than OPS_THRESHOLD
