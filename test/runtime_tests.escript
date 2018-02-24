@@ -44,7 +44,7 @@ write_write_check(Node) ->
   CTRes = lists:map(fun({CT, _}) -> CT end, Res),
 
   ?assertNotMatch([{ok, _}, {ok, _}], CTRes),
-  ?assert(lists:any(fun({error, {aborted, _}}) -> true; (_) -> false end, CTRes)).
+  ?assert(lists:any(fun({error, _}) -> true; (_) -> false end, CTRes)).
 
 stress_partition(Node) ->
   Key = ?KEY(stress_key),
