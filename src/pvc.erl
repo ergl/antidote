@@ -22,11 +22,16 @@
 
 -include("antidote.hrl").
 
+%% PVC-Only API
+-export([start_transaction/0,
+         read_keys/2,
+         update_keys/2,
+         commit_transaction/1]).
+
 %% API
 -export([
     start_transaction/3,
     start_transaction/2,
-    commit_transaction/1,
     abort_transaction/1,
     read_objects/2,
     read_objects/3,
@@ -36,10 +41,9 @@
     update_objects/4
 ]).
 
-start_transaction(Clock, Properties) ->
-    start_transaction(Clock, Properties, false).
+%% PVC-Only API
 
-start_transaction(_Clock, _Properties, _KeepAlive) ->
+start_transaction() ->
     pvc_istart_tx().
 
 commit_transaction(TxId) ->
@@ -50,6 +54,36 @@ commit_transaction(TxId) ->
             {ok, []};
         Res -> Res
     end.
+
+read_keys(Keys, #tx_id{server_pid = Pid}) ->
+    CompatKeys = lists:map(fun(K) ->
+        {K, antidote_crdt_lwwreg}
+    end, Keys),
+    gen_fsm:sync_send_event(Pid, {read_objects, CompatKeys}, ?OP_TIMEOUT).
+
+update_keys(UpdateOps, TxId = #tx_id{server_pid = Pid}) ->
+    CompatOps = lists:map(fun({K, V}) ->
+        {K, antidote_crdt_lwwreg, {assign, V}}
+    end, UpdateOps),
+    Resp = gen_fsm:sync_send_event(Pid, {update_objects, CompatOps}, ?OP_TIMEOUT),
+    case Resp of
+        ok ->
+            ok;
+
+        {aborted, TxId}=Abort ->
+            {error, Abort};
+
+        {error, _R}=Err ->
+            Err
+    end.
+
+%% Antidote-Compatible API
+
+start_transaction(Clock, Properties) ->
+    start_transaction(Clock, Properties, false).
+
+start_transaction(_Clock, _Properties, _KeepAlive) ->
+    pvc_istart_tx().
 
 abort_transaction(TxId) ->
     cure:abort_transaction(TxId).
