@@ -199,7 +199,7 @@ generate_random_server_name(Node, Partition) ->
 init([Partition, Id]) ->
     Addr = node(),
 
-    %% PVC Caches
+    %% Materializer Caches
     OpsCache = materializer_vnode:get_cache_name(Partition, ops_cache),
     SnapshotCache = materializer_vnode:get_cache_name(Partition, snapshot_cache),
     PVC_VLog = materializer_vnode:get_cache_name(Partition, pvc_snapshot_cache),
@@ -212,6 +212,7 @@ init([Partition, Id]) ->
                           pvc_vlog_cache = PVC_VLog,
                           pvc_index_set = PVC_Index},
 
+    %% ClockSI Cache
     PreparedCache = clocksi_vnode:get_cache_name(Partition, prepared),
 
     Self = generate_server_name(Addr, Partition, Id),

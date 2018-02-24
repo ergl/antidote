@@ -363,6 +363,10 @@
     is_ready :: boolean(),
 
     %% PVC only
+
+    %% Normal, hash-based VLog
     pvc_vlog_cache :: cache_id() | undefined,
+
+    %% Ordered VLog to support range queries
     pvc_index_set :: cache_id() | undefined
 }).
