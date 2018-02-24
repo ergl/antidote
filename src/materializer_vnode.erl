@@ -163,9 +163,16 @@ init([Partition]) ->
             true
     end,
 
-    PVCCache = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
+    PVC_VLog = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
         {ok, pvc} ->
             open_table(Partition, pvc_snapshot_cache);
+        _ ->
+            undefined
+    end,
+
+    PVC_Index = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
+        {ok, pvc} ->
+            open_table(Partition, pvc_index_cache, [ordered_set, protected, named_table, ?TABLE_CONCURRENCY]);
         _ ->
             undefined
     end,
@@ -176,7 +183,8 @@ init([Partition]) ->
         partition = Partition,
         snapshot_cache = SnapshotCache,
 
-        pvc_vlog_cache = PVCCache
+        pvc_vlog_cache = PVC_VLog,
+        pvc_index_set = PVC_Index
     }}.
 
 -spec load_from_log_to_tables(partition_id(), #mat_state{}) -> ok | {error, reason()}.
@@ -207,14 +215,14 @@ load_ops(OpsDict, State) ->
         end, CommittedOps)
     end, true, OpsDict).
 
--spec open_table(partition_id(), 'ops_cache' | 'snapshot_cache') -> atom() | ets:tid().
+-spec open_table(partition_id(), atom()) -> atom() | ets:tid().
 open_table(Partition, Name) ->
+    open_table(Partition, Name, [set, protected, named_table, ?TABLE_CONCURRENCY]).
+
+open_table(Partition, Name, Options) ->
     case ets:info(get_cache_name(Partition, Name)) of
         undefined ->
-            ets:new(
-                get_cache_name(Partition, Name),
-                [set, protected, named_table, ?TABLE_CONCURRENCY]
-            );
+            ets:new(get_cache_name(Partition, Name), Options);
 
         _ ->
             %% Other vnode hasn't finished closing tables
@@ -226,7 +234,7 @@ open_table(Partition, Name) ->
                 _:_Reason->
                     ok
             end,
-            open_table(Partition, Name)
+            open_table(Partition, Name, Options)
     end.
 
 %% @doc The tables holding the updates and snapshots are shared with concurrent

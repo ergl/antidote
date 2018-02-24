@@ -361,5 +361,6 @@
     is_ready :: boolean(),
 
     %% PVC only
-    pvc_vlog_cache :: cache_id() | undefined
+    pvc_vlog_cache :: cache_id() | undefined,
+    pvc_index_set :: cache_id() | undefined
 }).

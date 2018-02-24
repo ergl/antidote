@@ -198,14 +198,28 @@ generate_random_server_name(Node, Partition) ->
 
 init([Partition, Id]) ->
     Addr = node(),
+
+    %% PVC Caches
     OpsCache = materializer_vnode:get_cache_name(Partition, ops_cache),
     SnapshotCache = materializer_vnode:get_cache_name(Partition, snapshot_cache),
+    PVC_VLog = materializer_vnode:get_cache_name(Partition, pvc_snapshot_cache),
+    PVC_Index = materializer_vnode:get_cache_name(Partition, pvc_index_cache),
+
+    MatState = #mat_state{is_ready=false,
+                          partition=Partition,
+                          ops_cache=OpsCache,
+                          snapshot_cache=SnapshotCache,
+                          pvc_vlog_cache = PVC_VLog,
+                          pvc_index_set = PVC_Index},
+
     PreparedCache = clocksi_vnode:get_cache_name(Partition, prepared),
-    MatState = #mat_state{ops_cache=OpsCache, snapshot_cache=SnapshotCache, partition=Partition, is_ready=false},
+
     Self = generate_server_name(Addr, Partition, Id),
-    {ok, #state{partition=Partition, id=Id,
+    {ok, #state{id=Id,
+                self=Self,
+                partition=Partition,
                 mat_state = MatState,
-                prepared_cache=PreparedCache, self=Self}}.
+                prepared_cache=PreparedCache}}.
 
 handle_call({perform_read, Key, Type, Transaction}, Coordinator, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
