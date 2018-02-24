@@ -207,17 +207,17 @@ prepare(ListofNodes, TxId) ->
     end, ok, ListofNodes).
 
 -spec decide(list(), tx(), vectorclock(), boolean()) -> ok.
-decide(UpdatedPartitions, Tx, CommitVC, Outcome) ->
+decide(OpsAndIndices, Tx, CommitVC, Outcome) ->
     %% Sanity check
     pvc = Tx#transaction.transactional_protocol,
-    lists:foreach(fun({Node, WriteSet}) ->
+    lists:foreach(fun({Node, WriteSet, IndexList}) ->
         riak_core_vnode_master:command(
             Node,
-            {pvc_decide, Tx, WriteSet, CommitVC, Outcome},
+            {pvc_decide, Tx, WriteSet, IndexList, CommitVC, Outcome},
             {fsm, undefined, self()},
             ?CLOCKSI_MASTER
         )
-    end, UpdatedPartitions).
+    end, OpsAndIndices).
 
 %% @doc Sends prepare+commit to a single partition
 %%      Called by a Tx coordinator when the tx only
@@ -381,7 +381,7 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
-handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, State = #state{
+handle_command({pvc_decide, Transaction, WriteSet, IndexList, CommitVC, Outcome}, _Sender, State = #state{
     partition = Partition,
     pvc_commitqueue = CQueue
 }) ->
@@ -395,7 +395,7 @@ handle_command({pvc_decide, Transaction, WriteSet, CommitVC, Outcome}, _Sender, 
 
         true ->
             %% Append to CommitLog
-            ReadyQueue = pvc_commit_queue:ready(TxnId, CommitVC, CQueue),
+            ReadyQueue = pvc_commit_queue:ready(TxnId, IndexList, CommitVC, CQueue),
             OwnNode = {Partition, node()},
             ok = pvc_process_cqueue(OwnNode),
             ReadyQueue
@@ -423,14 +423,14 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
             ok;
 
         Entries ->
-            lists:foreach(fun({Id, WS, VC}) ->
+            lists:foreach(fun({Id, WS, VC, IndexList}) ->
 %%                lager:info(
 %%                    "[~p] PVC found entry ~p with time ~p",
 %%                    [Partition, erlang:phash2(Id), dict:to_list(VC)]
 %%                ),
 
                 %% First, apply update to the VLog (materializer)
-                ok = pvc_vlog_apply(Id, WS, VC),
+                ok = pvc_vlog_apply(Id, WS, VC, IndexList),
 
                 %% Now, update MRVC with the max of the old value and our VC
                 PrevMRVC = pvc_get_mrvc(PVCState),
@@ -776,13 +776,14 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
     end, ordsets:new(), WriteSet).
 
 %% @doc Update the materializer cache with the newest snapshots (VLog)
--spec pvc_vlog_apply(txid(), list(), vectorclock_partition:partition_vc()) -> ok | error.
-pvc_vlog_apply(TxnId, WriteSet, CommitVC) ->
+-spec pvc_vlog_apply(txid(), list(), vectorclock_partition:partition_vc(), list()) -> ok | error.
+pvc_vlog_apply(TxnId, [{FirstKey,_,_}|_]=WriteSet, CommitVC, IndexList) ->
+    %% All the keys in the WS are in the same partition
+    {TargetPartition, _} = log_utilities:get_key_partition(FirstKey),
     DCId = dc_meta_data_utilities:get_my_dc_id(),
 
     Update = fun({Key, Type, Op}, Acc) ->
-        {KeyPartition, _} = log_utilities:get_key_partition(Key),
-        CommitTime = vectorclock_partition:get_partition_time(KeyPartition, CommitVC),
+        CommitTime = vectorclock_partition:get_partition_time(TargetPartition, CommitVC),
 
         {ok, DownstreamOp} = Type:downstream(Op, Type:new()),
         Value = Type:value(DownstreamOp),
@@ -806,7 +807,7 @@ pvc_vlog_apply(TxnId, WriteSet, CommitVC) ->
         true ->
             error;
         false ->
-            ok
+            materializer_vnode:pvc_update_indices(IndexList)
     end.
 
 prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict) ->

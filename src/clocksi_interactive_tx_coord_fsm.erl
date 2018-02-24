@@ -187,7 +187,9 @@ init_state(StayAlive, FullCommit, IsStatic) ->
         is_static = IsStatic,
         return_accumulator = [],
         internal_read_set = orddict:new(),
-        stay_alive = StayAlive
+        stay_alive = StayAlive,
+
+        pvc_keys_to_index = dict:new()
     }.
 
 -spec generate_name(pid()) -> atom().
@@ -599,7 +601,29 @@ execute_command(update_objects, UpdateOps, Sender, State = #tx_coord_state{
     pvc_update(UpdateOps, Sender, State);
 
 execute_command(update_objects, UpdateOps, Sender, State) ->
-    clocksi_update(UpdateOps, Sender, State).
+    clocksi_update(UpdateOps, Sender, State);
+
+execute_command(pvc_index, Updates, Sender, State = #tx_coord_state{
+    transactional_protocol=pvc,
+    pvc_keys_to_index=ToIndexDict
+}) ->
+    NewIndexSet = lists:foldl(fun({K, _}, Acc) ->
+        P = log_utilities:get_key_partition(K),
+        pvc_add_to_index_dict(P, K, Acc)
+    end, ToIndexDict, Updates),
+    gen_fsm:reply(Sender, ok),
+    {next_state, execute_op, State#tx_coord_state{pvc_keys_to_index=NewIndexSet}}.
+
+-spec pvc_add_to_index_dict(index_node(), key(), dict:dict()) -> dict:dict().
+pvc_add_to_index_dict(Part, Key, Dict) ->
+    S = case dict:find(Part, Dict) of
+        error ->
+            ordsets:new();
+        {ok, Set} ->
+            Set
+    end,
+    NewS = ordsets:add_element(Key, S),
+    dict:store(Part, NewS, Dict).
 
 pvc_read(Objects, Sender, State = #tx_coord_state{
     client_ops=ClientOps,
@@ -1204,6 +1228,7 @@ pvc_decide(State = #tx_coord_state{
     client_ops = ClientOps,
     transaction = Transaction,
     updated_partitions = UpdatedPartitions,
+    pvc_keys_to_index = ToIndexDict,
     return_accumulator = [{pvc, #pvc_decide_meta{
         outcome = Outcome,
         commit_vc = CommitVC
@@ -1218,7 +1243,15 @@ pvc_decide(State = #tx_coord_state{
 %%            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
             execute_post_commit_hooks(ClientOps)
     end,
-    ok = clocksi_vnode:decide(UpdatedPartitions, Transaction, CommitVC, Outcome),
+    OpsAndIndices = lists:map(fun({Part, WS}) ->
+        case dict:find(Part, ToIndexDict) of
+            error ->
+                {Part, WS, []};
+            {ok, Set} ->
+                {Part, WS, ordsets:to_list(Set)}
+        end
+    end, UpdatedPartitions),
+    ok = clocksi_vnode:decide(OpsAndIndices, Transaction, CommitVC, Outcome),
     gen_fsm:reply(From, Reply),
     {stop, normal, State}.
 

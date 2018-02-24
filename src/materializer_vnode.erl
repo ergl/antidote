@@ -70,7 +70,8 @@
 
 %% PVC-only functions
 -export([pvc_read/5,
-         pvc_update/1]).
+         pvc_update/1,
+         pvc_update_indices/1]).
 
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
@@ -136,6 +137,19 @@ pvc_update(Payload = #clocksi_payload{key = Key}) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
         {pvc_update, Payload},
+        materializer_vnode_master
+    ).
+
+-spec pvc_update_indices(list()) -> ok.
+pvc_update_indices([]) ->
+    ok;
+
+pvc_update_indices([K| _] = Keys) ->
+    %% All these keys are in the same partition
+    IndexNode = log_utilities:get_key_partition(K),
+    riak_core_vnode_master:command(
+        IndexNode,
+        {pvc_index, Keys},
         materializer_vnode_master
     ).
 
@@ -299,6 +313,11 @@ handle_command({update, Key, DownstreamOp}, _Sender, State) ->
 handle_command({pvc_update, Payload}, _Sender, State) ->
     ok = pvc_update_ops_bypass(Payload, State),
     {reply, ok, State};
+
+handle_command({pvc_index, Keys}, _Sender, State = #mat_state{pvc_index_set = PVC_Index}) ->
+    Ops = lists:map(fun(K) -> {K, nil} end, Keys),
+    true = ets:insert(PVC_Index, Ops),
+    {noreply, State};
 
 handle_command({store_ss, Key, Snapshot, CommitTime}, _Sender, State) ->
     internal_store_ss(Key, Snapshot, CommitTime, false, State),

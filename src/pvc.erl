@@ -55,13 +55,16 @@ commit_transaction(TxId) ->
         Res -> Res
     end.
 
-read_keys(Keys, #tx_id{server_pid = Pid}) ->
+read_keys(Keys, #tx_id{server_pid = Pid}) when is_list(Keys) ->
     CompatKeys = lists:map(fun(K) ->
         {K, antidote_crdt_lwwreg}
     end, Keys),
-    gen_fsm:sync_send_event(Pid, {read_objects, CompatKeys}, ?OP_TIMEOUT).
+    gen_fsm:sync_send_event(Pid, {read_objects, CompatKeys}, ?OP_TIMEOUT);
 
-update_keys(UpdateOps, TxId = #tx_id{server_pid = Pid}) ->
+read_keys(Key, TxId) ->
+    read_keys([Key], TxId).
+
+update_keys(UpdateOps, TxId = #tx_id{server_pid = Pid}) when is_list(UpdateOps) ->
     CompatOps = lists:map(fun({K, V}) ->
         {K, antidote_crdt_lwwreg, {assign, V}}
     end, UpdateOps),
@@ -75,7 +78,10 @@ update_keys(UpdateOps, TxId = #tx_id{server_pid = Pid}) ->
 
         {error, _R}=Err ->
             Err
-    end.
+    end;
+
+update_keys(UpdateOp, TxId) ->
+    update_keys([UpdateOp], TxId).
 
 %% Antidote-Compatible API
 

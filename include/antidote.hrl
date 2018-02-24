@@ -333,7 +333,9 @@
     internal_read_set :: orddict:orddict(),
     is_static :: boolean(),
     full_commit :: boolean(),
-    stay_alive :: boolean()
+    stay_alive :: boolean(),
+
+    pvc_keys_to_index :: dict:dict()
 }).
 
 %% The record is using during materialization to keep the
