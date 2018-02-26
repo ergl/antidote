@@ -23,6 +23,7 @@
 -include("antidote.hrl").
 
 -define(CLAIMED, claimed).
+-define(KEY_SEP, <<"$">>/binary).
 
 %% API
 -export([u_index/4,
@@ -41,7 +42,7 @@ read_u_index(IndexName, IndexValue, TxId) ->
 
 -spec index(binary(), binary(), binary(), txid()) -> ok.
 index(IndexName, IndexValue, RefKey, TxId) ->
-    RootKey = make_u_index_key(IndexName, IndexValue),
+    RootKey = make_root_index_key(IndexName, IndexValue),
     IndexKey = make_index_key(IndexName, IndexValue, RefKey),
     Updates = case claimed_index(RootKey, TxId) of
         false ->
@@ -52,9 +53,15 @@ index(IndexName, IndexValue, RefKey, TxId) ->
     end,
     update_indices(Updates, TxId).
 
-update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
-    ok = pvc:update_keys(Updates, TxId),
-    gen_fsm:sync_send_event(Pid, {pvc_index, Updates}, ?OP_TIMEOUT).
+-spec read_index(binary(), binary(), txid()) -> {ok, list()} | {error, reason()}.
+read_index(IndexName, IndexValue, TxId) ->
+    RootKey = make_root_index_key(IndexName, IndexValue),
+    case claimed_index(RootKey, TxId) of
+        false ->
+            {ok, []};
+        true ->
+            read_index_range(RootKey, TxId)
+    end.
 
 %% Util functions
 
@@ -64,8 +71,32 @@ claimed_index(RootKey, TxId) ->
 
 %% TODO(borja): Handle non-binary data
 make_u_index_key(IndexName, IndexValue) ->
-    <<IndexName/binary, IndexValue/binary>>.
+    <<<<"u_index">>/binary,
+        ?KEY_SEP,
+        IndexName/binary,
+        ?KEY_SEP,
+        IndexValue/binary>>.
+
+make_root_index_key(IndexName, IndexValue) ->
+    <<<<"index">>/binary,
+        ?KEY_SEP,
+        IndexName/binary,
+        ?KEY_SEP,
+        IndexValue/binary>>.
 
 %% TODO(borja): Handle non-binary data
 make_index_key(IndexName, IndexValue, RefKey) ->
-    <<IndexName/binary, IndexValue/binary, RefKey/binary>>.
+    <<<<"index">>/binary,
+        ?KEY_SEP,
+        IndexName/binary,
+        ?KEY_SEP,
+        IndexValue/binary,
+        ?KEY_SEP, RefKey/binary>>.
+
+update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
+    ok = pvc:update_keys(Updates, TxId),
+    gen_fsm:sync_send_event(Pid, {pvc_index, Updates}, ?OP_TIMEOUT).
+
+read_index_range(_RootKey, #tx_id{server_pid = _Pid}) ->
+    %% TODO(borja): Implement
+    {ok, []}.
