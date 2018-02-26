@@ -71,7 +71,8 @@
 %% PVC-only functions
 -export([pvc_read/5,
          pvc_update/1,
-         pvc_update_indices/1]).
+         pvc_update_indices/1,
+         pvc_key_range/4]).
 
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
@@ -150,6 +151,15 @@ pvc_update_indices([K| _] = Keys) ->
     riak_core_vnode_master:command(
         IndexNode,
         {pvc_index, Keys},
+        materializer_vnode_master
+    ).
+
+%% @doc Get the key range after Root with the given Prefix of size PrefixLen
+-spec pvc_key_range(index_node(), key(), binary(), non_neg_integer()) -> list().
+pvc_key_range(IndexNode, Root, Prefix, PrefixLen) ->
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {pvc_key_range, Root, Prefix, PrefixLen},
         materializer_vnode_master
     ).
 
@@ -320,6 +330,12 @@ handle_command({pvc_index, Keys}, _Sender, State = #mat_state{pvc_index_set = PV
     Ops = lists:map(fun(K) -> {K, nil} end, Keys),
     true = ets:insert(PVC_Index, Ops),
     {noreply, State};
+
+handle_command({pvc_key_range, Root, Prefix, PrefixLen}, _Sender, State = #mat_state{
+    pvc_index_set = PVC_Index
+}) ->
+    FoundKeys = pvc_get_key_range(Root, Prefix, PrefixLen, PVC_Index),
+    {reply, FoundKeys, State};
 
 handle_command({store_ss, Key, Snapshot, CommitTime}, _Sender, State) ->
     internal_store_ss(Key, Snapshot, CommitTime, false, State),
@@ -852,6 +868,46 @@ pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
 %%    lager:info("VLog.apply(~p, ~p)", [Key, pvc_version_log:to_list(NextVersionLog)]),
     true = ets:insert(VLogCache, {Key, NextVersionLog}),
     ok.
+
+%% @doc Scan the PVC_Index for matching keys
+%%
+%%      We implemented the PVC_Index as an ordered_set, so keys with the same,
+%%      common prefix will be grouped together in the tree.
+%%      Hence, we can scan a range by repeatedly calling ets:next/2 starting
+%%      on the root (a key wich is just the common prefix).
+%%
+%%      ETS does not guarantee that the returned key actually exists in the table,
+%%      if it was removed concurrently to a scan. We actually never remove keys
+%%      from the table, so this does not affect us. Also, the keys are inserted
+%%      here only after a transaction has committed and made its updates visible
+%%      to others through the VLog, so the caller can make sure that whatever
+%%      is returned from this range can be found on primary storage
+%%
+-spec pvc_get_key_range(key(), binary(), non_neg_integer(), cache_id()) -> list().
+pvc_get_key_range(Root, Prefix, PrefixLen, PVC_Index) ->
+    case ets:lookup(PVC_Index, Root) of
+        [] ->
+            [];
+
+        [{Root, _}] ->
+            Next = ets:next(PVC_Index, Root),
+            %% Skip the root, we don't care about it
+            pvc_get_key_range(Next, Prefix, PrefixLen, PVC_Index, [])
+    end.
+
+pvc_get_key_range('$end_of_table', _Prefix, _PrefixLen, _PVC_Index, Acc) ->
+    Acc;
+
+pvc_get_key_range(Key, Prefix, PrefixLen, PVC_Index, Acc) ->
+    <<Pref:PrefixLen, _/binary>> = Key,
+    case Pref of
+        Prefix ->
+            NextKey = ets:next(PVC_Index, Key),
+            pvc_get_key_range(NextKey, Prefix, PrefixLen, PVC_Index, [Key | Acc]);
+
+        _ ->
+            Acc
+    end.
 
 %% @doc Insert an operation and start garbage collection triggered by writes.
 %% the mechanism is very simple; when there are more than OPS_THRESHOLD

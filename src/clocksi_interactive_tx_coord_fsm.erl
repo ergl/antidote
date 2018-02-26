@@ -612,7 +612,25 @@ execute_command(pvc_index, Updates, Sender, State = #tx_coord_state{
         pvc_add_to_index_dict(P, K, Acc)
     end, ToIndexDict, Updates),
     gen_fsm:reply(Sender, ok),
-    {next_state, execute_op, State#tx_coord_state{pvc_keys_to_index=NewIndexSet}}.
+    {next_state, execute_op, State#tx_coord_state{pvc_keys_to_index=NewIndexSet}};
+
+execute_command(pvc_scan_range, RangeObj, Sender, State = #tx_coord_state{
+    transactional_protocol=pvc,
+    pvc_keys_to_index=ToIndexDict
+}) ->
+    {Root, Prefix, Len} = RangeObj,
+    Partition = log_utilities:get_key_partition(Root),
+
+    %% Get the matching keys in the locally updated set, if any
+    LocalIndexSet = pvc_get_local_matching_keys(Partition, Root, Prefix, Len, ToIndexDict),
+
+    %% Also get the matching keys stored in the ordered storage
+    StoredIndexKeys = materializer_vnode:pvc_key_range(Partition, Root, Prefix, Len),
+
+    %% Merge them (don't store duplicates)
+    MergedKeys = lists:foldl(fun ordsets:add_element/2, LocalIndexSet, StoredIndexKeys),
+    gen_fsm:reply(Sender, {ok, ordsets:to_list(MergedKeys)}),
+    {next_state, execute_op, State}.
 
 -spec pvc_add_to_index_dict(index_node(), key(), dict:dict()) -> dict:dict().
 pvc_add_to_index_dict(Part, Key, Dict) ->
@@ -624,6 +642,38 @@ pvc_add_to_index_dict(Part, Key, Dict) ->
     end,
     NewS = ordsets:add_element(Key, S),
     dict:store(Part, NewS, Dict).
+
+%% @doc Return the locally updated keys belonging to Partition that match
+%%      the given prefix, skipping the root key
+-spec pvc_get_local_matching_keys(
+    partition_id(),
+    key(),
+    binary(),
+    non_neg_integer(),
+    dict:dict()
+) -> ordsets:ordset().
+
+pvc_get_local_matching_keys(Partition, Root, Prefix, Len, ToIndexDict) ->
+    case dict:find(Partition, ToIndexDict) of
+        error ->
+            ordsets:new();
+
+        {ok, S} ->
+            ordsets:fold(fun(Key, Acc) ->
+                case Key of
+                    Root ->
+                        Acc;
+                    _ ->
+                        <<Pref:Len, _/binary>> = Key,
+                        case Pref of
+                            Prefix ->
+                                ordsets:add_element(Key, Acc);
+                            _ ->
+                                Acc
+                        end
+                end
+            end, ordsets:new(), S)
+    end.
 
 pvc_read(Objects, Sender, State = #tx_coord_state{
     client_ops=ClientOps,

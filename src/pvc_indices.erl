@@ -28,7 +28,8 @@
 %% API
 -export([u_index/4,
          read_u_index/3,
-         index/4]).
+         index/4,
+         read_index/3]).
 
 -spec u_index(binary(), binary(), binary(), txid()) -> ok.
 u_index(IndexName, IndexValue, RefKey, TxId) ->
@@ -60,7 +61,8 @@ read_index(IndexName, IndexValue, TxId) ->
         false ->
             {ok, []};
         true ->
-            read_index_range(RootKey, TxId)
+            {ok, Range} = read_index_range(RootKey, TxId),
+            pvc:read_keys(Range, TxId)
     end.
 
 %% Util functions
@@ -97,6 +99,7 @@ update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
     ok = pvc:update_keys(Updates, TxId),
     gen_fsm:sync_send_event(Pid, {pvc_index, Updates}, ?OP_TIMEOUT).
 
-read_index_range(_RootKey, #tx_id{server_pid = _Pid}) ->
-    %% TODO(borja): Implement
-    {ok, []}.
+read_index_range(RootKey, #tx_id{server_pid = Pid}) ->
+    PrefixLen = bit_size(RootKey),
+    <<Prefix:PrefixLen, _/binary>> = RootKey,
+    gen_fsm:sync_send_event(Pid, {pvc_scan_range, {RootKey, Prefix, PrefixLen}}).
