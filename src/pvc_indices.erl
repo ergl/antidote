@@ -29,14 +29,17 @@
          read_u_index/3,
          index/4]).
 
+-spec u_index(binary(), binary(), binary(), txid()) -> ok.
 u_index(IndexName, IndexValue, RefKey, TxId) ->
     Key = make_u_index_key(IndexName, IndexValue),
     pvc:update_keys({Key, RefKey}, TxId).
 
+-spec read_u_index(binary(), binary(), txid()) -> {ok, list()} | {error, reason()}.
 read_u_index(IndexName, IndexValue, TxId) ->
     Key = make_u_index_key(IndexName, IndexValue),
     pvc:read_keys(Key, TxId).
 
+-spec index(binary(), binary(), binary(), txid()) -> ok.
 index(IndexName, IndexValue, RefKey, TxId) ->
     RootKey = make_u_index_key(IndexName, IndexValue),
     IndexKey = make_index_key(IndexName, IndexValue, RefKey),
