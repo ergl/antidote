@@ -63,7 +63,12 @@ read_index(IndexName, IndexValue, TxId) ->
             {ok, []};
         true ->
             {ok, Range} = read_index_range(RootKey, TxId),
-            pvc:read_keys(Range, TxId)
+            case Range of
+                [] ->
+                    {ok, []};
+                _ ->
+                    pvc:read_keys(Range, TxId)
+            end
     end.
 
 %% Util functions
