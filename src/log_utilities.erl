@@ -91,11 +91,14 @@ remove_node_from_preflist(Preflist) ->
 convert_key(Key) ->
     case is_binary(Key) of
         true ->
-            KeyInt = (catch list_to_integer(binary_to_list(Key))),
+            Grouping = rubis_utils:get_grouping(Key),
+            KeyInt = (catch list_to_integer(binary_to_list(Grouping))),
             case is_integer(KeyInt) of
-                true -> abs(KeyInt);
+                true ->
+                    abs(KeyInt);
+
                 false ->
-                    HashedKey = riak_core_util:chash_key({?BUCKET, Key}),
+                    HashedKey = riak_core_util:chash_key({?BUCKET, Grouping}),
                     abs(crypto:bytes_to_integer(HashedKey))
             end;
         false ->
