@@ -55,6 +55,9 @@ commit_transaction(TxId) ->
         Res -> Res
     end.
 
+read_keys([], _) ->
+    {ok, []};
+
 read_keys(Keys, #tx_id{server_pid = Pid}) when is_list(Keys) ->
     CompatKeys = lists:map(fun(K) ->
         {K, antidote_crdt_lwwreg}
