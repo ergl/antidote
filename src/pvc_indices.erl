@@ -30,6 +30,7 @@
 -export([u_index/4,
          read_u_index/3,
          index/4,
+         read_index/2,
          read_index/3]).
 
 -spec u_index(binary(), binary(), binary(), txid()) -> ok.
@@ -44,16 +45,42 @@ read_u_index(IndexName, IndexValue, TxId) ->
 
 -spec index(binary(), binary(), binary(), txid()) -> ok.
 index(IndexName, IndexValue, RefKey, TxId) ->
+    MainIndexKey = make_root_index_key(IndexName),
     RootKey = make_root_index_key(IndexName, IndexValue),
     IndexKey = make_index_key(IndexName, IndexValue, RefKey),
+    MainUpdate = case claimed_index(MainIndexKey, TxId) of
+        false ->
+            [{MainIndexKey, ?CLAIMED}];
+        true ->
+            []
+    end,
     Updates = case claimed_index(RootKey, TxId) of
         false ->
-            [{RootKey, ?CLAIMED}, {IndexKey, RefKey}];
+            [{RootKey, ?CLAIMED}, {IndexKey, RefKey} | MainUpdate];
 
         true ->
-            [{IndexKey, RefKey}]
+            [{IndexKey, RefKey} | MainUpdate]
     end,
     update_indices(Updates, TxId).
+
+-spec read_index(binary(), txid()) -> {ok, list()} | {error, reason()}.
+read_index(IndexName, TxId) ->
+    MainIndexKey = make_root_index_key(IndexName),
+    case claimed_index(MainIndexKey, TxId) of
+        false ->
+            {ok, []};
+        true ->
+            {ok, Range} = read_index_range(MainIndexKey, TxId),
+            Filtered = lists:filter(fun(Key) ->
+                length(binary:split(Key, <<"$">>, [global])) > 2
+            end, Range),
+            case Filtered of
+                [] ->
+                    {ok, []};
+                _ ->
+                    pvc:read_keys(Filtered, TxId)
+            end
+    end.
 
 -spec read_index(binary(), binary(), txid()) -> {ok, list()} | {error, reason()}.
 read_index(IndexName, IndexValue, TxId) ->
@@ -80,6 +107,10 @@ claimed_index(RootKey, TxId) ->
 %% TODO(borja): Handle non-binary data
 make_u_index_key(IndexName, IndexValue) ->
     <<IndexName/binary, ?UINDEX_SEP, IndexValue/binary>>.
+
+%% TODO(borja): Handle non-binary data
+make_root_index_key(IndexName) ->
+    IndexName.
 
 make_root_index_key(IndexName, IndexValue) ->
     <<IndexName/binary, ?INDEX_SEP, IndexValue/binary>>.
