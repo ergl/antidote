@@ -23,7 +23,8 @@
 -include("antidote.hrl").
 
 -define(CLAIMED, claimed).
--define(KEY_SEP, <<"$">>/binary).
+-define(INDEX_SEP, <<"$">>/binary).
+-define(UINDEX_SEP, <<"%">>/binary).
 
 %% API
 -export([u_index/4,
@@ -73,27 +74,14 @@ claimed_index(RootKey, TxId) ->
 
 %% TODO(borja): Handle non-binary data
 make_u_index_key(IndexName, IndexValue) ->
-    <<<<"u_index">>/binary,
-        ?KEY_SEP,
-        IndexName/binary,
-        ?KEY_SEP,
-        IndexValue/binary>>.
+    <<IndexName/binary, ?UINDEX_SEP, IndexValue/binary>>.
 
 make_root_index_key(IndexName, IndexValue) ->
-    <<<<"index">>/binary,
-        ?KEY_SEP,
-        IndexName/binary,
-        ?KEY_SEP,
-        IndexValue/binary>>.
+    <<IndexName/binary, ?INDEX_SEP, IndexValue/binary>>.
 
 %% TODO(borja): Handle non-binary data
 make_index_key(IndexName, IndexValue, RefKey) ->
-    <<<<"index">>/binary,
-        ?KEY_SEP,
-        IndexName/binary,
-        ?KEY_SEP,
-        IndexValue/binary,
-        ?KEY_SEP, RefKey/binary>>.
+    <<IndexName/binary, ?INDEX_SEP, IndexValue/binary, ?INDEX_SEP, RefKey/binary>>.
 
 update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
     ok = pvc:update_keys(Updates, TxId),
