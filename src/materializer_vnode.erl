@@ -898,6 +898,9 @@ pvc_get_key_range(Root, Prefix, PrefixLen, PVC_Index) ->
 pvc_get_key_range('$end_of_table', _Prefix, _PrefixLen, _PVC_Index, Acc) ->
     Acc;
 
+pvc_get_key_range(Key, _Prefix, PrefixLen, _PVC_Index, Acc) when bit_size(Key) < PrefixLen ->
+    Acc;
+
 pvc_get_key_range(Key, Prefix, PrefixLen, PVC_Index, Acc) ->
     <<Pref:PrefixLen, _/binary>> = Key,
     case Pref of
