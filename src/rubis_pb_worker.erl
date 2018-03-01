@@ -45,12 +45,13 @@ handle_call(_E, _From, State) ->
 handle_cast(accept, S = #state{socket = ListenSocket}) ->
     {ok, AcceptSocket} = gen_tcp:accept(ListenSocket),
     rubis_pb_sup:start_socket(),
+    ok = inet:setopts(AcceptSocket, [{active, once}]),
     {noreply, S#state{socket=AcceptSocket}}.
 
 %% TODO(borja): Handle it here
-handle_info({tcp, _Socket, _Data}, State = #state{socket = _Sock}) ->
-%%    io:format("Got data ~p~n", [Data]),
-%%    gen_tcp:send(Sock, <<"hello">>),
+handle_info({tcp, _Socket, Data}, State = #state{socket = Sock}) ->
+    gen_tcp:send(Sock, Data),
+    ok = inet:setopts(Sock, [{active, once}]),
     {noreply, State};
 
 handle_info({tcp_closed, _Socket}, S) ->
