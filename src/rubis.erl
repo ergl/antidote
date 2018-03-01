@@ -23,6 +23,8 @@
 -define(ru, rubis_utils).
 -define(default_group, <<"global_index">>).
 
+-define(committed, {ok, []}).
+
 -type key() :: term().
 -type reason() :: atom().
 
@@ -95,7 +97,7 @@
          store_item/5,
          about_me/1]).
 
--spec put_region(binary()) -> {ok, key()}.
+-spec put_region(binary()) -> {ok, key()} | {error, reason()}.
 put_region(RegionName) ->
     %% Each region has its own grouping, determined by their region name (unique)
     ChosenPartition = log_utilities:get_key_partition(RegionName),
@@ -116,11 +118,16 @@ put_region(RegionName) ->
     {ok, [<<>>]} = pvc:read_keys(RegionKey, TxId),
     ok = pvc:update_keys({RegionKey, RegionName}, TxId),
     ok = pvc_indices:index(NameIndex, RegionName, RegionKey, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
+    Commit = pvc:commit_transaction(TxId),
 
-    {ok, RegionKey}.
+    case Commit of
+        ?committed ->
+            {ok, RegionKey};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
--spec put_category(binary()) -> {ok, key()}.
+-spec put_category(binary()) -> {ok, key()} | {error, reason()}.
 put_category(CategoryName) ->
     %% Each category has its own grouping, determined by their region name (unique)
     ChosenPartition = log_utilities:get_key_partition(CategoryName),
@@ -142,31 +149,41 @@ put_category(CategoryName) ->
     {ok, [<<>>]} = pvc:read_keys(CategoryKey, TxId),
     ok = pvc:update_keys({CategoryKey, CategoryName}, TxId),
     ok = pvc_indices:index(NameIndex, CategoryName, CategoryKey, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
+    Commit = pvc:commit_transaction(TxId),
 
-    {ok, CategoryKey}.
+    case Commit of
+        ?committed ->
+            {ok, CategoryKey};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 -spec auth_user(binary(), binary()) -> {ok, key()} | {error, reason()}.
 auth_user(Username, Password) ->
     NameIndex = ?ru:gen_index_name(?default_group, users_name),
     {ok, TxId} = pvc:start_transaction(),
     {ok, [Val]} = pvc_indices:read_u_index(NameIndex, Username, TxId),
-    Status = case Val of
-                 <<>> ->
-                     {error, user_not_found};
+    Result = case Val of
+        <<>> ->
+            {error, user_not_found};
 
-                 UserId ->
-                     {ok, [#user{password = Pass}]} = pvc:read_keys(UserId, TxId),
-                     case Pass of
-                         Password ->
-                             {ok, UserId};
-                         _ ->
-                             {error, wrong_password}
-                     end
-             end,
-    {ok, []} = pvc:commit_transaction(TxId),
+        UserId ->
+            {ok, [#user{password = Pass}]} = pvc:read_keys(UserId, TxId),
+            case Pass of
+                Password ->
+                    {ok, UserId};
+                _ ->
+                    {error, wrong_password}
+            end
+    end,
+    Commit = pvc:commit_transaction(TxId),
 
-    Status.
+    case Commit of
+        ?committed ->
+            Result;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 -spec register_user(binary(), binary(), binary()) -> {ok, key()} | {error, reason()}.
 register_user(Username, Password, RegionName) ->
@@ -209,49 +226,73 @@ register_user(Username, Password, RegionName) ->
             %% If the username is not unique, abort the transaction
             {error, non_unique_username}
     end,
-    {ok, []} = pvc:commit_transaction(TxId),
+    Commit = pvc:commit_transaction(TxId),
 
-    Result.
+    case Commit of
+        ?committed ->
+            Result;
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
--spec browse_categories() -> {ok, list()}.
+-spec browse_categories() -> {ok, list()} | {error, reason()}.
 browse_categories() ->
-    CategoryNameIndex = rubis_utils:gen_index_name(?default_group, categories_name),
+    CategoryNameIndex = ?ru:gen_index_name(?default_group, categories_name),
     {ok, TxId} = pvc:start_transaction(),
     {ok, CategoryKeys} = pvc_indices:read_index(CategoryNameIndex, TxId),
     Result = pvc:read_keys(CategoryKeys, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
-    Result.
+    Commit = pvc:commit_transaction(TxId),
 
--spec search_items_by_category(key()) -> {ok, list()}.
+    case Commit of
+        ?committed ->
+            Result;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec search_items_by_category(key()) -> {ok, list()} | {error, reason()}.
 search_items_by_category(CategoryId) ->
     CategoryGrouping = ?ru:get_grouping(CategoryId),
     CategoryIndex = ?ru:gen_index_name(CategoryGrouping, items_category_id),
     {ok, TxId} = pvc:start_transaction(),
     {ok, ItemKeys} = pvc_indices:read_index(CategoryIndex, CategoryId, TxId),
-    Res = pvc:read_keys(ItemKeys, TxId),
+    Result = pvc:read_keys(ItemKeys, TxId),
     {ok, []} = pvc:commit_transaction(TxId),
-    Res.
+    Commit = pvc:commit_transaction(TxId),
 
--spec browse_regions() -> {ok, list()}.
+    case Commit of
+        ?committed ->
+            Result;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec browse_regions() -> {ok, list()} | {error, reason()}.
 browse_regions() ->
-    RegionNameIndex = rubis_utils:gen_index_name(?default_group, regions_name),
+    RegionNameIndex = ?ru:gen_index_name(?default_group, regions_name),
     {ok, TxId} = pvc:start_transaction(),
     {ok, RegionKeys} = pvc_indices:read_index(RegionNameIndex, TxId),
     Result = pvc:read_keys(RegionKeys, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
-    Result.
+    Commit = pvc:commit_transaction(TxId),
 
--spec search_items_by_region(key(), key()) -> {ok, list()}.
+    case Commit of
+        ?committed ->
+            Result;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec search_items_by_region(key(), key()) -> {ok, list()} | {error, reason()}.
 search_items_by_region(CategoryId, RegionId) ->
     %% Get all items in category CategoryId, such that their sellers
     %% are part of the given region
     {ok, TxId} = pvc:start_transaction(),
     {ok, [RegionName]} = pvc:read_keys(RegionId, TxId),
-    UserRegionIndex = rubis_utils:gen_index_name(RegionName, users_region),
+    UserRegionIndex = ?ru:gen_index_name(RegionName, users_region),
     {ok, UsersInRegion} = pvc_indices:read_index(UserRegionIndex, TxId),
     MatchingItems = lists:flatmap(fun(UserKey) ->
-        SellerGroup = rubis_utils:get_grouping(UserKey),
-        SellerIndex = rubis_utils:gen_index_name(SellerGroup, items_seller_id),
+        SellerGroup = ?ru:get_grouping(UserKey),
+        SellerIndex = ?ru:gen_index_name(SellerGroup, items_seller_id),
         {ok, SoldByUser} = pvc_indices:read_index(SellerIndex, UserKey, TxId),
         lists:filtermap(fun(ItemKey) ->
             {ok, [Item]} = pvc:read_keys(ItemKey, TxId),
@@ -263,10 +304,16 @@ search_items_by_region(CategoryId, RegionId) ->
             end
         end, SoldByUser)
     end, UsersInRegion),
-    {ok, []} = pvc:commit_transaction(TxId),
-    MatchingItems.
+    Commit = pvc:commit_transaction(TxId),
 
--spec view_item(key()) -> {ok, #view_item{}}.
+    case Commit of
+        ?committed ->
+            MatchingItems;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec view_item(key()) -> {ok, #view_item{}} | {error, reason()}.
 view_item(ItemId) ->
     {ok, TxId} = pvc:start_transaction(),
     {ok, [Item]} = pvc:read_keys(ItemId, TxId),
@@ -279,12 +326,19 @@ view_item(ItemId) ->
                           item_quantity = Item#item.quantity,
                           user_username = Seller#user.username,
                           user_rating = Seller#user.rating},
-    {ok, ViewItem}.
+    Commit = pvc:commit_transaction(TxId),
 
--spec view_user(key()) -> {ok, {binary(), list()}}.
+    case Commit of
+        ?committed ->
+            {ok, ViewItem};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec view_user(key()) -> {ok, {binary(), list()}} | {error, reason()}.
 view_user(UserId) ->
-    UserGroup = rubis_utils:get_grouping(UserId),
-    CommentIndex = rubis_utils:gen_index_name(UserGroup, comments_to_id),
+    UserGroup = ?ru:get_grouping(UserId),
+    CommentIndex = ?ru:gen_index_name(UserGroup, comments_to_id),
 
     {ok, TxId} = pvc:start_transaction(),
     {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
@@ -293,13 +347,19 @@ view_user(UserId) ->
         {ok, [Comment = #comment{from = FromUserId}]} = pvc:read_keys(CommentId, TxId),
         {ok, [#user{username = FromUsername}]} = pvc:read_keys(FromUserId, TxId),
         {Comment, FromUsername}
-                            end, CommentsToUser),
-    {ok, []} = pvc:commit_transaction(TxId),
-    {ok, {Username, CommentInfo}}.
+    end, CommentsToUser),
+    Commit = pvc:commit_transaction(TxId),
 
--spec view_item_bid_hist(key()) -> {ok, {binary(), list()}}.
+    case Commit of
+        ?committed ->
+            {ok, {Username, CommentInfo}};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec view_item_bid_hist(key()) -> {ok, {binary(), list()}} | {error, reason()}.
 view_item_bid_hist(ItemId) ->
-    SelfGrouping = rubis_utils:get_grouping(ItemId),
+    SelfGrouping = ?ru:get_grouping(ItemId),
     OnItemIdIndex = ?ru:gen_index_name(SelfGrouping, bids_on_item_id),
 
     {ok, TxId} = pvc:start_transaction(),
@@ -309,25 +369,31 @@ view_item_bid_hist(ItemId) ->
         {ok, [Bid = #bid{bidder = UserId}]} = pvc:read_keys(BidId, TxId),
         {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
         {Bid, Username}
-                        end, BidsOnItem),
-    {ok, []} = pvc:commit_transaction(TxId),
-    {ok, {ItemName, BidInfo}}.
+    end, BidsOnItem),
+    Commit = pvc:commit_transaction(TxId),
 
--spec store_buy_now(key(), key(), non_neg_integer()) -> {ok, key()}.
+    case Commit of
+        ?committed ->
+            {ok, {ItemName, BidInfo}};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec store_buy_now(key(), key(), non_neg_integer()) -> {ok, key()} | {error, reason()}.
 store_buy_now(OnItemId, BuyerId, Quantity) ->
     %% The grouping for a buy_now object is the items's grouping (OnItemid)
     SelfPartition = log_utilities:get_key_partition(OnItemId),
     SelfGrouping = ?ru:get_grouping(OnItemId),
 
     %% The grouping for buy_now_buyer_id is the Buyer's group (BuyerId)
-    BuyerGrouping = rubis_utils:get_grouping(BuyerId),
-    BuyerIndex = rubis_utils:gen_index_name(BuyerGrouping, buy_now_buyer_id),
+    BuyerGrouping = ?ru:get_grouping(BuyerId),
+    BuyerIndex = ?ru:gen_index_name(BuyerGrouping, buy_now_buyer_id),
 
     BuyNowId = rubis_keygen_vnode:next_id(SelfPartition, buy_now),
     BuyNowKey = ?ru:gen_key(SelfGrouping, buy_now, BuyNowId),
     BuyNowObj = #buy_now{bidder = BuyerId,
-        on_item = OnItemId,
-        quantity = Quantity},
+                         on_item = OnItemId,
+                         quantity = Quantity},
 
     {ok, TxId} = pvc:start_transaction(),
 
@@ -343,11 +409,16 @@ store_buy_now(OnItemId, BuyerId, Quantity) ->
     NewQty = case OldQty - Quantity of N when N < 0 -> 0; M -> M end,
     UpdatedItem = Item#item{quantity = NewQty},
     ok = pvc:update_keys({OnItemId, UpdatedItem}, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
+    Commit = pvc:commit_transaction(TxId),
 
-    {ok, BuyNowKey}.
+    case Commit of
+        ?committed ->
+            {ok, BuyNowKey};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
--spec store_bid(key(), key(), non_neg_integer()) -> {ok, key()}.
+-spec store_bid(key(), key(), non_neg_integer()) -> {ok, key()} | {error, reason()}.
 store_bid(OnItemId, BidderId, Value) ->
     %% The grouping for a bid object is the same as the grouping of the item
     SelfPartition = log_utilities:get_key_partition(OnItemId),
@@ -363,8 +434,8 @@ store_bid(OnItemId, BidderId, Value) ->
     BidId = rubis_keygen_vnode:next_id(SelfPartition, bids),
     BidKey = ?ru:gen_key(SelfGrouping, bids, BidId),
     BidObj = #bid{bidder = BidderId,
-        on_item = OnItemId,
-        price = Value},
+                  on_item = OnItemId,
+                  price = Value},
 
     {ok, TxId} = pvc:start_transaction(),
 
@@ -381,11 +452,16 @@ store_bid(OnItemId, BidderId, Value) ->
     NewMax = max(Item#item.max_bid, Value),
     UpdatedItem = Item#item{num_bids = NBids + 1, max_bid = NewMax},
     ok = pvc:update_keys({OnItemId, UpdatedItem}, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
+    Commit = pvc:commit_transaction(TxId),
 
-    {ok, BidKey}.
+    case Commit of
+        ?committed ->
+            {ok, BidKey};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
--spec store_comment(key(), key(), key(), integer(), binary()) -> {ok, key()}.
+-spec store_comment(key(), key(), key(), integer(), binary()) -> {ok, key()} | {error, reason()}.
 store_comment(OnItemId, FromId, ToId, Rating, Body) ->
     %% The grouping for a comment object is the poster's grouping (FromId)
     SelfPartition = log_utilities:get_key_partition(FromId),
@@ -398,10 +474,10 @@ store_comment(OnItemId, FromId, ToId, Rating, Body) ->
     CommentId = rubis_keygen_vnode:next_id(SelfPartition, comments),
     CommentKey = ?ru:gen_key(SelfGrouping, comments, CommentId),
     CommentObj = #comment{from = FromId,
-        to = ToId,
-        on_item = OnItemId,
-        rating = Rating,
-        body = Body},
+                          to = ToId,
+                          on_item = OnItemId,
+                          rating = Rating,
+                          body = Body},
 
     {ok, TxId} = pvc:start_transaction(),
 
@@ -416,11 +492,16 @@ store_comment(OnItemId, FromId, ToId, Rating, Body) ->
     OldRating = User#user.rating,
     UpdatedUser = User#user{rating = OldRating + Rating},
     ok = pvc:update_keys({ToId, UpdatedUser}, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
+    Commit = pvc:commit_transaction(TxId),
 
-    {ok, CommentKey}.
+    case Commit of
+        ?committed ->
+            {ok, CommentKey};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
--spec store_item(binary(), binary(), non_neg_integer(), key(), key()) -> {ok, key()}.
+-spec store_item(binary(), binary(), non_neg_integer(), key(), key()) -> {ok, key()} | {error, reason()}.
 store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
     %% The item itself has its own grouping, determined by their item name
     ItemPartition = log_utilities:get_key_partition(ItemName),
@@ -450,16 +531,22 @@ store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
     ok = pvc:update_keys({ItemKey, ItemObj}, TxId),
     ok = pvc_indices:index(CategoryIndex, CategoryId, ItemKey, TxId),
     ok = pvc_indices:index(SellerIndex, SellerId, ItemKey, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
+    Commit = pvc:commit_transaction(TxId),
 
-    {ok, ItemKey}.
+    case Commit of
+        ?committed ->
+            {ok, ItemKey};
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
+-spec about_me(key()) -> {ok, binary(), [any()]} | {error, reason()}.
 about_me(UserId) ->
-    UserGroup = rubis_utils:get_grouping(UserId),
+    UserGroup = ?ru:get_grouping(UserId),
     SellerIndex = ?ru:gen_index_name(UserGroup, items_seller_id),
     BidderIndex = ?ru:gen_index_name(UserGroup, bids_bidder_id),
-    CommentIndex = rubis_utils:gen_index_name(UserGroup, comments_to_id),
-    BuyerIndex = rubis_utils:gen_index_name(UserGroup, buy_now_buyer_id),
+    CommentIndex = ?ru:gen_index_name(UserGroup, comments_to_id),
+    BuyerIndex = ?ru:gen_index_name(UserGroup, buy_now_buyer_id),
 
     {ok, TxId} = pvc:start_transaction(),
     {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
@@ -491,5 +578,11 @@ about_me(UserId) ->
     %% Get all the comments authored by the given UserId
     {ok, CommentsToUser} = pvc_indices:read_index(CommentIndex, UserId, TxId),
     {ok, CommentInfo} = pvc:read_keys(CommentsToUser, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
-    {ok, {Username, [ItemInfo, BoughtInfo, BidInfo, CommentInfo]}}.
+    Commit = pvc:commit_transaction(TxId),
+
+    case Commit of
+        ?committed ->
+            {ok, {Username, [ItemInfo, BoughtInfo, BidInfo, CommentInfo]}};
+        {error, Reason} ->
+            {error, Reason}
+    end.
