@@ -418,7 +418,7 @@ search_items_by_region(CategoryId, RegionId) ->
 
     case Commit of
         ?committed ->
-            MatchingItems;
+            {ok, MatchingItems};
         {error, Reason} ->
             {error, Reason}
     end.
