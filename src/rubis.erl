@@ -80,50 +80,65 @@
 -export([process_request/2]).
 
 %% RUBIS Procedures
--export([auth_user/2,
-         browse_categories/0,
+-export([browse_categories/0,
          search_items_by_category/1,
          browse_regions/0,
          search_items_by_region/2,
          view_item/1,
          view_user/1,
          view_item_bid_hist/1,
-         store_buy_now/3,
          about_me/1]).
 
+%% Used for rubis load
 process_request('PutRegion', #{region_name := Name}) ->
     put_region(Name);
 
+%% Used for rubis load
 process_request('PutCategory', #{category_name := Name}) ->
     put_category(Name);
 
+%% Used for rubis load and benchmark
 process_request('RegisterUser', #{username := Username,
                                   password := Password,
                                   region_id := RegionId}) ->
 
     register_user(Username, Password, RegionId);
 
-process_request('StoreItem', #{item_name := Name,
-                               description := Desc,
-                               quantity := Q,
-                               category_id := CategoryId,
-                               seller_id := UserId}) ->
+%% Benchmark only
+process_request('AuthUser', #{username := Username,
+                              password := Password}) ->
+    auth_user(Username, Password);
 
-    store_item(Name, Desc, Q, CategoryId, UserId);
+%% Benchmark only
+process_request('StoreBuyNow', #{on_item_id := ItemId,
+                                 buyer_id := BuyerId,
+                                 quantity := Quantity}) ->
+    store_buy_now(ItemId, BuyerId, Quantity);
 
+%% Used for rubis load and benchmark
 process_request('StoreBid', #{on_item_id := ItemId,
                               bidder_id := BidderId,
                               value := Value}) ->
 
     store_bid(ItemId, BidderId, Value);
 
+%% Used for rubis load and benchmark
 process_request('StoreComment', #{on_item_id := ItemId,
                                   from_id := Fromid,
                                   to_id := ToId,
                                   rating := Rating,
                                   body := Body}) ->
 
-    store_comment(ItemId, Fromid, ToId, Rating, Body).
+    store_comment(ItemId, Fromid, ToId, Rating, Body);
+
+%% Used for rubis load and benchmark
+process_request('StoreItem', #{item_name := Name,
+    description := Desc,
+    quantity := Q,
+    category_id := CategoryId,
+    seller_id := UserId}) ->
+
+    store_item(Name, Desc, Q, CategoryId, UserId).
 
 -spec put_region(binary()) -> {ok, key()} | {error, reason()}.
 put_region(RegionName) ->
