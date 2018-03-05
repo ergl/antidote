@@ -48,9 +48,12 @@ handle_cast(accept, S = #state{socket = ListenSocket}) ->
     ok = inet:setopts(AcceptSocket, [{active, once}]),
     {noreply, S#state{socket=AcceptSocket}}.
 
-%% TODO(borja): Handle it here
 handle_info({tcp, _Socket, Data}, State = #state{socket = Sock}) ->
-    gen_tcp:send(Sock, Data),
+    {Type, Msg} = rubis_proto:decode_request(Data),
+    Result = rubis:process_request(Type, Msg),
+    lager:info("Processed pb request ~p with result ~p", [Type, Result]),
+    Reply = rubis_proto:encode_reply(Type, Result),
+    gen_tcp:send(Sock, Reply),
     ok = inet:setopts(Sock, [{active, once}]),
     {noreply, State};
 

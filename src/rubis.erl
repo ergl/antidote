@@ -77,13 +77,10 @@
     user_rating :: integer()
 }).
 
-%% Init DB
--export([put_region/1,
-         put_category/1]).
+-export([process_request/2]).
 
 %% RUBIS Procedures
 -export([auth_user/2,
-         register_user/3,
          browse_categories/0,
          search_items_by_category/1,
          browse_regions/0,
@@ -92,10 +89,41 @@
          view_user/1,
          view_item_bid_hist/1,
          store_buy_now/3,
-         store_bid/3,
-         store_comment/5,
-         store_item/5,
          about_me/1]).
+
+process_request('PutRegion', #{region_name := Name}) ->
+    put_region(Name);
+
+process_request('PutCategory', #{category_name := Name}) ->
+    put_category(Name);
+
+process_request('RegisterUser', #{username := Username,
+                                  password := Password,
+                                  region_id := RegionId}) ->
+
+    register_user(Username, Password, RegionId);
+
+process_request('StoreItem', #{item_name := Name,
+                               description := Desc,
+                               quantity := Q,
+                               category_id := CategoryId,
+                               seller_id := UserId}) ->
+
+    store_item(Name, Desc, Q, CategoryId, UserId);
+
+process_request('StoreBid', #{on_item_id := ItemId,
+                              bidder_id := BidderId,
+                              value := Value}) ->
+
+    store_bid(ItemId, BidderId, Value);
+
+process_request('StoreComment', #{on_item_id := ItemId,
+                                  from_id := Fromid,
+                                  to_id := ToId,
+                                  rating := Rating,
+                                  body := Body}) ->
+
+    store_comment(ItemId, Fromid, ToId, Rating, Body).
 
 -spec put_region(binary()) -> {ok, key()} | {error, reason()}.
 put_region(RegionName) ->
