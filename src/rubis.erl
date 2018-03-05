@@ -79,16 +79,6 @@
 
 -export([process_request/2]).
 
-%% RUBIS Procedures
--export([browse_categories/0,
-         search_items_by_category/1,
-         browse_regions/0,
-         search_items_by_region/2,
-         view_item/1,
-         view_user/1,
-         view_item_bid_hist/1,
-         about_me/1]).
-
 %% Used for rubis load
 process_request('PutRegion', #{region_name := Name}) ->
     put_region(Name);
@@ -96,6 +86,11 @@ process_request('PutRegion', #{region_name := Name}) ->
 %% Used for rubis load
 process_request('PutCategory', #{category_name := Name}) ->
     put_category(Name);
+
+%% Benchmark only
+process_request('AuthUser', #{username := Username,
+    password := Password}) ->
+    auth_user(Username, Password);
 
 %% Used for rubis load and benchmark
 process_request('RegisterUser', #{username := Username,
@@ -105,9 +100,74 @@ process_request('RegisterUser', #{username := Username,
     register_user(Username, Password, RegionId);
 
 %% Benchmark only
-process_request('AuthUser', #{username := Username,
-                              password := Password}) ->
-    auth_user(Username, Password);
+process_request('BrowseCategories', _) ->
+    case browse_categories() of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('BrowseRegions', _) ->
+    case browse_regions() of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('SearchByCategory', #{category_id := CategoryId}) ->
+    case search_items_by_category(CategoryId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('SearchByRegion', #{region_id := RegionId, category_id := CategoryId}) ->
+    case search_items_by_region(CategoryId, RegionId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('ViewItem', #{item_id := ItemId}) ->
+    case view_item(ItemId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('ViewUser', #{user_id := UserId}) ->
+    case view_user(UserId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('ViewItemBidHist', #{item_id := ItemId}) ->
+    case view_item_bid_hist(ItemId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
 
 %% Benchmark only
 process_request('StoreBuyNow', #{on_item_id := ItemId,
@@ -138,7 +198,17 @@ process_request('StoreItem', #{item_name := Name,
     category_id := CategoryId,
     seller_id := UserId}) ->
 
-    store_item(Name, Desc, Q, CategoryId, UserId).
+    store_item(Name, Desc, Q, CategoryId, UserId);
+
+%% Benchmark only
+process_request('AboutMe', #{user_id := UserId}) ->
+    case about_me(UserId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end.
 
 -spec put_region(binary()) -> {ok, key()} | {error, reason()}.
 put_region(RegionName) ->
