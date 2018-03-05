@@ -64,6 +64,8 @@ init(_Args) ->
                       {antidote_config, start_link, []},
                       permanent, 5000, worker, [antidote_config]},
 
+    RubisPbSup = ?CHILD(rubis_pb_sup, supervisor, []),
+
     %% RUBIS Key Generator Oracle, one per partition
     RubisKeyGen = ?VNODE(rubis_keygen_vnode_master, rubis_keygen_vnode),
 
@@ -120,6 +122,7 @@ init(_Args) ->
      {{one_for_one, 5, 10},
       [LoggingMaster,
        AntidoteConfig,
+       RubisPbSup,
        RubisKeyGen,
        ClockSIMaster,
        ClockSIiTxCoordSup,

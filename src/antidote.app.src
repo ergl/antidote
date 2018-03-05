@@ -10,6 +10,7 @@
                   riak_pb,
                   riak_api,
                   riak_core,
+                  rubis_proto,
                   antidote_crdt,
                   cuttlefish,
                   riak_dt,
@@ -57,6 +58,8 @@
   {env, [{txn_cert, true}, {txn_prot, pvc}, {recover_from_log, true},
          {recover_meta_data_on_start, true}, {sync_log, false},
          {collect_metric_staleness, false}, {enable_logging, false},
-         {auto_start_read_servers, true}
+         {auto_start_read_servers, true},
+         {rubis_pb_port, 7878},
+         {rubis_pb_listeners, 30}
         ]}
  ]}.

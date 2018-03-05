@@ -77,25 +77,138 @@
     user_rating :: integer()
 }).
 
-%% Init DB
--export([put_region/1,
-         put_category/1]).
+-export([process_request/2]).
 
-%% RUBIS Procedures
--export([auth_user/2,
-         register_user/3,
-         browse_categories/0,
-         search_items_by_category/1,
-         browse_regions/0,
-         search_items_by_region/2,
-         view_item/1,
-         view_user/1,
-         view_item_bid_hist/1,
-         store_buy_now/3,
-         store_bid/3,
-         store_comment/5,
-         store_item/5,
-         about_me/1]).
+%% Used for rubis load
+process_request('PutRegion', #{region_name := Name}) ->
+    put_region(Name);
+
+%% Used for rubis load
+process_request('PutCategory', #{category_name := Name}) ->
+    put_category(Name);
+
+%% Benchmark only
+process_request('AuthUser', #{username := Username,
+    password := Password}) ->
+    auth_user(Username, Password);
+
+%% Used for rubis load and benchmark
+process_request('RegisterUser', #{username := Username,
+                                  password := Password,
+                                  region_id := RegionId}) ->
+
+    register_user(Username, Password, RegionId);
+
+%% Benchmark only
+process_request('BrowseCategories', _) ->
+    case browse_categories() of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('BrowseRegions', _) ->
+    case browse_regions() of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('SearchByCategory', #{category_id := CategoryId}) ->
+    case search_items_by_category(CategoryId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('SearchByRegion', #{region_id := RegionId, category_id := CategoryId}) ->
+    case search_items_by_region(CategoryId, RegionId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('ViewItem', #{item_id := ItemId}) ->
+    case view_item(ItemId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('ViewUser', #{user_id := UserId}) ->
+    case view_user(UserId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('ViewItemBidHist', #{item_id := ItemId}) ->
+    case view_item_bid_hist(ItemId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end;
+
+%% Benchmark only
+process_request('StoreBuyNow', #{on_item_id := ItemId,
+                                 buyer_id := BuyerId,
+                                 quantity := Quantity}) ->
+    store_buy_now(ItemId, BuyerId, Quantity);
+
+%% Used for rubis load and benchmark
+process_request('StoreBid', #{on_item_id := ItemId,
+                              bidder_id := BidderId,
+                              value := Value}) ->
+
+    store_bid(ItemId, BidderId, Value);
+
+%% Used for rubis load and benchmark
+process_request('StoreComment', #{on_item_id := ItemId,
+                                  from_id := Fromid,
+                                  to_id := ToId,
+                                  rating := Rating,
+                                  body := Body}) ->
+
+    store_comment(ItemId, Fromid, ToId, Rating, Body);
+
+%% Used for rubis load and benchmark
+process_request('StoreItem', #{item_name := Name,
+    description := Desc,
+    quantity := Q,
+    category_id := CategoryId,
+    seller_id := UserId}) ->
+
+    store_item(Name, Desc, Q, CategoryId, UserId);
+
+%% Benchmark only
+process_request('AboutMe', #{user_id := UserId}) ->
+    case about_me(UserId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
+            ok
+    end.
 
 -spec put_region(binary()) -> {ok, key()} | {error, reason()}.
 put_region(RegionName) ->
@@ -185,20 +298,10 @@ auth_user(Username, Password) ->
             {error, Reason}
     end.
 
--spec register_user(binary(), binary(), binary()) -> {ok, key()} | {error, reason()}.
-register_user(Username, Password, RegionName) ->
-    %% Users are grouped into their region name group
-    RegionPartition = log_utilities:get_key_partition(RegionName),
-    SelfGrouping = RegionName,
-
+-spec register_user(binary(), binary(), key()) -> {ok, key()} | {error, reason()}.
+register_user(Username, Password, RegionId) ->
     %% The user_name index live globally to ensure global uniqueness
     UsernameIndex = ?ru:gen_index_name(?default_group, users_name),
-    %% The user_region index should live along the user itself
-    RegionIdIndex = ?ru:gen_index_name(SelfGrouping, users_region),
-
-    %% Use the regions_name index to look up the region id
-    %% The regions_name index lives globally
-    RegionNameIndex = ?ru:gen_index_name(?default_group, regions_name),
 
     {ok, TxId} = pvc:start_transaction(),
 
@@ -206,10 +309,17 @@ register_user(Username, Password, RegionName) ->
     {ok, [Val]} = pvc_indices:read_u_index(UsernameIndex, Username, TxId),
     Result = case Val of
         <<>> ->
+            %% Users are grouped into their region name group
+            {ok, [RegionName]} = pvc:read_keys(RegionId, TxId),
+            RegionPartition = log_utilities:get_key_partition(RegionName),
+            SelfGrouping = RegionName,
+
+            %% The user_region index should live along the user itself
+            RegionIdIndex = ?ru:gen_index_name(SelfGrouping, users_region),
+
             NextUserId = rubis_keygen_vnode:next_id(RegionPartition, users),
             UserKey = ?ru:gen_key(SelfGrouping, users, NextUserId),
 
-            {ok, [RegionId]} = pvc_indices:read_index(RegionNameIndex, RegionName, TxId),
             UserObj = #user{username = Username,
                             password = Password,
                             rating = 0,
@@ -308,7 +418,7 @@ search_items_by_region(CategoryId, RegionId) ->
 
     case Commit of
         ?committed ->
-            MatchingItems;
+            {ok, MatchingItems};
         {error, Reason} ->
             {error, Reason}
     end.
