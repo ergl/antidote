@@ -185,20 +185,10 @@ auth_user(Username, Password) ->
             {error, Reason}
     end.
 
--spec register_user(binary(), binary(), binary()) -> {ok, key()} | {error, reason()}.
-register_user(Username, Password, RegionName) ->
-    %% Users are grouped into their region name group
-    RegionPartition = log_utilities:get_key_partition(RegionName),
-    SelfGrouping = RegionName,
-
+-spec register_user(binary(), binary(), key()) -> {ok, key()} | {error, reason()}.
+register_user(Username, Password, RegionId) ->
     %% The user_name index live globally to ensure global uniqueness
     UsernameIndex = ?ru:gen_index_name(?default_group, users_name),
-    %% The user_region index should live along the user itself
-    RegionIdIndex = ?ru:gen_index_name(SelfGrouping, users_region),
-
-    %% Use the regions_name index to look up the region id
-    %% The regions_name index lives globally
-    RegionNameIndex = ?ru:gen_index_name(?default_group, regions_name),
 
     {ok, TxId} = pvc:start_transaction(),
 
@@ -206,10 +196,17 @@ register_user(Username, Password, RegionName) ->
     {ok, [Val]} = pvc_indices:read_u_index(UsernameIndex, Username, TxId),
     Result = case Val of
         <<>> ->
+            %% Users are grouped into their region name group
+            {ok, [RegionName]} = pvc:read_keys(RegionId, TxId),
+            RegionPartition = log_utilities:get_key_partition(RegionName),
+            SelfGrouping = RegionName,
+
+            %% The user_region index should live along the user itself
+            RegionIdIndex = ?ru:gen_index_name(SelfGrouping, users_region),
+
             NextUserId = rubis_keygen_vnode:next_id(RegionPartition, users),
             UserKey = ?ru:gen_key(SelfGrouping, users, NextUserId),
 
-            {ok, [RegionId]} = pvc_indices:read_index(RegionNameIndex, RegionName, TxId),
             UserObj = #user{username = Username,
                             password = Password,
                             rating = 0,
