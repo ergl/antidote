@@ -613,9 +613,9 @@ store_comment(OnItemId, FromId, ToId, Rating, Body) ->
 
 -spec store_item(binary(), binary(), non_neg_integer(), key(), key()) -> {ok, key()} | {error, reason()}.
 store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
-    %% The item itself has its own grouping, determined by their item name
-    ItemPartition = log_utilities:get_key_partition(ItemName),
-    SelfGrouping = ItemName,
+    %% The item itself has its own grouping, but it is co-located with their seller
+    ItemPartition = log_utilities:get_key_partition(SellerId),
+    SelfGrouping = ?ru:get_grouping(SellerId),
 
     %% The items_seller index should live in the seller's group
     SellerGrouping = ?ru:get_grouping(SellerId),
