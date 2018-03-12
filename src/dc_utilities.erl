@@ -265,7 +265,10 @@ get_stable_snapshot() ->
                                            GST
                                    end,
                                    StableSnapshot)}
-                    end
+                    end;
+                %% TODO(borja): Just for now
+                {ok, pvc} ->
+                    {ok, SS}
             end
     end.
 
