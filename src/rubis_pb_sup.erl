@@ -24,15 +24,17 @@
 -export([start_link/0, start_socket/0]).
 -export([init/1]).
 
+-define(DEFAULT_RUBIS_PB_PORT, 7878).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
-    {ok, RubisPbPort} = antidote_config:get(rubis_pb_port),
+    RubisPbPort = application:get_env(antidote, rubis_pb_port, ?DEFAULT_RUBIS_PB_PORT),
+    lager:info("RUBIS Pb interface will try to listen on port ~p", [RubisPbPort]),
     {ok, LSock} = gen_tcp:listen(RubisPbPort, [binary, {active, once}, {packet, 2}]),
     {ok, Port} = inet:port(LSock),
-    io:format("RUBIS Pb interface listening on port ~p~n", [Port]),
+    lager:info("RUBIS Pb interface listening on port ~p", [Port]),
     spawn_link(fun empty_listeners/0),
     {ok, {{simple_one_for_one, 60, 3600},
          [{socket,
