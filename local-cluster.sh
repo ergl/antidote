@@ -7,7 +7,7 @@ export RELX_REPLACE_OS_VARS=true
 an-stop() {
     local n="${1}"
     for i in $(seq 1 "${n}"); do
-        _build/default/rel/antidote${i}/bin/antidote${i} stop
+        INSTANCE_NAME=antidote${i} _build/default/rel/antidote${i}/bin/env stop
     done
 }
 
