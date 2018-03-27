@@ -72,7 +72,7 @@
 -export([pvc_read/5,
          pvc_update/1,
          pvc_update_indices/1,
-         pvc_key_range/4]).
+         pvc_key_range/3]).
 
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
@@ -155,11 +155,11 @@ pvc_update_indices([K| _] = Keys) ->
     ).
 
 %% @doc Get the key range after Root with the given Prefix of size PrefixLen
--spec pvc_key_range(index_node(), key(), binary(), non_neg_integer()) -> list().
-pvc_key_range(IndexNode, Root, Prefix, PrefixLen) ->
+-spec pvc_key_range(index_node(), key(), pvc_indices:range()) -> list().
+pvc_key_range(IndexNode, Root, Range) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
-        {pvc_key_range, Root, Prefix, PrefixLen},
+        {pvc_key_range, Root, Range},
         materializer_vnode_master
     ).
 
@@ -331,10 +331,10 @@ handle_command({pvc_index, Keys}, _Sender, State = #mat_state{pvc_index_set = PV
     true = ets:insert(PVC_Index, Ops),
     {noreply, State};
 
-handle_command({pvc_key_range, Root, Prefix, PrefixLen}, _Sender, State = #mat_state{
+handle_command({pvc_key_range, Root, Range}, _Sender, State = #mat_state{
     pvc_index_set = PVC_Index
 }) ->
-    FoundKeys = pvc_get_key_range(Root, Prefix, PrefixLen, PVC_Index),
+    FoundKeys = pvc_get_key_range(Root, Range, PVC_Index),
     {reply, FoundKeys, State};
 
 handle_command({store_ss, Key, Snapshot, CommitTime}, _Sender, State) ->
@@ -883,8 +883,8 @@ pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
 %%      to others through the VLog, so the caller can make sure that whatever
 %%      is returned from this range can be found on primary storage
 %%
--spec pvc_get_key_range(key(), binary(), non_neg_integer(), cache_id()) -> list().
-pvc_get_key_range(Root, Prefix, PrefixLen, PVC_Index) ->
+-spec pvc_get_key_range(key(), pvc_indices:range(), cache_id()) -> list().
+pvc_get_key_range(Root, Range, PVC_Index) ->
     case ets:lookup(PVC_Index, Root) of
         [] ->
             [];
@@ -892,23 +892,18 @@ pvc_get_key_range(Root, Prefix, PrefixLen, PVC_Index) ->
         [{Root, _}] ->
             Next = ets:next(PVC_Index, Root),
             %% Skip the root, we don't care about it
-            pvc_get_key_range(Next, Prefix, PrefixLen, PVC_Index, [])
+            pvc_get_key_range(Next, Range, PVC_Index, [])
     end.
 
-pvc_get_key_range('$end_of_table', _Prefix, _PrefixLen, _PVC_Index, Acc) ->
+pvc_get_key_range('$end_of_table', _Range, _PVC_Index, Acc) ->
     Acc;
 
-pvc_get_key_range(Key, _Prefix, PrefixLen, _PVC_Index, Acc) when bit_size(Key) < PrefixLen ->
-    Acc;
-
-pvc_get_key_range(Key, Prefix, PrefixLen, PVC_Index, Acc) ->
-    <<Pref:PrefixLen, _/binary>> = Key,
-    case Pref of
-        Prefix ->
+pvc_get_key_range(Key, Range, PVC_Index, Acc) ->
+    case pvc_indices:in_range(Range, Key) of
+        true ->
             NextKey = ets:next(PVC_Index, Key),
-            pvc_get_key_range(NextKey, Prefix, PrefixLen, PVC_Index, [Key | Acc]);
-
-        _ ->
+            pvc_get_key_range(NextKey, Range, PVC_Index, [Key | Acc]);
+        false ->
             Acc
     end.
 

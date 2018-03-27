@@ -614,18 +614,17 @@ execute_command(pvc_index, Updates, Sender, State = #tx_coord_state{
     gen_fsm:reply(Sender, ok),
     {next_state, execute_op, State#tx_coord_state{pvc_keys_to_index=NewIndexSet}};
 
-execute_command(pvc_scan_range, RangeObj, Sender, State = #tx_coord_state{
+execute_command(pvc_scan_range, {Root, Range}, Sender, State = #tx_coord_state{
     transactional_protocol=pvc,
     pvc_keys_to_index=ToIndexDict
 }) ->
-    {Root, Prefix, Len} = RangeObj,
     Partition = log_utilities:get_key_partition(Root),
 
     %% Get the matching keys in the locally updated set, if any
-    LocalIndexSet = pvc_get_local_matching_keys(Partition, Root, Prefix, Len, ToIndexDict),
+    LocalIndexSet = pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict),
 
     %% Also get the matching keys stored in the ordered storage
-    StoredIndexKeys = materializer_vnode:pvc_key_range(Partition, Root, Prefix, Len),
+    StoredIndexKeys = materializer_vnode:pvc_key_range(Partition, Root, Range),
 
     %% Merge them (don't store duplicates)
     MergedKeys = lists:foldl(fun ordsets:add_element/2, LocalIndexSet, StoredIndexKeys),
@@ -648,12 +647,11 @@ pvc_add_to_index_dict(Part, Key, Dict) ->
 -spec pvc_get_local_matching_keys(
     partition_id(),
     key(),
-    binary(),
-    non_neg_integer(),
+    pvc_indices:range(),
     dict:dict()
 ) -> ordsets:ordset().
 
-pvc_get_local_matching_keys(Partition, Root, Prefix, Len, ToIndexDict) ->
+pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
     case dict:find(Partition, ToIndexDict) of
         error ->
             ordsets:new();
@@ -664,11 +662,10 @@ pvc_get_local_matching_keys(Partition, Root, Prefix, Len, ToIndexDict) ->
                     Root ->
                         Acc;
                     _ ->
-                        <<Pref:Len, _/binary>> = Key,
-                        case Pref of
-                            Prefix ->
+                        case pvc_indices:in_range(Range, Key) of
+                            true ->
                                 ordsets:add_element(Key, Acc);
-                            _ ->
+                            false ->
                                 Acc
                         end
                 end

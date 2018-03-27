@@ -26,12 +26,18 @@
 -define(INDEX_SEP, <<"$">>/binary).
 -define(UINDEX_SEP, <<"%">>/binary).
 
+-opaque range() :: {binary(), non_neg_integer()}.
+
+-export_type([range/0]).
+
 %% API
 -export([u_index/4,
          read_u_index/3,
          index/4,
          read_index/2,
          read_index/3]).
+
+-export([in_range/2]).
 
 -spec u_index(binary(), binary(), binary(), txid()) -> ok.
 u_index(IndexName, IndexValue, RefKey, TxId) ->
@@ -98,6 +104,14 @@ read_index(IndexName, IndexValue, TxId) ->
             end
     end.
 
+-spec in_range(range(), binary()) -> boolean().
+in_range({_, Len}, Key) when bit_size(Key) < Len ->
+    false;
+
+in_range({Prefix, Len}, Key) ->
+    <<Pref:Len, _/binary>> = Key,
+    Pref =:= Prefix.
+
 %% Util functions
 
 claimed_index(RootKey, TxId) ->
@@ -124,6 +138,11 @@ update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
     gen_fsm:sync_send_event(Pid, {pvc_index, Updates}, ?OP_TIMEOUT).
 
 read_index_range(RootKey, #tx_id{server_pid = Pid}) ->
-    PrefixLen = bit_size(RootKey),
-    <<Prefix:PrefixLen, _/binary>> = RootKey,
-    gen_fsm:sync_send_event(Pid, {pvc_scan_range, {RootKey, Prefix, PrefixLen}}).
+    Range = make_range(RootKey),
+    gen_fsm:sync_send_event(Pid, {pvc_scan_range, {RootKey, Range}}).
+
+-spec make_range(binary()) -> range().
+make_range(Key) ->
+    PrefixLen = bit_size(Key),
+    <<Prefix:PrefixLen, _/binary>> = Key,
+    {Prefix, PrefixLen}.
