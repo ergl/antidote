@@ -367,7 +367,6 @@ search_items_by_category(CategoryId) ->
     {ok, TxId} = pvc:start_transaction(),
     {ok, ItemKeys} = pvc_indices:read_index(CategoryIndex, CategoryId, TxId),
     Result = pvc:read_keys(ItemKeys, TxId),
-    {ok, []} = pvc:commit_transaction(TxId),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
