@@ -31,7 +31,6 @@ start_link() ->
 
 init([]) ->
     RubisPbPort = application:get_env(antidote, rubis_pb_port, ?DEFAULT_RUBIS_PB_PORT),
-    lager:info("RUBIS Pb interface will try to listen on port ~p", [RubisPbPort]),
     {ok, LSock} = gen_tcp:listen(RubisPbPort, [binary, {active, once}, {packet, 2}]),
     {ok, Port} = inet:port(LSock),
     lager:info("RUBIS Pb interface listening on port ~p", [Port]),
@@ -48,4 +47,3 @@ empty_listeners() ->
     {ok, RubisPbListeners} = antidote_config:get(rubis_pb_listeners),
     [start_socket() || _ <- lists:seq(0, RubisPbListeners)],
     ok.
-
