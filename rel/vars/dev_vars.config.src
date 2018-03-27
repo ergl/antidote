@@ -14,6 +14,7 @@
 {pb_port,           @PBPORT@}.
 {pubsub_port,       @PUBSUBPORT@}.
 {logreader_port,    @LOGREADERPORT@}.
+{rubis_pb_port,     @RUBISPBPORT@}.
 
 %%
 %% etc/vm.args
