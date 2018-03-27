@@ -617,8 +617,7 @@ store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
     SelfGrouping = ?ru:get_grouping(SellerId),
 
     %% The items_seller index should live in the seller's group
-    SellerGrouping = ?ru:get_grouping(SellerId),
-    SellerIndex = ?ru:gen_index_name(SellerGrouping, items_seller_id),
+    SellerIndex = ?ru:gen_index_name(SelfGrouping, items_seller_id),
 
     %% The item_category index lives in the category's group
     CategoryGrouping = ?ru:get_grouping(CategoryId),
