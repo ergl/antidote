@@ -104,6 +104,14 @@ read_index(IndexName, IndexValue, TxId) ->
             end
     end.
 
+%% FIXME(borja): Might yield false positives
+%%
+%% For example,
+%% <<"AZ--Phoenix+bids_bidder_id$AZ--Phoenix+users1">>
+%% and
+%% <<"AZ--Phoenix+bids_bidder_id$AZ--Phoenix+users10">>
+%% are not subkeys, but this will return true,
+%% as the prefixes are the same up until `...users1`
 -spec in_range(range(), binary()) -> boolean().
 in_range({_, Len}, Key) when bit_size(Key) < Len ->
     false;
