@@ -899,7 +899,7 @@ pvc_get_key_range('$end_of_table', _Range, _PVC_Index, Acc) ->
     Acc;
 
 pvc_get_key_range(Key, Range, PVC_Index, Acc) ->
-    case pvc_indices:in_range(Range, Key) of
+    case pvc_indices:in_range(Key, Range) of
         true ->
             NextKey = ets:next(PVC_Index, Key),
             pvc_get_key_range(NextKey, Range, PVC_Index, [Key | Acc]);

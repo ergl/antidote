@@ -112,13 +112,12 @@ read_index(IndexName, IndexValue, TxId) ->
 %% <<"AZ--Phoenix+bids_bidder_id$AZ--Phoenix+users10">>
 %% are not subkeys, but this will return true,
 %% as the prefixes are the same up until `...users1`
--spec in_range(range(), binary()) -> boolean().
-in_range({_, Len}, Key) when bit_size(Key) < Len ->
+-spec in_range(binary(), range()) -> boolean().
+in_range(Key, {_, Len}) when byte_size(Key) < Len ->
     false;
 
-in_range({Prefix, Len}, Key) ->
-    <<Pref:Len, _/binary>> = Key,
-    Pref =:= Prefix.
+in_range(Key, {Prefix, Len}) ->
+    Len =:= binary:longest_common_prefix([Prefix, Key]).
 
 %% Util functions
 
@@ -151,6 +150,5 @@ read_index_range(RootKey, #tx_id{server_pid = Pid}) ->
 
 -spec make_range(binary()) -> range().
 make_range(Key) ->
-    PrefixLen = bit_size(Key),
-    <<Prefix:PrefixLen, _/binary>> = Key,
-    {Prefix, PrefixLen}.
+    PrefixLen = byte_size(Key),
+    {Key, PrefixLen}.

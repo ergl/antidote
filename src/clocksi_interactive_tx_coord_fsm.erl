@@ -662,7 +662,7 @@ pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
                     Root ->
                         Acc;
                     _ ->
-                        case pvc_indices:in_range(Range, Key) of
+                        case pvc_indices:in_range(Key, Range) of
                             true ->
                                 ordsets:add_element(Key, Acc);
                             false ->
