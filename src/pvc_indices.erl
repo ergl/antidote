@@ -21,10 +21,9 @@
 -module(pvc_indices).
 
 -include("antidote.hrl").
+-include("pvc.hrl").
 
 -define(CLAIMED, claimed).
--define(INDEX_SEP, <<"$">>/binary).
--define(UINDEX_SEP, <<"%">>/binary).
 
 -opaque range() :: {binary(), non_neg_integer()}.
 
@@ -37,7 +36,8 @@
          read_index/2,
          read_index/3]).
 
--export([in_range/2]).
+-export([in_range/2,
+         order_index_keys/1]).
 
 -spec u_index(binary(), binary(), binary(), txid()) -> ok.
 u_index(IndexName, IndexValue, RefKey, TxId) ->
@@ -100,24 +100,49 @@ read_index(IndexName, IndexValue, TxId) ->
                 [] ->
                     {ok, []};
                 _ ->
-                    pvc:read_keys(Range, TxId)
+                    %% we might not see the contents
+                    %% of the index, hence we need
+                    %% to remove empty entries
+                    safe_index_read(Range, TxId)
             end
     end.
 
-%% FIXME(borja): Might yield false positives
-%%
-%% For example,
-%% <<"AZ--Phoenix+bids_bidder_id$AZ--Phoenix+users1">>
-%% and
-%% <<"AZ--Phoenix+bids_bidder_id$AZ--Phoenix+users10">>
-%% are not subkeys, but this will return true,
-%% as the prefixes are the same up until `...users1`
+%% @doc Return only non-empty results from a read
+safe_index_read(Keys, TxId) ->
+    case pvc:read_keys(Keys, TxId) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, ReadValues} ->
+            NonEmptyValues = lists:filter(fun(V) ->
+                V =/= <<>>
+            end, ReadValues),
+            {ok, NonEmptyValues}
+    end.
+
 -spec in_range(binary(), range()) -> boolean().
 in_range(Key, {_, Len}) when byte_size(Key) < Len ->
     false;
 
 in_range(Key, {Prefix, Len}) ->
     Len =:= binary:longest_common_prefix([Prefix, Key]).
+
+-spec order_index_keys(list(binary())) -> list(binary()).
+order_index_keys(Keys) when is_list(Keys) ->
+    lists:sort(fun(A, B) ->
+        {ok, AInt} = get_key_seq_id(A),
+        {ok, BInt} = get_key_seq_id(B),
+        AInt > BInt
+    end, Keys).
+
+-spec get_key_seq_id(binary()) -> {ok, non_neg_integer()} | error.
+get_key_seq_id(Key) when is_binary(Key) ->
+    LastId = lists:last(binary:split(Key, ?ID_SEP, [global])),
+    case catch binary_to_integer(LastId) of
+        X when is_integer(X) ->
+            {ok, X};
+        _ ->
+            error
+    end.
 
 %% Util functions
 
@@ -127,18 +152,18 @@ claimed_index(RootKey, TxId) ->
 
 %% TODO(borja): Handle non-binary data
 make_u_index_key(IndexName, IndexValue) ->
-    <<IndexName/binary, ?UINDEX_SEP, IndexValue/binary>>.
+    <<IndexName/binary, ?UINDEX_SEP/binary, IndexValue/binary>>.
 
 %% TODO(borja): Handle non-binary data
 make_root_index_key(IndexName) ->
     IndexName.
 
 make_root_index_key(IndexName, IndexValue) ->
-    <<IndexName/binary, ?INDEX_SEP, IndexValue/binary>>.
+    <<IndexName/binary, ?INDEX_SEP/binary, IndexValue/binary>>.
 
 %% TODO(borja): Handle non-binary data
 make_index_key(IndexName, IndexValue, RefKey) ->
-    <<IndexName/binary, ?INDEX_SEP, IndexValue/binary, ?INDEX_SEP, RefKey/binary>>.
+    <<IndexName/binary, ?INDEX_SEP/binary, IndexValue/binary, ?INDEX_SEP/binary, RefKey/binary>>.
 
 update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
     ok = pvc:update_keys(Updates, TxId),
@@ -150,5 +175,6 @@ read_index_range(RootKey, #tx_id{server_pid = Pid}) ->
 
 -spec make_range(binary()) -> range().
 make_range(Key) ->
-    PrefixLen = byte_size(Key),
-    {Key, PrefixLen}.
+    StartKey = <<Key/binary, ?INDEX_SEP/binary>>,
+    PrefixLen = byte_size(StartKey),
+    {StartKey, PrefixLen}.

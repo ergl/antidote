@@ -628,7 +628,7 @@ execute_command(pvc_scan_range, {Root, Range}, Sender, State = #tx_coord_state{
 
     %% Merge them (don't store duplicates)
     MergedKeys = lists:foldl(fun ordsets:add_element/2, LocalIndexSet, StoredIndexKeys),
-    gen_fsm:reply(Sender, {ok, ordsets:to_list(MergedKeys)}),
+    gen_fsm:reply(Sender, {ok, pvc_indices:order_index_keys(ordsets:to_list(MergedKeys))}),
     {next_state, execute_op, State}.
 
 -spec pvc_add_to_index_dict(index_node(), key(), dict:dict()) -> dict:dict().

@@ -20,7 +20,7 @@
 
 -module(rubis_utils).
 
--define(GROUPING_SEP, <<"+">>).
+-include("pvc.hrl").
 
 -define(KEY_GUARD(G,T,I), is_binary(G) andalso is_atom(T) andalso is_integer(I)).
 -define(INDEX_GUARD(G,N), is_binary(G) andalso is_atom(N)).
@@ -40,8 +40,7 @@ gen_key(Grouping, Table, Id) when ?KEY_GUARD(Grouping, Table, Id) ->
     gen_key(Grouping, atom_to_binary(Table, utf8), integer_to_binary(Id));
 
 gen_key(Grouping, Table, Id) ->
-    <<Grouping/binary, ?GROUPING_SEP/binary, Table/binary, Id/binary>>.
+    <<Grouping/binary, ?GROUPING_SEP/binary, Table/binary, ?ID_SEP/binary, Id/binary>>.
 
 gen_index_name(Grouping, IndexName) when ?INDEX_GUARD(Grouping, IndexName) ->
     <<Grouping/binary, ?GROUPING_SEP/binary, (atom_to_binary(IndexName, utf8))/binary>>.
-
