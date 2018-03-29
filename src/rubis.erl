@@ -684,6 +684,7 @@ about_me(UserId) ->
                 {ok, ItemFK};
 
             Other ->
+                %% TODO (borja): Figure out if this is intended or a bug
                 lager:info("{~p} received ~p from ~p", [erlang:phash2(TxId), Other, BidId]),
                 Other
         end,
