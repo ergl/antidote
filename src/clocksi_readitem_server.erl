@@ -366,6 +366,7 @@ pvc_scan_and_read(Coordinator, Key, Type, Transaction, State = #state{
 
 pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
     %% Sanity check
+    txn_id = TxnId,
     transactional_protocol = pvc,
     pvc_meta = #pvc_tx_meta{
         hasread = HasRead,
@@ -379,6 +380,7 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
     %% the current MostRecentVC at this partition
     MaxVC = case sets:size(HasRead) of
         0 ->
+            lager:info("{~p} First read @ ~p", [erlang:phash2(TxnId), CurrentPartition]),
             {ok, MRVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
             MRVC;
         _ ->
@@ -386,6 +388,7 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
             ScanVC
     end,
 
+    lager:info("{~p} got MaxVC ~p and VCaggr ~p @ ~p", [erlang:phash2(TxnId), dict:to_list(MaxVC), dict:to_list(VCaggr), CurrentPartition]),
     %% If the selected time is too old, we should abort the read
     MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
     CurrentThresholdTime = vectorclock_partition:get_partition_time(CurrentPartition, VCaggr),
@@ -395,6 +398,7 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
             {ok, MaxVC};
 
         false ->
+            lager:info("{~p} got bad vc [~p] < [~p] @ ~p", [erlang:phash2(TxnId), MaxSelectedTime, CurrentThresholdTime, CurrentPartition]),
             {error, maxvc_bad_vc}
     end.
 

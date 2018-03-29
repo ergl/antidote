@@ -205,8 +205,8 @@ process_request('AboutMe', #{user_id := UserId}) ->
     case about_me(UserId) of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
+%%            lager:info("Got result ~p", [Resp]),
             ok
     end.
 
@@ -565,6 +565,7 @@ store_bid(OnItemId, BidderId, Value) ->
 
     case Commit of
         ?committed ->
+            %% lager:info("{~p} bidkey ~p", [erlang:phash2(TxId), BidKey]),
             {ok, BidKey};
         {error, Reason} ->
             {error, Reason}
@@ -677,7 +678,15 @@ about_me(UserId) ->
     %% along with the item info, and the username of the seller
     {ok, PlacedBids} = pvc_indices:read_index(BidderIndex, UserId, TxId),
     BidInfo = lists:map(fun(BidId) ->
-        {ok, [#bid{on_item = OnItemId}]} = pvc:read_keys(BidId, TxId),
+        lager:info("{~p} will read ~p", [erlang:phash2(TxId), BidId]),
+        {ok, OnItemId} = case pvc:read_keys(BidId, TxId) of
+            {ok, [#bid{on_item = ItemFK}]} ->
+                {ok, ItemFK};
+
+            Other ->
+                lager:info("{~p} received ~p from ~p", [erlang:phash2(TxId), Other, BidId]),
+                Other
+        end,
         {ok, [OnItem = #item{seller = SellerId}]} = pvc:read_keys(OnItemId, TxId),
         {ok, [#user{username = SellerUsername}]} = pvc:read_keys(SellerId, TxId),
         {OnItem, SellerUsername}
