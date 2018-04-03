@@ -205,8 +205,8 @@ process_request('AboutMe', #{user_id := UserId}) ->
     case about_me(UserId) of
         {error, Reason} ->
             {error, Reason};
-        {ok, _Resp} ->
-%%            lager:info("Got result ~p", [Resp]),
+        {ok, Resp} ->
+            lager:info("Got result ~p", [Resp]),
             ok
     end.
 
@@ -565,7 +565,6 @@ store_bid(OnItemId, BidderId, Value) ->
 
     case Commit of
         ?committed ->
-            %% lager:info("{~p} bidkey ~p", [erlang:phash2(TxId), BidKey]),
             {ok, BidKey};
         {error, Reason} ->
             {error, Reason}
@@ -678,16 +677,7 @@ about_me(UserId) ->
     %% along with the item info, and the username of the seller
     {ok, PlacedBids} = pvc_indices:read_index(BidderIndex, UserId, TxId),
     BidInfo = lists:map(fun(BidId) ->
-        lager:info("{~p} will read ~p", [erlang:phash2(TxId), BidId]),
-        {ok, OnItemId} = case pvc:read_keys(BidId, TxId) of
-            {ok, [#bid{on_item = ItemFK}]} ->
-                {ok, ItemFK};
-
-            Other ->
-                %% TODO (borja): Figure out if this is intended or a bug
-                lager:info("{~p} received ~p from ~p", [erlang:phash2(TxId), Other, BidId]),
-                Other
-        end,
+        {ok, [#bid{on_item = OnItemId}]} = pvc:read_keys(BidId, TxId),
         {ok, [OnItem = #item{seller = SellerId}]} = pvc:read_keys(OnItemId, TxId),
         {ok, [#user{username = SellerUsername}]} = pvc:read_keys(SellerId, TxId),
         {OnItem, SellerUsername}
