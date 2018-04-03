@@ -36,8 +36,7 @@
          read_index/2,
          read_index/3]).
 
--export([in_range/2,
-         order_index_keys/1]).
+-export([in_range/2]).
 
 -spec u_index(binary(), binary(), binary(), txid()) -> ok.
 u_index(IndexName, IndexValue, RefKey, TxId) ->
@@ -125,24 +124,6 @@ in_range(Key, {_, Len}) when byte_size(Key) < Len ->
 
 in_range(Key, {Prefix, Len}) ->
     Len =:= binary:longest_common_prefix([Prefix, Key]).
-
--spec order_index_keys(list(binary())) -> list(binary()).
-order_index_keys(Keys) when is_list(Keys) ->
-    lists:sort(fun(A, B) ->
-        {ok, AInt} = get_key_seq_id(A),
-        {ok, BInt} = get_key_seq_id(B),
-        AInt > BInt
-    end, Keys).
-
--spec get_key_seq_id(binary()) -> {ok, non_neg_integer()} | error.
-get_key_seq_id(Key) when is_binary(Key) ->
-    LastId = lists:last(binary:split(Key, ?ID_SEP, [global])),
-    case catch binary_to_integer(LastId) of
-        X when is_integer(X) ->
-            {ok, X};
-        _ ->
-            error
-    end.
 
 %% Util functions
 
