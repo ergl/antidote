@@ -104,8 +104,7 @@ process_request('BrowseCategories', _) ->
     case browse_categories() of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
             ok
     end;
 
@@ -114,8 +113,7 @@ process_request('BrowseRegions', _) ->
     case browse_regions() of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
             ok
     end;
 
@@ -124,8 +122,7 @@ process_request('SearchByCategory', #{category_id := CategoryId}) ->
     case search_items_by_category(CategoryId) of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
             ok
     end;
 
@@ -134,8 +131,7 @@ process_request('SearchByRegion', #{region_id := RegionId, category_id := Catego
     case search_items_by_region(CategoryId, RegionId) of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
             ok
     end;
 
@@ -144,8 +140,7 @@ process_request('ViewItem', #{item_id := ItemId}) ->
     case view_item(ItemId) of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
             ok
     end;
 
@@ -154,8 +149,7 @@ process_request('ViewUser', #{user_id := UserId}) ->
     case view_user(UserId) of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
             ok
     end;
 
@@ -164,8 +158,7 @@ process_request('ViewItemBidHist', #{item_id := ItemId}) ->
     case view_item_bid_hist(ItemId) of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
             ok
     end;
 
@@ -205,8 +198,7 @@ process_request('AboutMe', #{user_id := UserId}) ->
     case about_me(UserId) of
         {error, Reason} ->
             {error, Reason};
-        {ok, Resp} ->
-            lager:info("Got result ~p", [Resp]),
+        {ok, _Resp} ->
             ok
     end.
 
