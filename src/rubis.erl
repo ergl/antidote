@@ -652,45 +652,98 @@ store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
 about_me(UserId) ->
     UserGroup = ?ru:get_grouping(UserId),
     SellerIndex = ?ru:gen_index_name(UserGroup, items_seller_id),
-    BidderIndex = ?ru:gen_index_name(UserGroup, bids_bidder_id),
-    CommentIndex = ?ru:gen_index_name(UserGroup, comments_to_id),
-    BuyerIndex = ?ru:gen_index_name(UserGroup, buy_now_buyer_id),
 
     {ok, TxId} = pvc:start_transaction(),
     {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
 
     %% Get all the items sold by the given UserId
     {ok, SoldItems} = pvc_indices:read_index(SellerIndex, UserId, TxId),
-    {ok, ItemInfo} = pvc:read_keys(SoldItems, TxId),
+    {ok, _ItemInfo} = pvc:read_keys(SoldItems, TxId),
 
-    %% Get all the buy_now actions performed by the given UserId,
-    %% along with the item info, and the username of the seller
+    UserDetails = case get_bought_items(UserId, TxId) of
+        {error, _}=Err0 ->
+            Err0;
+
+        {ok, _BoughtInfo} ->
+            case get_bidded_items(UserId, TxId) of
+                {error, _}=Err1 ->
+                    Err1;
+
+                {ok, _BidInfo} ->
+                    case get_authored_comments(UserId, TxId) of
+                        {error, _}=Err2 ->
+                            Err2;
+
+                        {ok, _AuthoredComments} ->
+                            ok
+                    end
+            end
+    end,
+
+    case UserDetails of
+        {error, _}=DetailsErr ->
+            DetailsErr;
+
+        ok ->
+            case pvc:commit_transaction(TxId) of
+                ?committed ->
+                    {ok, Username};
+
+                {error, _}=CommitErr ->
+                    CommitErr
+            end
+
+    end.
+
+%% Get all the buy_now actions performed by the given UserId,
+%% along with the item info, and the username of the seller
+get_bought_items(UserId, TxId) ->
+    UserGroup = ?ru:get_grouping(UserId),
+    BuyerIndex = ?ru:gen_index_name(UserGroup, buy_now_buyer_id),
     {ok, Bought} = pvc_indices:read_index(BuyerIndex, UserId, TxId),
-    BoughtInfo = lists:map(fun(BuyNowId) ->
-        {ok, [BuyNowObj = #buy_now{on_item = OnItemId}]} = pvc:read_keys(BuyNowId, TxId),
-        {ok, [OnItem = #item{seller = SellerId}]} = pvc:read_keys(OnItemId, TxId),
-        {ok, [#user{username = SellerUsername}]} = pvc:read_keys(SellerId, TxId),
-        {BuyNowObj, OnItem, SellerUsername}
-    end, Bought),
+    map_error(fun(BuyNowId) ->
+        case pvc:read_keys(BuyNowId, TxId) of
+            {error, _}=Err ->
+                throw(Err);
 
-    %% Get all the bids performed by the given UserId,
-    %% along with the item info, and the username of the seller
+            {ok, [BuyNowObj = #buy_now{on_item = OnItemId}]} ->
+                {ok, [OnItem = #item{seller = SellerId}]} = pvc:read_keys(OnItemId, TxId),
+                {ok, [#user{username = SellerUsername}]} = pvc:read_keys(SellerId, TxId),
+                {SellerUsername, OnItem#item.name, BuyNowObj#buy_now.quantity}
+        end
+    end, Bought).
+
+%% Get all the bids performed by the given UserId,
+%% along with the item info, and the username of the seller
+get_bidded_items(UserId, TxId) ->
+    UserGroup = ?ru:get_grouping(UserId),
+    BidderIndex = ?ru:gen_index_name(UserGroup, bids_bidder_id),
     {ok, PlacedBids} = pvc_indices:read_index(BidderIndex, UserId, TxId),
-    BidInfo = lists:map(fun(BidId) ->
-        {ok, [#bid{on_item = OnItemId}]} = pvc:read_keys(BidId, TxId),
-        {ok, [OnItem = #item{seller = SellerId}]} = pvc:read_keys(OnItemId, TxId),
-        {ok, [#user{username = SellerUsername}]} = pvc:read_keys(SellerId, TxId),
-        {OnItem, SellerUsername}
-    end, PlacedBids),
+    map_error(fun(BidId) ->
+        case pvc:read_keys(BidId, TxId) of
+            {error, _}=Err ->
+                throw(Err);
 
-    %% Get all the comments authored by the given UserId
+            {ok, [#bid{on_item = OnItemId}]} ->
+                {ok, [OnItem = #item{seller = SellerId}]} = pvc:read_keys(OnItemId, TxId),
+                {ok, [#user{username = SellerUsername}]} = pvc:read_keys(SellerId, TxId),
+                {OnItem, SellerUsername}
+        end
+    end, PlacedBids).
+
+%% Get all the comments authored by the given UserId
+get_authored_comments(UserId, TxId) ->
+    UserGroup = ?ru:get_grouping(UserId),
+    CommentIndex = ?ru:gen_index_name(UserGroup, comments_to_id),
     {ok, CommentsToUser} = pvc_indices:read_index(CommentIndex, UserId, TxId),
-    {ok, CommentInfo} = pvc:read_keys(CommentsToUser, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    pvc:read_keys(CommentsToUser, TxId).
 
-    case Commit of
-        ?committed ->
-            {ok, {Username, [ItemInfo, BoughtInfo, BidInfo, CommentInfo]}};
-        {error, Reason} ->
-            {error, Reason}
+%% Util functions
+
+-spec map_error(fun((any()) -> any()), [any()]) -> {ok, [any()]} | {error, term()}.
+map_error(Fun, List) ->
+    try
+        {ok, lists:map(Fun, List)}
+    catch {error, pvc_bad_vc} ->
+        {error, pvc_bad_vc}
     end.
