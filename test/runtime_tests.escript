@@ -12,7 +12,8 @@
   fun(N) -> stress_partition(N) end,
   fun(N) -> read_log_test(N) end,
   fun(N) -> same_partition_test(N) end,
-  fun(N) -> clog_test(N) end
+  fun(N) -> clog_test(N) end,
+  fun(N) -> multiple_read(N) end
 ]).
 
 main(_) ->
@@ -184,6 +185,82 @@ clog_test(Node) ->
   ?assertEqual([<<"Ba">>, <<"Ca">>], ReadBC_2),
 
   {ok, []} = commit_transaction(Node, Tx),
+
+  ok.
+
+multiple_read(Node) ->
+  KeyA = <<"partition+key_a">>,
+  KeyB = <<"partition+key_b">>,
+
+  %% Create a set of filler keys to slow down Tx1
+  FillerKeys = lists:map(fun(N) ->
+    <<"partition+key", (integer_to_binary(N))/binary>>
+  end, lists:seq(1,100)),
+
+  %% First, set up KeyA and KeyB to some base values
+  {ok, Tx0} = rpc:call(Node, pvc, start_transaction, []),
+  {ok, _} = rpc:call(Node, pvc, read_keys, [[KeyA, KeyB], Tx0]),
+  ok = rpc:call(
+    Node,
+    pvc,
+    update_keys,
+    [[{KeyA, 0}, {KeyB, 0}], Tx0]
+  ),
+  {ok, []} = rpc:call(Node, pvc, commit_transaction, [Tx0]),
+
+
+  %% Now, start two concurrent transactions, Tx1 and Tx2
+  {ok, Tx1} = rpc:call(Node, pvc, start_transaction, []),
+
+  %% Tx2 will update KeyA and KeyB to some changed values
+  {ok, Tx2} = rpc:call(Node, pvc, start_transaction, []),
+  {ok, [ValA, ValB]} = rpc:call(Node, pvc, read_keys, [[KeyA, KeyB], Tx2]),
+  ?assertEqual([0, 0], [ValA, ValB]),
+  ok = rpc:call(Node, pvc, update_keys, [[{KeyA, ValA + 1}, {KeyB, ValB + 1}], Tx2]),
+
+  %% Now, concurrently, commit Tx2 and perform a slow read on Tx1
+  %% Tx1 should either read both base values, or both changed values
+  %% given that both keys are in the same partition
+
+  DelayCommitTx2 = fun(Pid) ->
+    timer:sleep(1),
+    Commit = rpc:call(Node, pvc, commit_transaction, [Tx2]),
+    Pid ! {delay, Commit}
+  end,
+
+  %% By reading a long key list, we make this call slow, allowing Tx2
+  %% to change the key values on us
+  AllKeys = [KeyA | FillerKeys] ++ [KeyB],
+  ReadAll = fun(Pid) ->
+    {ok, ReadResult} = rpc:call(Node, pvc, read_keys, [AllKeys, Tx1]),
+    [ValA1 | _] = ReadResult,
+    ValB1 = lists:last(ReadResult),
+    ok = rpc:call(Node, pvc, update_keys, [[{KeyA, ValA1 + 1}, {KeyB, ValB1 + 1}], Tx1]),
+    Commit = rpc:call(Node, pvc, commit_transaction, [Tx1]),
+    Pid ! {read_all, ReadResult, Commit}
+  end,
+
+
+  Result = execute_parallel([ReadAll, DelayCommitTx2]),
+
+  %% Both transactions will commit, but Tx1 will observe
+  %% inconsistent behaviour
+  lists:foreach(fun(R) ->
+    Marker = element(1, R),
+    case Marker of
+      delay ->
+        CommitResult = element(2, R),
+        ?assertMatch({ok, []}, CommitResult);
+
+      read_all ->
+        [AResult | ReadResult] = element(2, R),
+        BResult = lists:last(ReadResult),
+        CommitResult = element(3, R),
+        ?assertEqual([0, 0], [AResult, BResult]),
+        ?assertMatch({error, pvc_stale_vc}, CommitResult),
+        ok
+    end
+  end, Result),
 
   ok.
 
