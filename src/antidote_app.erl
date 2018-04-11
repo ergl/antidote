@@ -72,9 +72,6 @@ start(_StartType, _StartArgs) ->
             {ok, Protocol} = application:get_env(antidote, txn_prot),
             ok = antidote_config:put(txn_prot, Protocol),
 
-            {ok, RubisPBListeners} = application:get_env(antidote, rubis_pb_listeners),
-            ok = antidote_config:put(rubis_pb_listeners, RubisPBListeners),
-
             case application:get_env(antidote, auto_start_read_servers) of
                 {ok, true} ->
                     %% start read servers

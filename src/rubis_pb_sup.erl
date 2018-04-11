@@ -24,6 +24,9 @@
 -export([start_link/0, start_socket/0]).
 -export([init/1]).
 
+%% The number of active listeners
+%% for the RUBIS Protocol Buffer server
+-define(RUBIS_NSUP, 100).
 -define(DEFAULT_RUBIS_PB_PORT, 7878).
 
 start_link() ->
@@ -44,6 +47,5 @@ start_socket() ->
     supervisor:start_child(?MODULE, []).
 
 empty_listeners() ->
-    {ok, RubisPbListeners} = antidote_config:get(rubis_pb_listeners),
-    [start_socket() || _ <- lists:seq(0, RubisPbListeners)],
+    [start_socket() || _ <- lists:seq(0, ?RUBIS_NSUP)],
     ok.
