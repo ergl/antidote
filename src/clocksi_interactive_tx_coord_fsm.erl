@@ -672,41 +672,38 @@ pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
             end, ordsets:new(), S)
     end.
 
+%% @doc Loop through all the keys, calling the appropriate partitions
 pvc_read(Objects, Sender, State = #tx_coord_state{
     client_ops=ClientOps,
     transaction=Transaction
 }) ->
-    PerformReads = fun({Key, Type}, AccState) ->
-        %% If the key has already been updated in this transaction,
-        %% return the last assigned value directly.
-        %% This works because we restrict ourselves to lww-registers,
-        %% so we don't need to depend on previous values.
-        UpdatedOp = pvc_key_was_updated(ClientOps, Key),
-        ok = case UpdatedOp of
-            false ->
-                Partition = log_utilities:get_key_partition(Key),
-                %% If the key has never been updated, request the most
-                %% recent compatible version of the key to the holding
-                %% partition.
-                %%
-                %% We will wait for the reply on the next state.
-                clocksi_vnode:async_read_data_item(Partition, Transaction, Key, Type);
 
-            Value ->
-                %% If updated, reply to ourselves with the last value.
-                gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
-        end,
-        ReadKeys = AccState#tx_coord_state.return_accumulator,
-        AccState#tx_coord_state{return_accumulator=[Key | ReadKeys]}
-    end,
+    [FirstKey | Rest] = JustKeys = lists:map(fun(Obj) -> element(1, Obj) end, Objects),
+    ok = pvc_perform_read(FirstKey, Transaction, ClientOps),
+    {next_state, receive_read_objects_result, State#tx_coord_state{from=Sender,
+                                                                   return_accumulator={JustKeys, Rest}}}.
 
-    NewCoordState = lists:foldl(
-        PerformReads,
-        State#tx_coord_state{num_to_read=length(Objects), return_accumulator=[]},
-        Objects
-    ),
+-spec pvc_perform_read(key(), tx(), list()) -> ok.
+pvc_perform_read(Key, Transaction, ClientOps) ->
+    Type = antidote_crdt_lwwreg,
 
-    {next_state, receive_read_objects_result, NewCoordState#tx_coord_state{from=Sender}}.
+    %% If the key has already been updated in this transaction,
+    %% return the last assigned value directly.
+    %% This works because we restrict ourselves to lww-registers,
+    %% so we don't need to depend on previous values.
+    case pvc_key_was_updated(ClientOps, Key) of
+        false ->
+            Partition = log_utilities:get_key_partition(Key),
+            %% If the key has never been updated, request the most
+            %% recent compatible version of the key to the holding
+            %% partition.
+            %%
+            %% We will wait for the reply on the next state.
+            clocksi_vnode:async_read_data_item(Partition, Transaction, Key, Type);
+        Value ->
+            %% If updated, reply to ourselves with the last value.
+            gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
+    end.
 
 %% @doc Check if a key was updated by the client.
 %%
@@ -907,67 +904,51 @@ receive_read_objects_result({ok, {Key, Type, Snapshot}}, CoordState = #tx_coord_
             }}
     end;
 
-receive_read_objects_result({pvc_readreturn, Msg}, CoordState = #tx_coord_state{
-    num_to_read=NumToRead,
-    transaction=Transaction,
-    return_accumulator=ReadKeys
-}) ->
+receive_read_objects_result(Msg, State=#tx_coord_state{transactional_protocol=pvc,
+                                                       transaction=Transaction}) ->
 
-    {Key, Value, VCdep, VCaggr} = Msg,
+    case Msg of
+        %% Read abort
+        {error, maxvc_bad_vc} ->
+            lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
+            abort(State#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]});
 
-%%    lager:info(
-%%        "{~p} PVC read ~p with value ~p (VCdep=~p, VCaggr=~p)",
-%%        [erlang:phash2(Transaction#transaction.txn_id), Key, Value, dict:to_list(VCdep), dict:to_list(VCaggr)]
-%%    ),
+        %% The key has been already updated, returns the value directly
+        {pvc_key_was_updated, Key, Value} ->
+            %% Update the state and loop until all keys have been read
+            pvc_read_loop(Key, Value, Transaction, State);
 
-    UpdatedTransaction = pvc_update_transaction(Key, VCdep, VCaggr, Transaction),
+        %% A message from the read_item server, must update the transaction
+        {pvc_readreturn, Key, Value, VCdep, VCaggr} ->
+            %% Update Transaction state (read partitions, version vectors, etc)
+            UpdatedTransaction = pvc_update_transaction(Key, VCdep, VCaggr, Transaction),
+            %% Update the state and loop until all keys have been read
+            pvc_read_loop(Key, Value, UpdatedTransaction, State)
+    end.
 
-    ReadValues = replace_first(ReadKeys, Key, Value),
-    case NumToRead > 1 of
-        true ->
-            {next_state, receive_read_objects_result, CoordState#tx_coord_state{
-                num_to_read=NumToRead - 1,
-                return_accumulator=ReadValues,
-                transaction=UpdatedTransaction
-            }};
+-spec pvc_read_loop(key(), val(), tx(), #tx_coord_state{}) -> _.
+pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOps,
+                                                             return_accumulator={RequestedKeys, RemainingKeys}}) ->
 
-        false ->
-            gen_fsm:reply(CoordState#tx_coord_state.from, {ok, lists:reverse(ReadValues)}),
-            {next_state, execute_op, CoordState#tx_coord_state{
-                num_to_read=0,
-                transaction=UpdatedTransaction
-            }}
-    end;
+    %% Replace the key with the value inside RequestedKeys
+    ReadValues = replace_first(RequestedKeys, Key, Value),
+    case RemainingKeys of
+        [] ->
+            %% If this was the last key to be read, return the results to the client
+            gen_fsm:reply(State#tx_coord_state.from, {ok, ReadValues}),
+            {next_state,
+                execute_op,
+                State#tx_coord_state{return_accumulator=[],
+                                     transaction=Transaction}};
 
-receive_read_objects_result({pvc_key_was_updated, Key, Value}, CoordState = #tx_coord_state{
-    num_to_read=NumToRead,
-    return_accumulator=ReadKeys,
-    transactional_protocol=pvc
-}) ->
-
-%%    TxId = CoordState#tx_coord_state.transaction#transaction.txn_id,
-%%    lager:info("{~p} PVC read ~p with cached value ~p", [erlang:phash2(TxId), Key, Value]),
-
-    %% No need to update any pvc-related state here
-    ReadValues = replace_first(ReadKeys, Key, Value),
-    case NumToRead > 1 of
-        true ->
-            {next_state, receive_read_objects_result, CoordState#tx_coord_state{
-                num_to_read=NumToRead - 1,
-                return_accumulator=ReadValues
-            }};
-
-        false ->
-            gen_fsm:reply(CoordState#tx_coord_state.from, {ok, lists:reverse(ReadValues)}),
-            {next_state, execute_op, CoordState#tx_coord_state{num_to_read=0}}
-    end;
-
-receive_read_objects_result({error, maxvc_bad_vc}, CoordState = #tx_coord_state{
-    transaction=Transaction,
-    transactional_protocol=pvc
-}) ->
-    lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
-    abort(CoordState#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]}).
+        [NextKey | Rest] ->
+            %% If there are keys left to read, schedule next read and loop back
+            ok = pvc_perform_read(NextKey, Transaction, ClientOps),
+            {next_state,
+                receive_read_objects_result,
+                State#tx_coord_state{transaction=Transaction,
+                                     return_accumulator={ReadValues, Rest}}}
+    end.
 
 -spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
 pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{
