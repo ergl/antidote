@@ -30,6 +30,9 @@ rel:
 	$(REBAR) release -n antidote
 	./change_script.sh _build/default/rel/antidote/bin/antidote
 
+relgrid:
+	$(REBAR) release -n antidote
+
 stop:
 	./_build/default/rel/antidote/bin/env stop
 
