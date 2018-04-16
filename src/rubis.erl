@@ -89,7 +89,7 @@ process_request('PutCategory', #{category_name := Name}) ->
 
 %% Benchmark only
 process_request('AuthUser', #{username := Username,
-    password := Password}) ->
+                              password := Password}) ->
     auth_user(Username, Password);
 
 %% Used for rubis load and benchmark
@@ -186,10 +186,10 @@ process_request('StoreComment', #{on_item_id := ItemId,
 
 %% Used for rubis load and benchmark
 process_request('StoreItem', #{item_name := Name,
-    description := Desc,
-    quantity := Q,
-    category_id := CategoryId,
-    seller_id := UserId}) ->
+                               description := Desc,
+                               quantity := Q,
+                               category_id := CategoryId,
+                               seller_id := UserId}) ->
 
     store_item(Name, Desc, Q, CategoryId, UserId);
 
