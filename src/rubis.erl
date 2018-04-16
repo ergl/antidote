@@ -219,6 +219,7 @@ put_region(RegionName) ->
     NameIndex = ?ru:gen_index_name(?default_group, regions_name),
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
     {ok, [<<>>]} = pvc:read_keys(RegionKey, TxId),
     ok = pvc:update_keys({RegionKey, RegionName}, TxId),
@@ -250,6 +251,7 @@ put_category(CategoryName) ->
     NameIndex = ?ru:gen_index_name(?default_group, categories_name),
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
     {ok, [<<>>]} = pvc:read_keys(CategoryKey, TxId),
     ok = pvc:update_keys({CategoryKey, CategoryName}, TxId),
@@ -267,6 +269,7 @@ put_category(CategoryName) ->
 auth_user(Username, Password) ->
     NameIndex = ?ru:gen_index_name(?default_group, users_name),
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, [Val]} = pvc_indices:read_u_index(NameIndex, Username, TxId),
     Result = case Val of
         <<>> ->
@@ -296,6 +299,7 @@ register_user(Username, Password, RegionId) ->
     UsernameIndex = ?ru:gen_index_name(?default_group, users_name),
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
 
     %% Check that our username is unique
     {ok, [Val]} = pvc_indices:read_u_index(UsernameIndex, Username, TxId),
@@ -341,6 +345,7 @@ register_user(Username, Password, RegionId) ->
 browse_categories() ->
     CategoryNameIndex = ?ru:gen_index_name(?default_group, categories_name),
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, CategoryKeys} = pvc_indices:read_index(CategoryNameIndex, TxId),
     Result = pvc:read_keys(CategoryKeys, TxId),
     Commit = pvc:commit_transaction(TxId),
@@ -357,6 +362,7 @@ search_items_by_category(CategoryId) ->
     CategoryGrouping = ?ru:get_grouping(CategoryId),
     CategoryIndex = ?ru:gen_index_name(CategoryGrouping, items_category_id),
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, ItemKeys} = pvc_indices:read_index(CategoryIndex, CategoryId, TxId),
     Result = pvc:read_keys(ItemKeys, TxId),
     Commit = pvc:commit_transaction(TxId),
@@ -372,6 +378,7 @@ search_items_by_category(CategoryId) ->
 browse_regions() ->
     RegionNameIndex = ?ru:gen_index_name(?default_group, regions_name),
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, RegionKeys} = pvc_indices:read_index(RegionNameIndex, TxId),
     Result = pvc:read_keys(RegionKeys, TxId),
     Commit = pvc:commit_transaction(TxId),
@@ -388,6 +395,7 @@ search_items_by_region(CategoryId, RegionId) ->
     %% Get all items in category CategoryId, such that their sellers
     %% are part of the given region
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, [RegionName]} = pvc:read_keys(RegionId, TxId),
     UserRegionIndex = ?ru:gen_index_name(RegionName, users_region),
     {ok, UsersInRegion} = pvc_indices:read_index(UserRegionIndex, TxId),
@@ -417,6 +425,7 @@ search_items_by_region(CategoryId, RegionId) ->
 -spec view_item(key()) -> {ok, #view_item{}} | {error, reason()}.
 view_item(ItemId) ->
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, [Item]} = pvc:read_keys(ItemId, TxId),
     SellerId = Item#item.seller,
     {ok, [Seller]} = pvc:read_keys(SellerId, TxId),
@@ -442,6 +451,7 @@ view_user(UserId) ->
     CommentIndex = ?ru:gen_index_name(UserGroup, comments_to_id),
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
     {ok, CommentsToUser} = pvc_indices:read_index(CommentIndex, UserId, TxId),
     CommentInfo = lists:map(fun(CommentId) ->
@@ -464,6 +474,7 @@ view_item_bid_hist(ItemId) ->
     OnItemIdIndex = ?ru:gen_index_name(SelfGrouping, bids_on_item_id),
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, [#item{name = ItemName}]} = pvc:read_keys(ItemId, TxId),
     {ok, BidsOnItem} = pvc_indices:read_index(OnItemIdIndex, ItemId, TxId),
     BidInfo = lists:map(fun(BidId) ->
@@ -497,6 +508,7 @@ store_buy_now(OnItemId, BuyerId, Quantity) ->
                          quantity = Quantity},
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
 
     %% Insert the buy_now object and update the related index
     %% Make sure we don't perform blind-writes
@@ -539,6 +551,7 @@ store_bid(OnItemId, BidderId, Value) ->
                   price = Value},
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
 
     %% Insert the bid and update the related indices
     %% Make sure we don't perform blind-writes
@@ -581,6 +594,7 @@ store_comment(OnItemId, FromId, ToId, Rating, Body) ->
                           body = Body},
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
 
     %% Insert the comment and update the related index
     %% Make sure we don't perform blind-writes
@@ -626,6 +640,7 @@ store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
                     category = CategoryId},
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
     {ok, [<<>>]} = pvc:read_keys(ItemKey, TxId),
     ok = pvc:update_keys({ItemKey, ItemObj}, TxId),
@@ -646,6 +661,7 @@ about_me(UserId) ->
     SellerIndex = ?ru:gen_index_name(UserGroup, items_seller_id),
 
     {ok, TxId} = pvc:start_transaction(),
+    lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
 
     %% Get all the items sold by the given UserId
