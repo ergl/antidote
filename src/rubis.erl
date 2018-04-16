@@ -347,14 +347,17 @@ browse_categories() ->
     {ok, TxId} = pvc:start_transaction(),
     lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, CategoryKeys} = pvc_indices:read_index(CategoryNameIndex, TxId),
-    Result = pvc:read_keys(CategoryKeys, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    case pvc:read_keys(CategoryKeys, TxId) of
+        {error, _}=ReadError ->
+            ReadError;
 
-    case Commit of
-        ?committed ->
-            Result;
-        {error, Reason} ->
-            {error, Reason}
+        {ok, Result} ->
+            case pvc:commit_transaction(TxId) of
+                ?committed ->
+                    {ok, Result};
+                {error, Reason} ->
+                    {error, Reason}
+            end
     end.
 
 -spec search_items_by_category(key()) -> {ok, list()} | {error, reason()}.
@@ -364,14 +367,17 @@ search_items_by_category(CategoryId) ->
     {ok, TxId} = pvc:start_transaction(),
     lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, ItemKeys} = pvc_indices:read_index(CategoryIndex, CategoryId, TxId),
-    Result = pvc:read_keys(ItemKeys, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    case pvc:read_keys(ItemKeys, TxId) of
+        {error, _}=ReadError ->
+            ReadError;
 
-    case Commit of
-        ?committed ->
-            Result;
-        {error, Reason} ->
-            {error, Reason}
+        {ok, Result} ->
+            case pvc:commit_transaction(TxId) of
+                ?committed ->
+                    {ok, Result};
+                {error, Reason} ->
+                    {error, Reason}
+            end
     end.
 
 -spec browse_regions() -> {ok, list()} | {error, reason()}.
@@ -380,14 +386,17 @@ browse_regions() ->
     {ok, TxId} = pvc:start_transaction(),
     lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, RegionKeys} = pvc_indices:read_index(RegionNameIndex, TxId),
-    Result = pvc:read_keys(RegionKeys, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    case pvc:read_keys(RegionKeys, TxId) of
+        {error, _}=ReadError ->
+            ReadError;
 
-    case Commit of
-        ?committed ->
-            Result;
-        {error, Reason} ->
-            {error, Reason}
+        {ok, Result} ->
+            case pvc:commit_transaction(TxId) of
+                ?committed ->
+                    {ok, Result};
+                {error, Reason} ->
+                    {error, Reason}
+            end
     end.
 
 -spec search_items_by_region(key(), key()) -> {ok, list()} | {error, reason()}.
