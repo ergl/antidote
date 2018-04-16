@@ -1408,7 +1408,6 @@ abort(CoordState = #tx_coord_state{from = From,
                                    return_accumulator = AbortReason,
                                    updated_partitions = UpdatedPartitions}) ->
 
-    lager:info("PVC Self-initiated abort"),
     ok = clocksi_vnode:abort(UpdatedPartitions, Transaction),
     AbortMsg = case AbortReason of
         [{pvc_msg, Msg}] ->
