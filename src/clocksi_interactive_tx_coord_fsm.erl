@@ -910,7 +910,7 @@ receive_read_objects_result(Msg, State=#tx_coord_state{transactional_protocol=pv
     case Msg of
         %% Read abort
         {error, maxvc_bad_vc} ->
-            lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
+            %% lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
             abort(State#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]});
 
         %% The key has been already updated, returns the value directly
