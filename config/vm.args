@@ -40,3 +40,9 @@
 
 ## Riak Core configuration values coming from the command line.
 -riak_core handoff_port ${HANDOFF_PORT}
+
+## Set Max heap size to 100 MB (on 64-bit, 1 word = 8 bytes)
++hmax 12500000
+
+## Don't kill the process, just report
++hmaxk false
