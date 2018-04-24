@@ -20,7 +20,8 @@
                   runtime_tools,
                   observer,
                   wx,
-                  xprof
+                  xprof,
+                  recon
                  ]},
   {mod, { antidote_app, []}},
   %% Options for environmental variables
