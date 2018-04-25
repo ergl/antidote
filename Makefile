@@ -47,9 +47,8 @@ ping:
 attach:
 	./_build/default/rel/antidote/bin/env attach
 
-rebuild: stop relclean rel run
-
-restart: relclean rel run
+rr:
+	./local-cluster.sh
 
 rtest:
 	test/runtime_tests.escript

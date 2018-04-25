@@ -45,9 +45,27 @@ an-ping() {
     done
 }
 
+an-rebuild() {
+    set +e
+    _build/default/rel/antidote/bin/env stop > /dev/null 2>&1
+    rm -rf _build/default/rel
+    ./rebar3 release -n antidote > /dev/null 2>&1
+    ./change_script.sh _build/default/rel/antidote/bin/antidote > /dev/null 2>&1
+    ./_build/default/rel/antidote/bin/env start > /dev/null 2>&1
+    sleep 2
+    ./_build/default/rel/antidote/bin/env ping > /dev/null 2>&1
+	if [[ $? -eq 1 ]]; then
+	    echo "Node not responding"
+	    exit 1
+	fi
+	./_build/default/rel/antidote/bin/env attach
+	set -e
+}
+
 main() {
     if [[ $# -eq 0 ]]; then
-        exit 1
+        an-rebuild
+        exit $?
     fi
 
     local comm="${1}"
