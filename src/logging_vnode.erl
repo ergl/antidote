@@ -93,6 +93,7 @@
     %% Store commits in memory for the CLog
     %% We should find a way to cleanup, otherwise
     %% this will keep growing with each committed tx
+    %% FIXME(borja): Hot memory point
     pvc_clog :: pvc_commit_log:clog()
 }).
 

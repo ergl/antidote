@@ -21,8 +21,9 @@
 -module(pvc_commit_log).
 
 -include("antidote.hrl").
+-include("pvc.hrl").
 
--type clog() :: {partition_id(), gb_sets:tree(non_neg_integer(), vectorclock())}.
+-type clog() :: {partition_id(), {non_neg_integer(), gb_trees:tree(non_neg_integer(), vectorclock())}}.
 
 -export_type([clog/0]).
 
@@ -32,7 +33,7 @@
 
 -spec new_at(partition_id()) -> clog().
 new_at(AtId) ->
-    {AtId, gb_trees:empty()}.
+    {AtId, {1, gb_trees:empty()}}.
 
 %% The Commit Log at the i-th partition (CLog_i) is only updated
 %% when if there is a new transaction committed at i. This means
@@ -43,10 +44,28 @@ new_at(AtId) ->
 %% If this assumption doesn't hold, this will fail
 %%
 -spec insert(vectorclock_partition:partition_vc(), clog()) -> clog().
-insert(VC, {Id, Tree}) ->
+insert(VC, {Id, {Smallest, Tree}}) ->
     Key = vectorclock_partition:get_partition_time(Id, VC),
 %%    lager:info("[~p] Inserting ~p at ~p", [Id, dict:to_list(VC), Key]),
-    {Id, gb_trees:insert(Key, VC, Tree)}.
+    {Id, maybe_gc(Smallest, gb_trees:insert(Key, VC, Tree))}.
+
+maybe_gc(Smallest, Tree) ->
+    Size = gb_trees:size(Tree),
+    case Size > ?VERSION_THRESHOLD of
+        false ->
+            {Smallest, Tree};
+        true ->
+            StartingAt = Smallest,
+            Edge = Smallest + (Size - ?MAX_VERSIONS),
+            NewTree = gc_tree(StartingAt, Edge, Tree),
+            {Edge, NewTree}
+    end.
+
+gc_tree(N, N, Acc) ->
+    Acc;
+
+gc_tree(S, E, Acc) when E > S ->
+    gc_tree(S + 1, E, gb_trees:delete_any(S, Acc)).
 
 %% Given a VC and a list of indexes to check, get the maximum entry in the log
 %% such that it's lower or equal to VC at the given indexes.
@@ -54,7 +73,7 @@ insert(VC, {Id, Tree}) ->
 %%    max { e \in Clog | forall idx. e[idx] <= VC[idx] }
 %%
 -spec get_smaller_from_dots([partition_id()], vectorclock(), clog()) -> vectorclock().
-get_smaller_from_dots([], _, {_, Tree}) ->
+get_smaller_from_dots([], _, {_, {_, Tree}}) ->
     case gb_trees:is_empty(Tree) of
         true ->
             vectorclock:new();
@@ -62,7 +81,7 @@ get_smaller_from_dots([], _, {_, Tree}) ->
             element(2, gb_trees:largest(Tree))
     end;
 
-get_smaller_from_dots(Dots, VC, {_, Tree}) ->
+get_smaller_from_dots(Dots, VC, {_, {_, Tree}}) ->
     case catch get_smaller_from_dots(Dots, VC, gb_trees:balance(Tree), vectorclock_partition:new()) of
         {found, Max} ->
 %%            lager:info("get_smaller_from_dots found ~p", [dict:to_list(Max)]),
