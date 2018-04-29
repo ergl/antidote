@@ -51,23 +51,42 @@
 }).
 
 -spec next_id(index_node(), any()) -> non_neg_integer().
-next_id(Node, Table) ->
-    riak_core_vnode_master:sync_command(Node, {faa, Table}, rubis_keygen_vnode_master).
+next_id(Node, RubisTable) ->
+    TableName = table_name(Node, pvc_key_table),
+    case ets:info(TableName) of
+        undefined ->
+            riak_core_vnode_master:sync_command(Node, {faa, RubisTable}, rubis_keygen_vnode_master);
+        _ ->
+            faa(RubisTable, TableName)
+    end.
+
+table_name({Partition, _}, Name) ->
+    table_name(Partition, Name);
+
+table_name(Partition, Name) ->
+    try
+        list_to_existing_atom(atom_to_list(Name) ++ "-" ++ integer_to_list(Partition))
+    catch _:_ ->
+        list_to_atom(atom_to_list(Name) ++ "-" ++ integer_to_list(Partition))
+    end.
+
+-spec faa(atom(), ets:tid()) -> non_neg_integer().
+faa(RubisTable, KeyTable) ->
+    %% Update the id for the given table
+    %% If no such `Table` key exists, then insert {Table, 0}
+    %% on the KeyTable, and the do the update_counter
+    ets:update_counter(KeyTable, RubisTable, 1, {RubisTable, 0}).
 
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    KeyTable = ets:new(pvc_key_table, [set]),
+    KeyTable = ets:new(table_name(Partition, pvc_key_table), [set, public, named_table, {write_concurrency, true}]),
     {ok, #state{key_table = KeyTable,
                 partition = Partition}}.
 
 handle_command({faa, Table}, _Sender, State = #state{key_table = KeyTable}) ->
-    %% Update the id for the given table
-    %% If no such `Table` key exists, then insert {Table, 0}
-    %% on the KeyTable, and the do the update_counter
-    Id = ets:update_counter(KeyTable, Table, 1, {Table, 0}),
-    {reply, Id, State};
+    {reply, faa(Table, KeyTable), State};
 
 handle_command(Message, _Sender, State) ->
     lager:info("unhandled_command ~p", [Message]),
