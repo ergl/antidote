@@ -1,6 +1,7 @@
 %% Rubis
 -define(GROUPING_SEP, <<"+">>).
 -define(ID_SEP, <<"@">>).
+-define(FIELD_SEP, <<"/">>).
 
 %% General indices
 -define(INDEX_SEP, <<"$">>).

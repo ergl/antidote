@@ -28,55 +28,6 @@
 -type key() :: term().
 -type reason() :: atom().
 
--record(user, {
-    username :: binary(),
-    password :: binary(),
-    rating :: integer(),
-    balance :: integer(),
-    creationDate :: calendar:datetime(),
-    regionId :: key()
-}).
-
--record(item, {
-    name :: binary(),
-    description :: binary(),
-    quantity :: non_neg_integer(),
-    num_bids :: non_neg_integer(),
-    max_bid :: non_neg_integer(),
-    seller :: key(),
-    category :: key()
-}).
-
--record(bid, {
-    bidder :: key(),
-    on_item :: key(),
-    price :: non_neg_integer()
-}).
-
--record(buy_now, {
-    bidder :: key(),
-    on_item :: key(),
-    quantity :: non_neg_integer()
-}).
-
--record(comment, {
-    from :: key(),
-    to :: key(),
-    on_item :: key(),
-    rating :: integer(),
-    body :: binary()
-}).
-
--record(view_item, {
-    item_category :: key(),
-    item_description :: binary(),
-    item_name :: binary(),
-    item_num_bids :: non_neg_integer(),
-    item_quantity :: non_neg_integer(),
-    user_username :: binary(),
-    user_rating :: integer()
-}).
-
 -export([process_request/2]).
 
 %% Used for rubis load
@@ -276,7 +227,7 @@ auth_user(Username, Password) ->
             {error, user_not_found};
 
         UserId ->
-            {ok, [#user{password = Pass}]} = pvc:read_keys(UserId, TxId),
+            {ok, [{password, Pass}]} = pvc:read_keys(?ru:key_field(UserId, password), TxId),
             case Pass of
                 Password ->
                     {ok, UserId};
@@ -314,16 +265,19 @@ register_user(Username, Password, RegionId) ->
             RegionIdIndex = ?ru:gen_index_name(SelfGrouping, users_region),
 
             NextUserId = rubis_keygen_vnode:next_id(RegionPartition, users),
+
             UserKey = ?ru:gen_key(SelfGrouping, users, NextUserId),
+            UserObj = [
+                {UserKey, NextUserId},
+                {?ru:gen_key(SelfGrouping, users, NextUserId, username), {username, Username}},
+                {?ru:gen_key(SelfGrouping, users, NextUserId, password), {password, Password}},
+                {?ru:gen_key(SelfGrouping, users, NextUserId, rating), {rating, 0}},
+                {?ru:gen_key(SelfGrouping, users, NextUserId, balance), {balance, 0}},
+                {?ru:gen_key(SelfGrouping, users, NextUserId, creationDate), {creationDate, calendar:local_time()}},
+                {?ru:gen_key(SelfGrouping, users, NextUserId, regionId), {regionId, RegionId}}
+            ],
 
-            UserObj = #user{username = Username,
-                            password = Password,
-                            rating = 0,
-                            balance = 0,
-                            creationDate = calendar:local_time(),
-                            regionId = RegionId},
-
-            ok = pvc:update_keys({UserKey, UserObj}, TxId),
+            ok = pvc:update_keys(UserObj, TxId),
             ok = pvc_indices:u_index(UsernameIndex, Username, UserKey, TxId),
             ok = pvc_indices:index(RegionIdIndex, RegionName, UserKey, TxId),
             {ok, UserKey};
@@ -413,10 +367,10 @@ search_items_by_region(CategoryId, RegionId) ->
         SellerIndex = ?ru:gen_index_name(SellerGroup, items_seller_id),
         {ok, SoldByUser} = pvc_indices:read_index(SellerIndex, UserKey, TxId),
         lists:filtermap(fun(ItemKey) ->
-            {ok, [Item]} = pvc:read_keys(ItemKey, TxId),
-            case Item#item.category of
+            {ok, [{category, ItemCat}]} = pvc:read_keys(?ru:key_field(ItemKey, category), TxId),
+            case ItemCat of
                 CategoryId ->
-                    {true, Item};
+                    {true, ItemKey};
                 _ ->
                     false
             end
@@ -431,20 +385,29 @@ search_items_by_region(CategoryId, RegionId) ->
             {error, Reason}
     end.
 
--spec view_item(key()) -> {ok, #view_item{}} | {error, reason()}.
+-spec view_item(key()) -> {ok, tuple()} | {error, reason()}.
 view_item(ItemId) ->
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [Item]} = pvc:read_keys(ItemId, TxId),
-    SellerId = Item#item.seller,
-    {ok, [Seller]} = pvc:read_keys(SellerId, TxId),
-    ViewItem = #view_item{item_name = Item#item.name,
-                          item_category = Item#item.category,
-                          item_description = Item#item.description,
-                          item_num_bids = Item#item.num_bids,
-                          item_quantity = Item#item.quantity,
-                          user_username = Seller#user.username,
-                          user_rating = Seller#user.rating},
+    {ok, [{seller, SellerId} | ItemDetails]} = pvc:read_keys([?ru:key_field(ItemId, seller),
+                                                              ?ru:key_field(ItemId, name),
+                                                              ?ru:key_field(ItemId, category),
+                                                              ?ru:key_field(ItemId, description),
+                                                              ?ru:key_field(ItemId, num_bids),
+                                                              ?ru:key_field(ItemId, quantity)], TxId),
+
+    {ok, [SellerUsername,
+          SellerRating]} = pvc:read_keys([?ru:key_field(SellerId, username),
+                                          ?ru:key_field(SellerId, rating)], TxId),
+
+    ViewItem = {proplists:get_value(name, ItemDetails),
+                proplists:get_value(category, ItemDetails),
+                proplists:get_value(description, ItemDetails),
+                proplists:get_value(num_bids, ItemDetails),
+                proplists:get_value(quantity, ItemDetails),
+                SellerUsername,
+                SellerRating},
+
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
@@ -461,12 +424,12 @@ view_user(UserId) ->
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
+    {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
     {ok, CommentsToUser} = pvc_indices:read_index(CommentIndex, UserId, TxId),
     CommentInfo = lists:map(fun(CommentId) ->
-        {ok, [Comment = #comment{from = FromUserId}]} = pvc:read_keys(CommentId, TxId),
-        {ok, [#user{username = FromUsername}]} = pvc:read_keys(FromUserId, TxId),
-        {Comment, FromUsername}
+        {ok, [{from, FromUserId}]} = pvc:read_keys(?ru:key_field(CommentId, from), TxId),
+        {ok, [{username, FromUsername}]} = pvc:read_keys(?ru:key_field(FromUserId, username), TxId),
+        {CommentId, FromUsername}
     end, CommentsToUser),
     Commit = pvc:commit_transaction(TxId),
 
@@ -484,12 +447,12 @@ view_item_bid_hist(ItemId) ->
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [#item{name = ItemName}]} = pvc:read_keys(ItemId, TxId),
+    {ok, [{name, ItemName}]} = pvc:read_keys(?ru:key_field(ItemId, name), TxId),
     {ok, BidsOnItem} = pvc_indices:read_index(OnItemIdIndex, ItemId, TxId),
     BidInfo = lists:map(fun(BidId) ->
-        {ok, [Bid = #bid{bidder = UserId}]} = pvc:read_keys(BidId, TxId),
-        {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
-        {Bid, Username}
+        {ok, [{bidder, UserId}]} = pvc:read_keys(?ru:key_field(BidId, bidder), TxId),
+        {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
+        {BidId, Username}
     end, BidsOnItem),
     Commit = pvc:commit_transaction(TxId),
 
@@ -512,9 +475,12 @@ store_buy_now(OnItemId, BuyerId, Quantity) ->
 
     BuyNowId = rubis_keygen_vnode:next_id(SelfPartition, buy_now),
     BuyNowKey = ?ru:gen_key(SelfGrouping, buy_now, BuyNowId),
-    BuyNowObj = #buy_now{bidder = BuyerId,
-                         on_item = OnItemId,
-                         quantity = Quantity},
+    BuyNowObj = [
+        {BuyNowKey, BuyNowId},
+        {?ru:gen_key(SelfGrouping, buy_now, BuyNowId, bidder), {bidder, BuyerId}},
+        {?ru:gen_key(SelfGrouping, buy_now, BuyNowId, on_item), {on_item, OnItemId}},
+        {?ru:gen_key(SelfGrouping, buy_now, BuyNowId, quantity), {quantity, Quantity}}
+    ],
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
@@ -522,15 +488,14 @@ store_buy_now(OnItemId, BuyerId, Quantity) ->
     %% Insert the buy_now object and update the related index
     %% Make sure we don't perform blind-writes
     {ok, [<<>>]} = pvc:read_keys(BuyNowKey, TxId),
-    ok = pvc:update_keys({BuyNowKey, BuyNowObj}, TxId),
+    ok = pvc:update_keys(BuyNowObj, TxId),
     ok = pvc_indices:index(BuyerIndex, BuyerId, BuyNowKey, TxId),
 
     %% Update the item quantity
-    {ok, [Item]} = pvc:read_keys(OnItemId, TxId),
-    OldQty = Item#item.quantity,
+    ItemQuantityKey = ?ru:key_field(OnItemId, quantity),
+    {ok, [{quantity, OldQty}]} = pvc:read_keys(ItemQuantityKey, TxId),
     NewQty = case OldQty - Quantity of N when N < 0 -> 0; M -> M end,
-    UpdatedItem = Item#item{quantity = NewQty},
-    ok = pvc:update_keys({OnItemId, UpdatedItem}, TxId),
+    ok = pvc:update_keys({ItemQuantityKey, {quantity, NewQty}}, TxId),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
@@ -555,9 +520,12 @@ store_bid(OnItemId, BidderId, Value) ->
 
     BidId = rubis_keygen_vnode:next_id(SelfPartition, bids),
     BidKey = ?ru:gen_key(SelfGrouping, bids, BidId),
-    BidObj = #bid{bidder = BidderId,
-                  on_item = OnItemId,
-                  price = Value},
+    BidObj = [
+        {BidKey, BidId},
+        {?ru:gen_key(SelfGrouping, bids, BidId, bidder), {bidder, BidderId}},
+        {?ru:gen_key(SelfGrouping, bids, BidId, on_item), {on_item, OnItemId}},
+        {?ru:gen_key(SelfGrouping, bids, BidId, price), {price, Value}}
+    ],
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
@@ -565,16 +533,18 @@ store_bid(OnItemId, BidderId, Value) ->
     %% Insert the bid and update the related indices
     %% Make sure we don't perform blind-writes
     {ok, [<<>>]} = pvc:read_keys(BidKey, TxId),
-    ok = pvc:update_keys({BidKey, BidObj}, TxId),
+    ok = pvc:update_keys(BidObj, TxId),
     ok = pvc_indices:index(OnItemIdIndex, OnItemId, BidKey, TxId),
     ok = pvc_indices:index(BidderIdIndex, BidderId, BidKey, TxId),
 
     %% Update the referenced item to track the number of bids
-    {ok, [Item]} = pvc:read_keys(OnItemId, TxId),
-    NBids = Item#item.num_bids,
-    NewMax = max(Item#item.max_bid, Value),
-    UpdatedItem = Item#item{num_bids = NBids + 1, max_bid = NewMax},
-    ok = pvc:update_keys({OnItemId, UpdatedItem}, TxId),
+    NumBidKey = ?ru:key_field(OnItemId, num_bids),
+    MaxBidKey = ?ru:key_field(OnItemId, max_bid),
+    {ok, [{num_bids, NBids}, {max_bid, OldMax}]} = pvc:read_keys([NumBidKey, MaxBidKey], TxId),
+    NewMax = max(OldMax, Value),
+    ok = pvc:update_keys([{NumBidKey, {num_bids, NBids + 1}},
+                          {MaxBidKey, {max_bid, NewMax}}], TxId),
+
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
@@ -595,12 +565,16 @@ store_comment(OnItemId, FromId, ToId, Rating, Body) ->
     ToIdIndex = ?ru:gen_index_name(ToGrouping, comments_to_id),
 
     CommentId = rubis_keygen_vnode:next_id(SelfPartition, comments),
+
     CommentKey = ?ru:gen_key(SelfGrouping, comments, CommentId),
-    CommentObj = #comment{from = FromId,
-                          to = ToId,
-                          on_item = OnItemId,
-                          rating = Rating,
-                          body = Body},
+    CommentObj = [
+        {CommentKey, CommentId},
+        {?ru:gen_key(SelfGrouping, comments, CommentId, from), {from, FromId}},
+        {?ru:gen_key(SelfGrouping, comments, CommentId, to), {to, ToId}},
+        {?ru:gen_key(SelfGrouping, comments, CommentId, on_item), {on_item, OnItemId}},
+        {?ru:gen_key(SelfGrouping, comments, CommentId, rating), {rating, Rating}},
+        {?ru:gen_key(SelfGrouping, comments, CommentId, body), {body, Body}}
+    ],
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
@@ -608,14 +582,14 @@ store_comment(OnItemId, FromId, ToId, Rating, Body) ->
     %% Insert the comment and update the related index
     %% Make sure we don't perform blind-writes
     {ok, [<<>>]} = pvc:read_keys(CommentKey, TxId),
-    ok = pvc:update_keys({CommentKey, CommentObj}, TxId),
+    ok = pvc:update_keys(CommentObj, TxId),
     ok = pvc_indices:index(ToIdIndex, ToId, CommentKey, TxId),
 
     %% Update the referenced user to update the rating
-    {ok, [User]} = pvc:read_keys(ToId, TxId),
-    OldRating = User#user.rating,
-    UpdatedUser = User#user{rating = OldRating + Rating},
-    ok = pvc:update_keys({ToId, UpdatedUser}, TxId),
+    RatingKey = ?ru:key_field(ToId, rating),
+    {ok, [{rating, OldRating}]} = pvc:read_keys(RatingKey, TxId),
+    NewRating = OldRating + Rating,
+    ok = pvc:update_keys({RatingKey, {rating, NewRating}}, TxId),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
@@ -640,19 +614,22 @@ store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
 
     ItemId = rubis_keygen_vnode:next_id(ItemPartition, items),
     ItemKey = ?ru:gen_key(SelfGrouping, items, ItemId),
-    ItemObj = #item{name = ItemName,
-                    description = Description,
-                    quantity = Quantity,
-                    num_bids = 0,
-                    max_bid = 0,
-                    seller = SellerId,
-                    category = CategoryId},
+    ItemObj = [
+        {ItemKey, ItemId},
+        {?ru:gen_key(SelfGrouping, items, ItemId, name), {name, ItemName}},
+        {?ru:gen_key(SelfGrouping, items, ItemId, description), {description, Description}},
+        {?ru:gen_key(SelfGrouping, items, ItemId, quantity), {quantity, Quantity}},
+        {?ru:gen_key(SelfGrouping, items, ItemId, num_bids), {num_bids, 0}},
+        {?ru:gen_key(SelfGrouping, items, ItemId, max_bid), {max_bid, 0}},
+        {?ru:gen_key(SelfGrouping, items, ItemId, seller), {seller, SellerId}},
+        {?ru:gen_key(SelfGrouping, items, ItemId, category), {category, CategoryId}}
+    ],
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
     {ok, [<<>>]} = pvc:read_keys(ItemKey, TxId),
-    ok = pvc:update_keys({ItemKey, ItemObj}, TxId),
+    ok = pvc:update_keys(ItemObj, TxId),
     ok = pvc_indices:index(CategoryIndex, CategoryId, ItemKey, TxId),
     ok = pvc_indices:index(SellerIndex, SellerId, ItemKey, TxId),
     Commit = pvc:commit_transaction(TxId),
@@ -671,7 +648,7 @@ about_me(UserId) ->
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [#user{username = Username}]} = pvc:read_keys(UserId, TxId),
+    {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
 
     %% Get all the items sold by the given UserId
     {ok, SoldItems} = pvc_indices:read_index(SellerIndex, UserId, TxId),
@@ -719,14 +696,19 @@ get_bought_items(UserId, TxId) ->
     BuyerIndex = ?ru:gen_index_name(UserGroup, buy_now_buyer_id),
     {ok, Bought} = pvc_indices:read_index(BuyerIndex, UserId, TxId),
     map_error(fun(BuyNowId) ->
-        case pvc:read_keys(BuyNowId, TxId) of
+        OnItemKey = ?ru:key_field(BuyNowId, on_item),
+        QuantityKey = ?ru:key_field(BuyNowId, quantity),
+        case pvc:read_keys([OnItemKey, QuantityKey], TxId) of
             {error, _}=Err ->
                 throw(Err);
 
-            {ok, [BuyNowObj = #buy_now{on_item = OnItemId}]} ->
-                {ok, [OnItem = #item{seller = SellerId}]} = pvc:read_keys(OnItemId, TxId),
-                {ok, [#user{username = SellerUsername}]} = pvc:read_keys(SellerId, TxId),
-                {SellerUsername, OnItem#item.name, BuyNowObj#buy_now.quantity}
+            {ok, [{on_item, OnItemId}, {quantity, Quantity}]} ->
+                {ok, [{seller, SellerId},
+                      {name, ItemName}]} = pvc:read_keys([?ru:key_field(OnItemId, seller),
+                                                          ?ru:key_field(OnItemId, name)], TxId),
+
+                {ok, [{username, SellerUsername}]} = pvc:read_keys(?ru:key_field(SellerId, username), TxId),
+                {SellerUsername, ItemName, Quantity}
         end
     end, Bought).
 
@@ -737,14 +719,14 @@ get_bidded_items(UserId, TxId) ->
     BidderIndex = ?ru:gen_index_name(UserGroup, bids_bidder_id),
     {ok, PlacedBids} = pvc_indices:read_index(BidderIndex, UserId, TxId),
     map_error(fun(BidId) ->
-        case pvc:read_keys(BidId, TxId) of
+        case pvc:read_keys(?ru:key_field(BidId, on_item), TxId) of
             {error, _}=Err ->
                 throw(Err);
 
-            {ok, [#bid{on_item = OnItemId}]} ->
-                {ok, [OnItem = #item{seller = SellerId}]} = pvc:read_keys(OnItemId, TxId),
-                {ok, [#user{username = SellerUsername}]} = pvc:read_keys(SellerId, TxId),
-                {OnItem, SellerUsername}
+            {ok, [{on_item, OnItemId}]} ->
+                {ok, [{seller, SellerId}]} = pvc:read_keys(?ru:key_field(OnItemId, seller), TxId),
+                {ok, [{username, SellerUsername}]} = pvc:read_keys(?ru:key_field(SellerId, username), TxId),
+                {OnItemId, SellerUsername}
         end
     end, PlacedBids).
 
