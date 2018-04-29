@@ -445,7 +445,7 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
                 ok = pvc_append_commits(Partition, Id, WS, VC, MRVC),
 
                 %% Cache last commit time for the WS keys (for stale VC check)
-                ok = pvc_store_key_commitvc(CommittedTx, WS, VC)
+                ok = pvc_store_key_commitvc(Partition, CommittedTx, WS, VC)
             end, Entries)
     end,
     {noreply, State#state{pvc_commitqueue = NewQueue}};
@@ -671,8 +671,7 @@ pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
         [] ->
             false;
 
-        [{Key, CommitVC}] ->
-            CommitTime = vectorclock_partition:get_partition_time(SelfPartition, CommitVC),
+        [{Key, SelfPartition, CommitTime}] ->
             PrepareTime = vectorclock_partition:get_partition_time(SelfPartition, PrepareVC),
             CommitTime > PrepareTime
     end,
@@ -684,9 +683,10 @@ pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
             pvc_are_keys_stale(SelfPartition, Keys, PrepareVC, CommittedTx)
     end.
 
--spec pvc_store_key_commitvc(cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
-pvc_store_key_commitvc(CommittedTx, WriteSet, CommitVC) ->
-    Objects = [{Key, CommitVC} || {Key, _, _} <- WriteSet],
+-spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
+pvc_store_key_commitvc(Partition, CommittedTx, WriteSet, CommitVC) ->
+    PartitionTime = vectorclock_partition:get_partition_time(Partition, CommitVC),
+    Objects = [{Key, Partition, PartitionTime} || {Key, _, _} <- WriteSet],
     true = ets:insert(CommittedTx, Objects),
     ok.
 
