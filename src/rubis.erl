@@ -533,6 +533,8 @@ store_bid(OnItemId, BidderId, Value) ->
     %% Insert the bid and update the related indices
     %% Make sure we don't perform blind-writes
     {ok, [<<>>]} = pvc:read_keys(BidKey, TxId),
+    %% FIXME(borja): There might be a pvc_bad_vc abort here
+    {ok, _} = pvc:read_keys(BidderId, TxId),
     ok = pvc:update_keys(BidObj, TxId),
     ok = pvc_indices:index(OnItemIdIndex, OnItemId, BidKey, TxId),
     ok = pvc_indices:index(BidderIdIndex, BidderId, BidKey, TxId),
