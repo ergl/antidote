@@ -76,8 +76,9 @@ read_index(IndexName, TxId) ->
             {ok, []};
         true ->
             {ok, Range} = read_index_range(MainIndexKey, TxId),
+            %% Remove root index key markers for specific values
             Filtered = lists:filter(fun(Key) ->
-                length(binary:split(Key, <<"$">>, [global])) > 2
+                length(binary:split(Key, ?INDEX_SEP, [global])) > 2
             end, Range),
             case Filtered of
                 [] ->
@@ -150,9 +151,24 @@ update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
     ok = pvc:update_keys(Updates, TxId),
     gen_fsm:sync_send_event(Pid, {pvc_index, Updates}, ?OP_TIMEOUT).
 
-read_index_range(RootKey, #tx_id{server_pid = Pid}) ->
+%% @doc Read subkeys of the given root key from the ordered storage
+%%
+%%      Doesn't return all keys, but only up to INDEX_PAGE_LIMIT
+%%
+-spec read_index_range(key(), txid()) -> {ok, [key()]}.
+read_index_range(RootKey, TxId) ->
+    read_index_range(RootKey, ?INDEX_PAGE_LIMIT, TxId).
+
+%% @doc Read up to `Limit` subkeys of the given root key from the ordered storage
+%%
+%%      Might read more than `Limit` keys, the number refers to the number of
+%%      unique keys this will fetch from the ordered storage. Keys not yet
+%%      persisted (such as those in the write set) don't count towards the limit.
+%%
+-spec read_index_range(key(), non_neg_integer(), txid()) -> {ok, [key()]}.
+read_index_range(RootKey, Limit, #tx_id{server_pid = Pid}) ->
     Range = make_range(RootKey),
-    gen_fsm:sync_send_event(Pid, {pvc_scan_range, {RootKey, Range}}).
+    gen_fsm:sync_send_event(Pid, {pvc_scan_range, {RootKey, Range, Limit}}).
 
 -spec make_range(binary()) -> range().
 make_range(Key) ->

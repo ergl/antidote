@@ -614,7 +614,7 @@ execute_command(pvc_index, Updates, Sender, State = #tx_coord_state{
     gen_fsm:reply(Sender, ok),
     {next_state, execute_op, State#tx_coord_state{pvc_keys_to_index=NewIndexSet}};
 
-execute_command(pvc_scan_range, {Root, Range}, Sender, State = #tx_coord_state{
+execute_command(pvc_scan_range, {Root, Range, Limit}, Sender, State = #tx_coord_state{
     transactional_protocol=pvc,
     pvc_keys_to_index=ToIndexDict
 }) ->
@@ -624,7 +624,7 @@ execute_command(pvc_scan_range, {Root, Range}, Sender, State = #tx_coord_state{
     LocalIndexSet = pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict),
 
     %% Also get the matching keys stored in the ordered storage
-    StoredIndexKeys = materializer_vnode:pvc_key_range(Partition, Root, Range),
+    StoredIndexKeys = materializer_vnode:pvc_key_range(Partition, Root, Range, Limit),
 
     %% Merge them (don't store duplicates)
     MergedKeys = lists:foldl(fun ordsets:add_element/2, LocalIndexSet, StoredIndexKeys),
