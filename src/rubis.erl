@@ -41,7 +41,6 @@ process_request('Ping', _) ->
     end;
 
 process_request('ReadOnlyTx', #{keys := Keys}) ->
-    lager:info("Test ReadOnly tx of ~p", [Keys]),
     {ok, TxId} = pvc:start_transaction(),
     case pvc:read_keys(Keys, TxId) of
         {error, _}=ReadError ->
@@ -58,7 +57,6 @@ process_request('ReadOnlyTx', #{keys := Keys}) ->
 
 process_request('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
     Updates = lists:map(fun(#{key := K, value := V}) -> {K, V} end, OpList),
-    lager:info("Test ReadWrite of ~p keys and ~p ops", [Keys, Updates]),
 
     {ok, TxId} = pvc:start_transaction(),
     case pvc:read_keys(Keys, TxId) of
