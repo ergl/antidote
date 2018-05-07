@@ -19,7 +19,9 @@
                   rand_compat,
                   runtime_tools,
                   observer,
-                  wx
+                  wx,
+                  xprof,
+                  recon
                  ]},
   {mod, { antidote_app, []}},
   %% Options for environmental variables
