@@ -31,15 +31,14 @@
 -export([process_request/2]).
 
 process_request('Ping', _) ->
-%%    {ok, TxId} = pvc:start_transaction(),
-%%    Commit = pvc:commit_transaction(TxId),
-%%    case Commit of
-%%        ?committed ->
-%%            ok;
-%%        {error, Reason} ->
-%%            {error, Reason}
-%%    end;
-    ok;
+    {ok, TxId} = pvc:start_transaction(),
+    Commit = pvc:commit_transaction(TxId),
+    case Commit of
+        ?committed ->
+            ok;
+        {error, Reason} ->
+            {error, Reason}
+    end;
 
 process_request('ReadOnlyTx', #{keys := Keys}) ->
     {ok, TxId} = pvc:start_transaction(),
