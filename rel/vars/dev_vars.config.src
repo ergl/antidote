@@ -15,6 +15,7 @@
 {pubsub_port,       @PUBSUBPORT@}.
 {logreader_port,    @LOGREADERPORT@}.
 {metrics_port,      @METRICSPORT@}.
+{rubis_pb_port,     @RUBISPBPORT@}.
 
 %%
 %% etc/vm.args

@@ -25,6 +25,10 @@ if [ -z "$LOGREADER_PORT" ]; then
   export LOGREADER_PORT=8085
 fi
 
+if [ -z "$RUBIS_PB_PORT" ]; then
+  export RUBIS_PB_PORT=7878
+fi
+
 # Metrics port.
 if [ -z "$METRICS_PORT" ]; then
   export METRICS_PORT=3001
