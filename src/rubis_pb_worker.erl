@@ -19,59 +19,68 @@
 %% -------------------------------------------------------------------
 
 -module(rubis_pb_worker).
+
 -behaviour(gen_server).
+-behavior(ranch_protocol).
 
--record(state, { socket }).
+-record(state, { socket, transport }).
 
--export([start_link/1]).
+%% ranch_protocol callback
+-export([start_link/4]).
 
+%% gen_server callbacks
 -export([init/1,
-    handle_call/3,
-    handle_cast/2,
-    handle_info/2,
-    code_change/3,
-    terminate/2]).
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         code_change/3,
+         terminate/2]).
 
-start_link(Socket) ->
-    gen_server:start_link(?MODULE, Socket, []).
+%% Ranch workaround for gen_server
+start_link(Ref, Socket, Transport, Opts) ->
+    {ok, proc_lib:spawn_link(?MODULE, init, [{Ref, Socket, Transport, Opts}])}.
 
-init(Socket) ->
-    gen_server:cast(self(), accept),
-    {ok, #state{socket=Socket}}.
+init({Ref, Socket, Transport, _Opts}) ->
+    ok = ranch:accept_ack(Ref),
+    ok = Transport:setopts(Socket, [{active, once}, {packet, 2}]),
+    gen_server:enter_loop(?MODULE, [], #state{socket=Socket, transport=Transport}).
 
-handle_call(_E, _From, State) ->
-    {noreply, State}.
+handle_call(E, _From, S) ->
+    io:format("unexpected call: ~p~n", [E]),
+    {reply, ok, S}.
 
-handle_cast(accept, S = #state{socket = ListenSocket}) ->
-    {ok, AcceptSocket} = gen_tcp:accept(ListenSocket),
-    rubis_pb_sup:start_socket(),
-    ok = inet:setopts(AcceptSocket, [{active, once}]),
-    {noreply, S#state{socket=AcceptSocket}}.
+handle_cast(E, S) ->
+    io:format("unexpected cast: ~p~n", [E]),
+    {noreply, S}.
 
-handle_info({tcp, _Socket, Data}, State = #state{socket = Sock}) ->
+handle_info({tcp, Socket, Data}, State = #state{socket=Socket, transport=Transport}) ->
     {HandlerMod, Type, Msg} = rubis_proto:decode_client_req(Data),
     Result = rubis:process_request(Type, Msg),
 %%    lager:info("Processed pb request ~p with result ~p", [Type, Result]),
     Reply = rubis_proto:encode_serv_reply(HandlerMod, Type, Result),
-    gen_tcp:send(Sock, Reply),
-    ok = inet:setopts(Sock, [{active, once}]),
+    Transport:send(Socket, Reply),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info({tcp_closed, _Socket}, S) ->
     {stop, normal, S};
 
-handle_info({tcp_error, _Socket, _}, S) ->
-    {stop, normal, S};
+handle_info({tcp_error, _Socket, Reason}, S) ->
+    {stop, Reason, S};
+
+handle_info(timeout, State) ->
+    {stop, normal, State};
 
 handle_info(E, S) ->
-    io:format("unexpected: ~p~n", [E]),
+    io:format("unexpected info: ~p~n", [E]),
     {noreply, S}.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-terminate(normal, _State) ->
+terminate(_, #state{socket=undefined, transport=undefined}) ->
     ok;
 
-terminate(_Reason, _State) ->
-    io:format("terminate reason: ~p~n", [_Reason]).
+terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
+    catch Transport:close(Socket),
+    ok.

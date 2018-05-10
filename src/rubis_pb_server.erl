@@ -18,39 +18,26 @@
 %%
 %% -------------------------------------------------------------------
 
--module(rubis_pb_sup).
--behaviour(supervisor).
+-module(rubis_pb_server).
 
--export([start_link/0, start_socket/0]).
--export([init/1]).
+-export([start_listeners/0]).
 
 %% The number of active listeners
 %% for the RUBIS Protocol Buffer server
 -define(RUBIS_NSUP, 100).
 -define(DEFAULT_RUBIS_PB_PORT, 7878).
 
-start_link() ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
-
-init([]) ->
+-spec start_listeners() -> ok.
+start_listeners() ->
     RubisPbPort = application:get_env(antidote, rubis_pb_port, ?DEFAULT_RUBIS_PB_PORT),
-    {ok, LSock} = gen_tcp:listen(RubisPbPort, [
-        binary,
-        {active, once},
-        {nodelay, true},
-        {packet, 2}
-    ]),
-    {ok, Port} = inet:port(LSock),
-    lager:info("RUBIS Pb interface listening on port ~p", [Port]),
-    spawn_link(fun empty_listeners/0),
-    {ok, {{simple_one_for_one, 60, 3600},
-        [{socket,
-            {rubis_pb_worker, start_link, [LSock]},
-            temporary, 1000, worker, [rubis_pb_worker]}]}}.
+    {ok, _} = ranch:start_listener(tcp_rubis,
+        ?RUBIS_NSUP,
+        ranch_tcp,
+        [{port, RubisPbPort}, {max_connections, infinity}],
+        rubis_pb_worker,
+        []),
 
-start_socket() ->
-    supervisor:start_child(?MODULE, []).
+    Port = ranch:get_port(tcp_rubis),
+    lager:info("Rubis pb server started on port ~p", [Port]),
 
-empty_listeners() ->
-    [start_socket() || _ <- lists:seq(0, ?RUBIS_NSUP)],
     ok.

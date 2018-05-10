@@ -22,7 +22,8 @@
                   elli,
                   elli_prometheus,
                   prometheus_process_collector,
-                  vectorclock
+                  vectorclock,
+                  ranch
                  ]},
   {mod, { antidote_app, []}},
   %% Options for environmental variables
