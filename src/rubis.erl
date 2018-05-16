@@ -32,6 +32,28 @@ process_request('Ping', _) ->
             {error, Reason}
     end;
 
+process_request('Load', #{num_keys := N, bin_size := Size}) ->
+    Val = crypto:strong_rand_bytes(Size),
+    {Keys, Updates} = lists:foldl(fun(K, {KeyAcc, UpdateAcc}) ->
+        Gen = integer_to_binary(K, 36),
+        {[Gen | KeyAcc], [{Gen, Val} | UpdateAcc]}
+    end, {[],[]}, lists:seq(1, N)),
+
+    {ok, TxId} = antidote:start_transaction(ignore, []),
+    case read_keys(Keys, TxId) of
+        {error, _}=ReadError ->
+            ReadError;
+        {ok, _} ->
+            ok = update_keys(Updates, TxId),
+            Commit = antidote:commit_transaction(TxId),
+            case Commit of
+                {ok, _} ->
+                    ok;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end;
+
 process_request('ReadOnlyTx', #{keys := Keys}) ->
     {ok, TxId} = antidote:start_transaction(ignore, []),
     case read_keys(Keys, TxId) of
