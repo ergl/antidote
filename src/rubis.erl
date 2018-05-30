@@ -30,6 +30,18 @@
 
 -export([process_request/2]).
 
+%% @doc Force sequential reads for blotter-style microbenchmarks
+sequential_read([], _Tx) ->
+    ok;
+
+sequential_read([Key | Keys], Tx) ->
+    case pvc:read_keys(Key, Tx) of
+        {error, _}=ReadError ->
+            ReadError;
+        {ok, _} ->
+            sequential_read(Keys, Tx)
+    end.
+
 process_request('Ping', _) ->
     {ok, TxId} = pvc:start_transaction(),
     Commit = pvc:commit_transaction(TxId),
@@ -63,10 +75,10 @@ process_request('Load', #{num_keys := N, bin_size := Size}) ->
 
 process_request('ReadOnlyTx', #{keys := Keys}) ->
     {ok, TxId} = pvc:start_transaction(),
-    case pvc:read_keys(Keys, TxId) of
+    case sequential_read(Keys, TxId) of
         {error, _}=ReadError ->
             ReadError;
-        {ok, _} ->
+        ok ->
             Commit = pvc:commit_transaction(TxId),
             case Commit of
                 ?committed ->
@@ -80,10 +92,10 @@ process_request('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
     Updates = lists:map(fun(#{key := K, value := V}) -> {K, V} end, OpList),
 
     {ok, TxId} = pvc:start_transaction(),
-    case pvc:read_keys(Keys, TxId) of
+    case sequential_read(Keys, TxId) of
         {error, _}=ReadError ->
             ReadError;
-        {ok, _} ->
+        ok ->
             ok = pvc:update_keys(Updates, TxId),
             Commit = pvc:commit_transaction(TxId),
             case Commit of
