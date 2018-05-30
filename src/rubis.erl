@@ -40,7 +40,7 @@ process_request('Load', #{num_keys := N, bin_size := Size}) ->
     end, {[],[]}, lists:seq(1, N)),
 
     {ok, TxId} = antidote:start_transaction(ignore, []),
-    case read_keys(Keys, TxId) of
+    case read_keys_batch(Keys, TxId) of
         {error, _}=ReadError ->
             ReadError;
         {ok, _} ->
@@ -56,10 +56,10 @@ process_request('Load', #{num_keys := N, bin_size := Size}) ->
 
 process_request('ReadOnlyTx', #{keys := Keys}) ->
     {ok, TxId} = antidote:start_transaction(ignore, []),
-    case read_keys(Keys, TxId) of
+    case read_keys_sequential(Keys, TxId) of
         {error, _}=ReadError ->
             ReadError;
-        {ok, _} ->
+        ok ->
             Commit = antidote:commit_transaction(TxId),
             case Commit of
                 {ok, _} ->
@@ -73,10 +73,10 @@ process_request('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
     Updates = lists:map(fun(#{key := K, value := V}) -> {K, V} end, OpList),
 
     {ok, TxId} = antidote:start_transaction(ignore, []),
-    case read_keys(Keys, TxId) of
+    case read_keys_sequential(Keys, TxId) of
         {error, _}=ReadError ->
             ReadError;
-        {ok, _} ->
+        ok ->
             ok = update_keys(Updates, TxId),
             Commit = antidote:commit_transaction(TxId),
             case Commit of
@@ -87,11 +87,28 @@ process_request('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
             end
     end.
 
-read_keys(Keys, TxId) ->
+read_keys_batch(Keys, TxId) ->
     Objs = lists:map(fun(K) ->
         {K, antidote_crdt_register_lww, my_bucket}
     end, Keys),
     antidote:read_objects(Objs, TxId).
+
+read_keys_sequential(Keys, TxId) ->
+    Objs = lists:map(fun(K) ->
+        {K, antidote_crdt_register_lww, my_bucket}
+    end, Keys),
+    read_keys_sequential_int(Objs, TxId).
+
+read_keys_sequential_int([], _TxId) ->
+    ok;
+
+read_keys_sequential_int([Obj | Objs], TxId) ->
+    case antidote:read_objects([Obj], TxId) of
+        {error, _}=ReadError ->
+            ReadError;
+        {ok, _} ->
+            read_keys_sequential_int(Objs, TxId)
+    end.
 
 update_keys(Updates, TxId) ->
     Ops = lists:map(fun({K, V}) ->
