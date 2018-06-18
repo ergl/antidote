@@ -41,3 +41,7 @@
 
 ## Riak Core configuration values coming from the command line.
 -riak_core handoff_port ${HANDOFF_PORT}
+
+## Pin to CPU cores, spread over hardware threads across NUMA nodes
++sbt tnnps
+
