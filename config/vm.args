@@ -46,3 +46,6 @@
 
 ## Don't kill the process, just report
 +hmaxk false
+
+## Pin to CPU cores, spread over hardware threads across NUMA nodes
++sbt tnnps
