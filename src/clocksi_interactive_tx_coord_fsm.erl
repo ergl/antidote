@@ -556,6 +556,12 @@ execute_op({update, Args}, Sender, SD0) ->
 execute_op({OpType, Args}, Sender, State) ->
     execute_command(OpType, Args, Sender, State).
 
+%% @doc UNSAFE: Execute a blind write of size Size to NKeys
+execute_command(unsafe_load, {NKeys, Size}, Sender, State = #tx_coord_state{
+    transactional_protocol = pvc
+}) ->
+    pvc_unsafe_load(NKeys, Size, Sender, State);
+
 %% @doc Execute the commit protocol
 execute_command(prepare, Protocol, Sender, State0) ->
     State = State0#tx_coord_state{from=Sender, commit_protocol=Protocol},
@@ -630,6 +636,20 @@ execute_command(pvc_scan_range, {Root, Range, Limit}, Sender, State = #tx_coord_
     MergedKeys = lists:foldl(fun ordsets:add_element/2, LocalIndexSet, StoredIndexKeys),
     gen_fsm:reply(Sender, {ok, ordsets:to_list(MergedKeys)}),
     {next_state, execute_op, State}.
+
+pvc_unsafe_load(NKeys, Size, Sender, State) ->
+    Val = crypto:strong_rand_bytes(Size),
+    NewState = pvc_unsafe_load_update(NKeys, Val, State),
+    pvc_prepare(NewState#tx_coord_state{from=Sender}).
+
+pvc_unsafe_load_update(0, _, State) ->
+    State;
+
+pvc_unsafe_load_update(N, Val, S = #tx_coord_state{client_ops=Ops0,updated_partitions=P0}) ->
+    Key = integer_to_binary(N, 36),
+    Op = {Key, antidote_crdt_lwwreg, {assign, Val}},
+    {P, Ops} = pvc_perform_update(Op, P0, Ops0),
+    pvc_unsafe_load_update(N - 1, Val, S#tx_coord_state{client_ops=Ops,updated_partitions=P}).
 
 -spec pvc_add_to_index_dict(index_node(), key(), dict:dict()) -> dict:dict().
 pvc_add_to_index_dict(Part, Key, Dict) ->
