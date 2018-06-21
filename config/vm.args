@@ -48,4 +48,5 @@
 +hmaxk false
 
 ## Pin to CPU cores, spread over hardware threads across NUMA nodes
-+sbt tnnps
+## If not supported, use the default unbound behavior
++stbt tnnps
