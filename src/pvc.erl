@@ -83,10 +83,7 @@ read_keys([], _) ->
     {ok, []};
 
 read_keys(Keys, #tx_id{server_pid = Pid}) when is_list(Keys) ->
-    CompatKeys = lists:map(fun(K) ->
-        {K, antidote_crdt_lwwreg}
-    end, Keys),
-    gen_fsm:sync_send_event(Pid, {read_objects, CompatKeys}, ?OP_TIMEOUT);
+    gen_fsm:sync_send_event(Pid, {read_objects, Keys}, ?OP_TIMEOUT);
 
 read_keys(Key, TxId) ->
     read_keys([Key], TxId).

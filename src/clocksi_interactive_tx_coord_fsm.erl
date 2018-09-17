@@ -592,10 +592,10 @@ execute_command(read, {Key, Type}, Sender, State = #tx_coord_state{
     end;
 
 %% @doc Read a batch of objects, asynchronous
-execute_command(read_objects, Objects, Sender, State = #tx_coord_state{
+execute_command(read_objects, Keys, Sender, State = #tx_coord_state{
     transactional_protocol=pvc
 }) ->
-    pvc_read(Objects, Sender, State);
+    pvc_read(Keys, Sender, State);
 
 execute_command(read_objects, Objects, Sender, State) ->
     clocksi_read(Objects, Sender, State);
@@ -693,15 +693,14 @@ pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
     end.
 
 %% @doc Loop through all the keys, calling the appropriate partitions
-pvc_read(Objects, Sender, State = #tx_coord_state{
+pvc_read(Keys, Sender, State = #tx_coord_state{
     client_ops=ClientOps,
     transaction=Transaction
 }) ->
-
-    [FirstKey | Rest] = JustKeys = lists:map(fun(Obj) -> element(1, Obj) end, Objects),
+    [FirstKey | Rest] = Keys,
     ok = pvc_perform_read(FirstKey, Transaction, ClientOps),
     {next_state, receive_read_objects_result, State#tx_coord_state{from=Sender,
-                                                                   return_accumulator={JustKeys, Rest}}}.
+                                                                   return_accumulator={Keys, Rest}}}.
 
 -spec pvc_perform_read(key(), tx(), list()) -> ok.
 pvc_perform_read(Key, Transaction, ClientOps) ->
