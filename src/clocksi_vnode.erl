@@ -119,8 +119,14 @@ async_read_data_item(Node, Transaction, Key, Type) ->
 %% to get around blocking the virtual node while waiting for
 %% the clock to catch up.
 -spec pvc_get_most_recent_vc(index_node()) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
-pvc_get_most_recent_vc(Node) ->
-    riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER).
+pvc_get_most_recent_vc({Partition,_}=Node) ->
+    AtomicTable = get_cache_name(Partition, pvc_state_table),
+    case ets:info(AtomicTable) of
+        undefined ->
+            riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER);
+        _ ->
+            {ok, pvc_get_mrvc(AtomicTable)}
+    end.
 
 -spec pvc_process_cqueue(index_node()) -> ok.
 pvc_process_cqueue(Node) ->
