@@ -304,7 +304,7 @@ pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
             ok;
 
         ready ->
-            pvc_scan_and_read(Coordinator, Key, Type, Transaction, State)
+            pvc_scan_and_read(IndexNode, Coordinator, Key, Type, Transaction, State)
     end.
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
@@ -338,6 +338,7 @@ pvc_check_time(_Tx, Partition, MostRecentVC, VCaggr) ->
 %%      equal than the VCaggr of the current transaction.
 %%
 -spec pvc_scan_and_read(
+    index_node(),
     {fsm, pid()} | pid(),
     key(),
     type(),
@@ -345,12 +346,8 @@ pvc_check_time(_Tx, Partition, MostRecentVC, VCaggr) ->
     #state{}
 ) -> ok.
 
-pvc_scan_and_read(Coordinator, Key, Type, Transaction, State = #state{
-    partition = Partition
-}) ->
-    %% Sanity check
-    {Partition, _}=Node = log_utilities:get_key_partition(Key),
-    MaxVCRes = pvc_find_maxvc(Node, Transaction),
+pvc_scan_and_read(IndexNode, Coordinator, Key, Type, Transaction, State) ->
+    MaxVCRes = pvc_find_maxvc(IndexNode, Transaction),
     case MaxVCRes of
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
