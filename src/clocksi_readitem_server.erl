@@ -297,7 +297,7 @@ pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
 }) ->
 
     VCaggr = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
-    {ok, MostRecentVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
+    MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
     case pvc_check_time(Transaction, CurrentPartition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
             erlang:send_after(WaitTime, self(), {pvc_wait_scan, IndexNode, Coordinator, Transaction, Key, Type}),
@@ -379,11 +379,9 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
     %% the current MostRecentVC at this partition
     MaxVC = case sets:size(HasRead) of
         0 ->
-            {ok, MRVC} = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
-            MRVC;
+            clocksi_vnode:pvc_get_most_recent_vc(IndexNode);
         _ ->
-            {ok, ScanVC} = logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr),
-            ScanVC
+            logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr)
     end,
 
     %% If the selected time is too old, we should abort the read

@@ -118,14 +118,14 @@ async_read_data_item(Node, Transaction, Key, Type) ->
 %% but this is the least complicated way I could come up with
 %% to get around blocking the virtual node while waiting for
 %% the clock to catch up.
--spec pvc_get_most_recent_vc(index_node()) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
+-spec pvc_get_most_recent_vc(index_node()) -> vectorclock_partition:partition_vc().
 pvc_get_most_recent_vc({Partition,_}=Node) ->
     AtomicTable = get_cache_name(Partition, pvc_state_table),
     case ets:info(AtomicTable) of
         undefined ->
             riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER);
         _ ->
-            {ok, pvc_get_mrvc(AtomicTable)}
+            pvc_get_mrvc(AtomicTable)
     end.
 
 -spec pvc_process_cqueue(index_node()) -> ok.
@@ -385,7 +385,7 @@ handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
 handle_command(pvc_mostrecentvc, _Sender, State) ->
-    {reply, {ok, pvc_get_mrvc(State)}, State};
+    {reply, pvc_get_mrvc(State#state.pvc_atomic_state), State};
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
@@ -557,10 +557,7 @@ pvc_atomic_state_init(Partition) ->
 pvc_faa_lastprep(PVCTable) ->
     ets:update_counter(PVCTable, seq_number, 1).
 
--spec pvc_get_mrvc(#state{} | cache_id()) -> vectorclock().
-pvc_get_mrvc(#state{pvc_atomic_state = PVCTable}) ->
-    pvc_get_mrvc(PVCTable);
-
+-spec pvc_get_mrvc(cache_id()) -> vectorclock().
 pvc_get_mrvc(PVCTable) ->
     ets:lookup_element(PVCTable, mrvc, 2).
 
