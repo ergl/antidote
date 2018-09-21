@@ -277,10 +277,10 @@ get_cache_name(Partition, Base) ->
 %% @doc Initializes all data structures that vnode needs to track information
 %%      the transactions it participates on.
 init([Partition]) ->
-    PreparedTx = open_table(Partition),
-    CommittedTx = ets:new(committed_tx, [set]),
+    PreparedTx = open_table(Partition, prepared),
+    CommittedTx = open_table(Partition, committed_tx),
 
-    PVCTable = pvc_atomic_state_init(),
+    PVCTable = pvc_atomic_state_init(Partition),
     CommitQueue = pvc_commit_queue:new(),
 
     {ok, #state{
@@ -323,22 +323,26 @@ check_table_ready([{Partition, Node} | Rest]) ->
             false
     end.
 
-open_table(Partition) ->
-    case ets:info(get_cache_name(Partition, prepared)) of
-    undefined ->
-        ets:new(get_cache_name(Partition, prepared),
-            [set, protected, named_table, ?TABLE_CONCURRENCY]);
-    _ ->
-        %% Other vnode hasn't finished closing tables
-        lager:debug("Unable to open ets table in clocksi vnode, retrying"),
-        timer:sleep(100),
-        try
-        ets:delete(get_cache_name(Partition, prepared))
-        catch
-        _:_Reason->
-            ok
-        end,
-        open_table(Partition)
+-spec open_table(partition_id(), atom()) -> atom() | ets:tid().
+open_table(Partition, Name) ->
+    open_table(Partition, Name, [set, protected, named_table, ?TABLE_CONCURRENCY]).
+
+open_table(Partition, Name, Options) ->
+    CacheName = get_cache_name(Partition, Name),
+    case ets:info(CacheName) of
+        undefined ->
+            ets:new(CacheName, Options);
+        _ ->
+            %% Other vnode hasn't finished closing tables
+            lager:debug("Unable to open ets table in clocksi vnode, retrying"),
+            timer:sleep(100),
+            try
+                ets:delete(CacheName)
+            catch
+                _:_Reason ->
+                    ok
+            end,
+            open_table(Partition, Name, Options)
     end.
 
 loop_until_started(_Partition, 0) ->
@@ -537,9 +541,9 @@ terminate(_Reason, #state{partition = Partition} = _State) ->
 %%% Internal Functions
 %%%===================================================================
 
--spec pvc_atomic_state_init() -> cache_id().
-pvc_atomic_state_init() ->
-    PVCTable = ets:new(pvc_state_table, [set]),
+-spec pvc_atomic_state_init(partition_id()) -> cache_id().
+pvc_atomic_state_init(Partition) ->
+    PVCTable = open_table(Partition, pvc_state_table),
     true = ets:insert(PVCTable, [{seq_number, 0}, {mrvc, vectorclock:new()}]),
     PVCTable.
 
