@@ -108,7 +108,7 @@ async_read_data_item({Partition, Node}=IndexNode, Key, Type, Transaction, Coordi
     To = {global, generate_random_server_name(Node, Partition)},
     Msg = case Transaction#transaction.transactional_protocol of
         pvc ->
-            {pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Transaction};
+            {pvc_perform_read_cast, Coordinator, IndexNode, Key, Transaction};
         _ ->
             {perform_read_cast, Coordinator, Key, Type, Transaction}
     end,
@@ -240,8 +240,8 @@ handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
     {noreply, SD0};
 
-handle_cast({pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}, State) ->
-    ok = pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State),
+handle_cast({pvc_perform_read_cast, Coordinator, IndexNode, Key, Tx}, State) ->
+    ok = pvc_perform_read_internal(Coordinator, IndexNode, Key, Tx, State),
     {noreply, State}.
 
 %% @doc Performs a PVC read in this partition.
@@ -257,12 +257,11 @@ handle_cast({pvc_perform_read_cast, Coordinator, IndexNode, Key, Type, Tx}, Stat
     {fsm, pid()} | pid(),
     index_node(),
     key(),
-    type(),
     #transaction{},
     #state{}
 ) -> ok.
 
-pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
+pvc_perform_read_internal(Coordinator, IndexNode, Key, Tx, State = #state{
     partition = CurrentPartition
 }) ->
 
@@ -274,12 +273,12 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
     HasRead = Tx#transaction.pvc_meta#pvc_tx_meta.hasread,
     case sets:is_element(CurrentPartition, HasRead) of
         false ->
-            pvc_wait_scan(IndexNode, Coordinator, Tx, Key, Type, State);
+            pvc_wait_scan(IndexNode, Coordinator, Tx, Key, State);
 
         true ->
             VCaggr = Tx#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
 %%            lager:info("{~p} PVC ~p was read before, using ~p", [erlang:phash2(Tx#transaction.txn_id), CurrentPartition, dict:to_list(VCaggr)]),
-            pvc_perform_read(Coordinator, Key, Type, VCaggr, State)
+            pvc_perform_read(Coordinator, Key, VCaggr, State)
     end.
 
 %% @doc Wait until this PVC partition is ready to perform a read.
@@ -295,11 +294,10 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
     {fsm, pid()} | pid(),
     #transaction{},
     key(),
-    type(),
     #state{}
 ) -> ok.
 
-pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
+pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, State = #state{
     partition = CurrentPartition,
     pvc_atomic_cache = AtomicCache
 }) ->
@@ -308,11 +306,11 @@ pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
     MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache),
     case pvc_check_time(Transaction, CurrentPartition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
-            erlang:send_after(WaitTime, self(), {pvc_wait_scan, IndexNode, Coordinator, Transaction, Key, Type}),
+            erlang:send_after(WaitTime, self(), {pvc_wait_scan, IndexNode, Coordinator, Transaction, Key}),
             ok;
 
         ready ->
-            pvc_scan_and_read(IndexNode, Coordinator, Key, Type, Transaction, State)
+            pvc_scan_and_read(IndexNode, Coordinator, Key, Transaction, State)
     end.
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
@@ -349,12 +347,11 @@ pvc_check_time(_Tx, Partition, MostRecentVC, VCaggr) ->
     index_node(),
     {fsm, pid()} | pid(),
     key(),
-    type(),
     #transaction{},
     #state{}
 ) -> ok.
 
-pvc_scan_and_read(IndexNode, Coordinator, Key, Type, Transaction, State = #state{
+pvc_scan_and_read(IndexNode, Coordinator, Key, Transaction, State = #state{
     pvc_atomic_cache = AtomicCache
 }) ->
     HasRead = Transaction#transaction.pvc_meta#pvc_tx_meta.hasread,
@@ -367,7 +364,7 @@ pvc_scan_and_read(IndexNode, Coordinator, Key, Type, Transaction, State = #state
 
         {ok, MaxVC} ->
 %%            lager:info("{~p} PVC read ~p found MaxVC ~p", [erlang:phash2(Transaction#transaction.txn_id), Key, dict:to_list(MaxVC)]),
-            pvc_perform_read(Coordinator, Key, Type, MaxVC, State)
+            pvc_perform_read(Coordinator, Key, MaxVC, State)
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
@@ -405,13 +402,12 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, HasRead, VCaggr, AtomicCache) 
 -spec pvc_perform_read(
     {fsm, pid()} | pid(),
     key(),
-    type(),
     vectorclock_partition:partition_vc(),
     #state{}
 ) -> ok.
 
-pvc_perform_read(Coordinator, Key, Type, MaxVC, #state{mat_state=MatState}) ->
-    case materializer_vnode:pvc_read(pvc, Key, Type, MaxVC, MatState) of
+pvc_perform_read(Coordinator, Key, MaxVC, #state{mat_state=MatState}) ->
+    case materializer_vnode:pvc_read(Key, MaxVC, MatState) of
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
 
@@ -498,8 +494,8 @@ handle_info({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
     {noreply, SD0};
 
-handle_info({pvc_wait_scan, IndexNode, Coordinator, Transaction, Key, Type}, State) ->
-    ok = pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State),
+handle_info({pvc_wait_scan, IndexNode, Coordinator, Transaction, Key}, State) ->
+    ok = pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, State),
     {noreply, State};
 
 handle_info(_Info, StateData) ->
