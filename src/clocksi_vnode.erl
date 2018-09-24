@@ -121,11 +121,10 @@ async_read_data_item(Node, Transaction, Key, Type) ->
 -spec pvc_get_most_recent_vc(index_node()) -> vectorclock_partition:partition_vc().
 pvc_get_most_recent_vc({Partition,_}=Node) ->
     AtomicTable = get_cache_name(Partition, pvc_state_table),
-    case ets:info(AtomicTable) of
-        undefined ->
+    case catch pvc_get_mrvc(AtomicTable) of
+        {'EXIT', _} ->
             riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER);
-        _ ->
-            pvc_get_mrvc(AtomicTable)
+        Value -> Value
     end.
 
 -spec pvc_process_cqueue(index_node()) -> ok.
@@ -278,7 +277,14 @@ abort(ListofNodes, TxId) ->
     end, ok, ListofNodes).
 
 get_cache_name(Partition, Base) ->
-    list_to_atom(atom_to_list(node()) ++ atom_to_list(Base) ++ "-" ++ integer_to_list(Partition)).
+    BinNode = atom_to_binary(node(), latin1),
+    BinBase = atom_to_binary(Base, latin1),
+    BinPart = integer_to_binary(Partition),
+    Name = <<BinNode/binary, BinBase/binary, <<"-">>/binary, BinPart/binary>>,
+    case catch binary_to_existing_atom(Name, latin1) of
+        {'EXIT', _} -> binary_to_atom(Name, latin1);
+        Normal -> Normal
+    end.
 
 %% @doc Initializes all data structures that vnode needs to track information
 %%      the transactions it participates on.
