@@ -704,21 +704,20 @@ pvc_read(Keys, Sender, State = #tx_coord_state{
 
 -spec pvc_perform_read(key(), tx(), list()) -> ok.
 pvc_perform_read(Key, Transaction, ClientOps) ->
-    Type = antidote_crdt_lwwreg,
-
     %% If the key has already been updated in this transaction,
     %% return the last assigned value directly.
     %% This works because we restrict ourselves to lww-registers,
     %% so we don't need to depend on previous values.
     case pvc_key_was_updated(ClientOps, Key) of
         false ->
-            Partition = log_utilities:get_key_partition(Key),
             %% If the key has never been updated, request the most
             %% recent compatible version of the key to the holding
             %% partition.
             %%
             %% We will wait for the reply on the next state.
-            clocksi_vnode:async_read_data_item(Partition, Transaction, Key, Type);
+            HasRead = Transaction#transaction.pvc_meta#pvc_tx_meta.hasread,
+            VCaggr = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+            clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr);
         Value ->
             %% If updated, reply to ourselves with the last value.
             gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
