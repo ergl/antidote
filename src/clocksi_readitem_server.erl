@@ -54,7 +54,10 @@
     id :: non_neg_integer(),
     mat_state :: #mat_state{},
     partition :: partition_id(),
-    prepared_cache :: cache_id()
+    prepared_cache :: cache_id(),
+
+    %% PVC Atomic cache
+    pvc_atomic_cache :: atom()
 }).
 
 %% TODO: allow properties for reads
@@ -215,11 +218,15 @@ init([Partition, Id]) ->
     %% ClockSI Cache
     PreparedCache = clocksi_vnode:get_cache_name(Partition, prepared),
 
+    %% PVC State Cache
+    PVCAtomicCache = clocksi_vnode:get_cache_name(Partition, pvc_state_table),
+
     Self = generate_server_name(Addr, Partition, Id),
     {ok, #state{id=Id,
                 self=Self,
                 partition=Partition,
                 mat_state = MatState,
+                pvc_atomic_cache = PVCAtomicCache,
                 prepared_cache=PreparedCache}}.
 
 handle_call({perform_read, Key, Type, Transaction}, Coordinator, SD0) ->
@@ -293,11 +300,12 @@ pvc_perform_read_internal(Coordinator, IndexNode, Key, Type, Tx, State = #state{
 ) -> ok.
 
 pvc_wait_scan(IndexNode, Coordinator, Transaction, Key, Type, State = #state{
-    partition = CurrentPartition
+    partition = CurrentPartition,
+    pvc_atomic_cache = AtomicCache
 }) ->
 
     VCaggr = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
-    MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode),
+    MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache),
     case pvc_check_time(Transaction, CurrentPartition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
             erlang:send_after(WaitTime, self(), {pvc_wait_scan, IndexNode, Coordinator, Transaction, Key, Type}),
@@ -346,8 +354,13 @@ pvc_check_time(_Tx, Partition, MostRecentVC, VCaggr) ->
     #state{}
 ) -> ok.
 
-pvc_scan_and_read(IndexNode, Coordinator, Key, Type, Transaction, State) ->
-    MaxVCRes = pvc_find_maxvc(IndexNode, Transaction),
+pvc_scan_and_read(IndexNode, Coordinator, Key, Type, Transaction, State = #state{
+    pvc_atomic_cache = AtomicCache
+}) ->
+    HasRead = Transaction#transaction.pvc_meta#pvc_tx_meta.hasread,
+    VCaggr = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+
+    MaxVCRes = pvc_find_maxvc(IndexNode, HasRead, VCaggr, AtomicCache),
     case MaxVCRes of
         {error, Reason} ->
             reply_to_coordinator(Coordinator, {error, Reason});
@@ -358,25 +371,15 @@ pvc_scan_and_read(IndexNode, Coordinator, Key, Type, Transaction, State) ->
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
--spec pvc_find_maxvc(index_node(), #transaction{}) -> {ok, vectorclock_partition:partition_vc()}
-                                                    | {error, reason()}.
+-spec pvc_find_maxvc(index_node(), sets:set(), vectorclock(), atom()) -> {ok, vectorclock_partition:partition_vc()}
+                                                                       | {error, reason()}.
 
-pvc_find_maxvc({CurrentPartition, _} = IndexNode, #transaction{
-    %% Sanity check
-    transactional_protocol = pvc,
-    pvc_meta = #pvc_tx_meta{
-        hasread = HasRead,
-        time = #pvc_time{
-            vcaggr = VCaggr
-        }
-    }
-}) ->
-
+pvc_find_maxvc({CurrentPartition, _} = IndexNode, HasRead, VCaggr, AtomicCache) ->
     %% If this is the first partition we're reading, our MaxVC will be
     %% the current MostRecentVC at this partition
     MaxVC = case sets:size(HasRead) of
         0 ->
-            clocksi_vnode:pvc_get_most_recent_vc(IndexNode);
+            clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache);
         _ ->
             logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr)
     end,

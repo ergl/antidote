@@ -54,7 +54,7 @@
     handle_exit/3]).
 
 -export([pvc_process_cqueue/1,
-         pvc_get_most_recent_vc/1]).
+         pvc_get_most_recent_vc/2]).
 
 -ignore_xref([start_vnode/1]).
 
@@ -118,10 +118,9 @@ async_read_data_item(Node, Transaction, Key, Type) ->
 %% but this is the least complicated way I could come up with
 %% to get around blocking the virtual node while waiting for
 %% the clock to catch up.
--spec pvc_get_most_recent_vc(index_node()) -> vectorclock_partition:partition_vc().
-pvc_get_most_recent_vc({Partition,_}=Node) ->
-    AtomicTable = get_cache_name(Partition, pvc_state_table),
-    case catch pvc_get_mrvc(AtomicTable) of
+-spec pvc_get_most_recent_vc(index_node(), atom()) -> vectorclock_partition:partition_vc().
+pvc_get_most_recent_vc(Node, TableName) ->
+    case catch pvc_get_mrvc(TableName) of
         {'EXIT', _} ->
             riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER);
         Value -> Value
