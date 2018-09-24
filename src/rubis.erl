@@ -30,16 +30,15 @@
 
 -export([process_request/2]).
 
-%% @doc Force sequential reads for blotter-style microbenchmarks
-sequential_read([], _Tx) ->
+sequential_read([], _) ->
     ok;
 
-sequential_read([Key | Keys], Tx) ->
-    case pvc:read_keys(Key, Tx) of
-        {error, _}=ReadError ->
-            ReadError;
+sequential_read([Key | Rest], Tx) ->
+    case pvc:read_single(Key, Tx) of
         {ok, _} ->
-            sequential_read(Keys, Tx)
+            sequential_read(Rest, Tx);
+        {error, _}=ReadError ->
+            ReadError
     end.
 
 process_request('Ping', _) ->
