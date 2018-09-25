@@ -316,7 +316,7 @@ handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
     {reply, read(Key, Type, SnapshotTime, Transaction, State), State};
 
 handle_command({pvc_read, Key, SnapshotTime}, _Sender, State) ->
-    {reply, pvc_read(Key, SnapshotTime, State), State};
+    {reply, pvc_internal_read(Key, SnapshotTime, State), State};
 
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
