@@ -204,7 +204,14 @@ stop_read_servers_internal(Node, Partition, Num) ->
 
 -spec generate_server_name(node(), partition_id(), non_neg_integer()) -> atom().
 generate_server_name(Node, Partition, Id) ->
-    list_to_atom(integer_to_list(Id) ++ integer_to_list(Partition) ++ atom_to_list(Node)).
+    BinId = binary:encode_unsigned(Id),
+    BinPart = binary:encode_unsigned(Partition),
+    BinNode = atom_to_binary(Node, latin1),
+    Name = <<BinId/binary, BinPart/binary, BinNode/binary>>,
+    case catch binary_to_existing_atom(Name, latin1) of
+        {'EXIT', _} -> binary_to_atom(Name, latin1);
+        Normal -> Normal
+    end.
 
 -spec generate_random_server_name(node(), partition_id()) -> atom().
 generate_random_server_name(Node, Partition) ->
