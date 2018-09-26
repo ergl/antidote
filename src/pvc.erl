@@ -33,6 +33,7 @@
     start_transaction/3,
     start_transaction/2,
     abort_transaction/1,
+    read_single/2,
     read_objects/2,
     read_objects/3,
     read_objects/4,
@@ -78,6 +79,9 @@ commit_transaction(TxId) ->
             {ok, []};
         Res -> Res
     end.
+
+read_single(Key, #tx_id{server_pid = Pid}) ->
+    gen_fsm:sync_send_event(Pid, {read_single, Key}, ?OP_TIMEOUT).
 
 read_keys([], _) ->
     {ok, []};

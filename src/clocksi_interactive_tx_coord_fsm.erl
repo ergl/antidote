@@ -76,6 +76,7 @@
     execute_op/2,
     execute_op/3,
     receive_read_objects_result/2,
+    pvc_read_res/2,
     receive_logging_responses/2,
     finish_op/3,
     prepare/1,
@@ -591,6 +592,10 @@ execute_command(read, {Key, Type}, Sender, State = #tx_coord_state{
             }}
     end;
 
+%% @doc Read a single key, asynchronous (PVC only)
+execute_command(read_single, Key, Sender, State) ->
+    pvc_single_read(Key, State#tx_coord_state{from=Sender});
+
 %% @doc Read a batch of objects, asynchronous
 execute_command(read_objects, Keys, Sender, State = #tx_coord_state{
     transactional_protocol=pvc
@@ -691,6 +696,29 @@ pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
                 end
             end, ordsets:new(), S)
     end.
+
+pvc_single_read(Key, State = #tx_coord_state{
+    from = Sender,
+    client_ops = ClientOps,
+    transaction = Transaction
+}) ->
+    case pvc_key_was_updated(ClientOps, Key) of
+        false ->
+            HasRead = Transaction#transaction.pvc_meta#pvc_tx_meta.hasread,
+            VCaggr = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+            clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr),
+            {next_state, pvc_read_res, State};
+        Value ->
+            gen_fsm:reply(Sender, {ok, Value}),
+            {next_state, execute_op, State}
+    end.
+
+pvc_read_res({error, maxvc_bad_vc}, State) ->
+    abort(State#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]});
+
+pvc_read_res({pvc_readreturn, Key, Value, VCdep, VCaggr}, State = #tx_coord_state{transaction = Tx}) ->
+    gen_fsm:reply(State#tx_coord_state.from, {ok, Value}),
+    {next_state, execute_op, State#tx_coord_state{transaction = pvc_update_transaction(Key, VCdep, VCaggr, Tx)}}.
 
 %% @doc Loop through all the keys, calling the appropriate partitions
 pvc_read(Keys, Sender, State = #tx_coord_state{
