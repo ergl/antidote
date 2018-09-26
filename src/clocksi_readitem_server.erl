@@ -268,7 +268,8 @@ handle_cast({pvc_fresh_read, Coordinator, IndexNode, Key, HasRead, VCaggr}, Stat
     {noreply, State};
 
 handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
-    ok = pvc_vlog_read_internal(Coordinator, Key, VCaggr, State#state.mat_state),
+    #state{partition = SelfPartition, mat_state = MatState} = State,
+    ok = pvc_vlog_read_internal(Coordinator, SelfPartition, Key, VCaggr, MatState),
     {noreply, State}.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
@@ -277,8 +278,8 @@ handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
 %%      to the coordinator the value of that snapshot, along with the commit
 %%      vector clock time of that snapshot.
 %%
--spec pvc_vlog_read_internal(term(), key(), vectorclock(), #mat_state{}) -> ok.
-pvc_vlog_read_internal(Coordinator, Key, MaxVC, MatState) ->
+-spec pvc_vlog_read_internal(term(), partition_id(), key(), vectorclock(), #mat_state{}) -> ok.
+pvc_vlog_read_internal(Coordinator, Partition, Key, MaxVC, MatState) ->
     case materializer_vnode:pvc_read(Key, MaxVC, MatState) of
         {error, Reason} ->
             gen_fsm:send_event(Coordinator, {error, Reason});
@@ -287,7 +288,7 @@ pvc_vlog_read_internal(Coordinator, Key, MaxVC, MatState) ->
             %% The main problem seems to come from _returning_ a full VC, as opposed to merely
             %% using it
             %% FIXME(borja): Maybe try reducing the number of partitions?
-            gen_fsm:send_event(Coordinator, {pvc_readreturn, Key, Value, CommitVC, MaxVC})
+            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, Key, Value, CommitVC, MaxVC})
     end.
 
 %% @doc Wait until this PVC partition is ready to perform a read.
@@ -343,6 +344,7 @@ pvc_check_time(Partition, MostRecentVC, VCaggr) ->
 
 pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, #state{
     pvc_atomic_cache = AtomicCache,
+    partition = SelfPartition,
     mat_state = MatState
 }) ->
     MaxVCRes = pvc_find_maxvc(IndexNode, HasRead, VCaggr, AtomicCache),
@@ -351,7 +353,7 @@ pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, #state{
             gen_fsm:send_event(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
-            pvc_vlog_read_internal(Coordinator, Key, MaxVC, MatState)
+            pvc_vlog_read_internal(Coordinator, SelfPartition, Key, MaxVC, MatState)
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read

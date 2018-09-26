@@ -716,9 +716,9 @@ pvc_single_read(Key, State = #tx_coord_state{
 pvc_read_res({error, maxvc_bad_vc}, State) ->
     abort(State#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]});
 
-pvc_read_res({pvc_readreturn, Key, Value, VCdep, VCaggr}, State = #tx_coord_state{transaction = Tx}) ->
+pvc_read_res({pvc_readreturn, From, _Key, Value, VCdep, VCaggr}, State = #tx_coord_state{transaction = Tx}) ->
     gen_fsm:reply(State#tx_coord_state.from, {ok, Value}),
-    {next_state, execute_op, State#tx_coord_state{transaction = pvc_update_transaction(Key, VCdep, VCaggr, Tx)}}.
+    {next_state, execute_op, State#tx_coord_state{transaction = pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
 
 %% @doc Loop through all the keys, calling the appropriate partitions
 pvc_read(Keys, Sender, State = #tx_coord_state{
@@ -965,9 +965,9 @@ receive_read_objects_result(Msg, State=#tx_coord_state{transactional_protocol=pv
             pvc_read_loop(Key, Value, Transaction, State);
 
         %% A message from the read_item server, must update the transaction
-        {pvc_readreturn, Key, Value, VCdep, VCaggr} ->
+        {pvc_readreturn, From, Key, Value, VCdep, VCaggr} ->
             %% Update Transaction state (read partitions, version vectors, etc)
-            UpdatedTransaction = pvc_update_transaction(Key, VCdep, VCaggr, Transaction),
+            UpdatedTransaction = pvc_update_transaction(From, VCdep, VCaggr, Transaction),
             %% Update the state and loop until all keys have been read
             pvc_read_loop(Key, Value, UpdatedTransaction, State)
     end.
@@ -996,8 +996,8 @@ pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOp
                                      return_accumulator={ReadValues, Rest}}}
     end.
 
--spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
-pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{
+-spec pvc_update_transaction(partition_id(), vectorclock(), vectorclock(), tx()) -> tx().
+pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
     pvc_meta=PVCMeta=#pvc_tx_meta{
         hasread=HasRead,
         time=PVCTime=#pvc_time{
@@ -1007,8 +1007,7 @@ pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{
     }
 }) ->
 
-    {Partition, _Node} = log_utilities:get_key_partition(Key),
-    NewHasRead = sets:add_element(Partition, HasRead),
+    NewHasRead = sets:add_element(FromPartition, HasRead),
 
     NewVCdep = vectorclock_partition:max([TVCdep, VCdep]),
     NewVCaggr = vectorclock_partition:max([TVCaggr, VCaggr]),
