@@ -283,6 +283,10 @@ pvc_vlog_read_internal(Coordinator, Key, MaxVC, MatState) ->
         {error, Reason} ->
             gen_fsm:send_event(Coordinator, {error, Reason});
         {ok, Value, CommitVC} ->
+            %% TODO(borja): The problem arises as soon as we return the MaxVC to the coordinator
+            %% The main problem seems to come from _returning_ a full VC, as opposed to merely
+            %% using it
+            %% FIXME(borja): Maybe try reducing the number of partitions?
             gen_fsm:send_event(Coordinator, {pvc_readreturn, Key, Value, CommitVC, MaxVC})
     end.
 
