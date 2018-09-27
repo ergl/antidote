@@ -103,7 +103,7 @@
 
     %% PVC-related commit metadata
     %% Commit time of a transaction at the given partition
-    pvc_metadata :: #pvc_time{} | undefined
+    pvc_metadata :: pvc_time()
 }).
 
 %% PVC
@@ -128,6 +128,8 @@
     %% VC representing the minimum snapshot version that must be read
     vcaggr :: vectorclock_partition:partition_vc()
 }).
+
+-type pvc_time() :: #pvc_time{} | undefined.
 
 -record(update_log_payload, {
     key :: key(),
