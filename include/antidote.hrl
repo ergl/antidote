@@ -102,7 +102,8 @@
     snapshot_time :: snapshot_time(),
 
     %% PVC-related commit metadata
-    pvc_metadata :: pvc_commit_payload()
+    %% Commit time of a transaction at the given partition
+    pvc_metadata :: #pvc_time{} | undefined
 }).
 
 %% PVC
@@ -121,26 +122,12 @@
     commit_vc :: vectorclock_partition:partition_vc() | undefined
 }).
 
--type pvc_decide_meta() :: #pvc_decide_meta{}.
-
 -record(pvc_time, {
     %% VC representing the causal dependencies picked up during execution
     vcdep :: vectorclock_partition:partition_vc(),
     %% VC representing the minimum snapshot version that must be read
     vcaggr :: vectorclock_partition:partition_vc()
 }).
-
-%% Commit time of a transaction at the given partition
--type pvc_commit_payload() :: #pvc_time{} | undefined.
-
--record(pvc_tx_meta, {
-    %% VC metadata
-    time :: #pvc_time{},
-    %% Represents the partitions where the transaction has fixed a snapshot
-    hasread :: sets:set(partition_id())
-}).
-
--type pvc_metadata() :: #pvc_tx_meta{} | undefined.
 
 -record(update_log_payload, {
     key :: key(),
@@ -205,7 +192,12 @@
 -define(CLOCKSI_TIMEOUT, 1000).
 
 -record(transaction, {
-    pvc_meta :: pvc_metadata(),
+    %% VC representing the minimum snapshot version that must be read
+    pvc_vcaggr :: vectorclock(),
+    %% VC representing the causal dependencies picked up during execution
+    pvc_vcdep :: vectorclock(),
+    %% Represents the partitions where the transaction has fixed a snapshot
+    pvc_hasread :: sets:set(partition_id()),
     transactional_protocol :: transactional_protocol(),
     snapshot_time :: snapshot_time(),
     vec_snapshot_time :: snapshot_time(),

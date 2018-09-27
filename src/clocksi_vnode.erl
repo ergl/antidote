@@ -636,10 +636,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_commit_queue:contains_disputed(WriteSet, CommitQueue),
 
-    PrepareVC = Transaction#transaction
-        .pvc_meta#pvc_tx_meta
-        .time#pvc_time
-        .vcdep,
+    PrepareVC = Transaction#transaction.pvc_vcdep,
 
     %% Get the keys in the writeset
     PartitionKeys = [Key || {Key, _, _} <- WriteSet],

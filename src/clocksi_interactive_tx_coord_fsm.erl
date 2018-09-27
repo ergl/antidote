@@ -291,20 +291,17 @@ create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol) ->
 -spec create_pvc_tx_record(atom(), transactional_protocol()) -> {tx(), txid()}.
 create_pvc_tx_record(Name, Protocol) ->
     Now = ?DC_UTIL:now_microsec(),
-    PVCTime = ?PARTITION_VC:new(),
     CompatibilityTime = ?VECTORCLOCK:new(),
 
-    TransactionId = #tx_id{local_start_time=Now, server_pid=Name},
-    PVCTimeMeta = #pvc_time{
-        vcdep=PVCTime,
-        vcaggr=PVCTime
-    },
-    PVCMeta = #pvc_tx_meta{
-        time=PVCTimeMeta,
-        hasread=sets:new()
-    },
+    TransactionId = #tx_id{server_pid=Name,
+                           local_start_time=Now},
+
     Transaction = #transaction{
-        pvc_meta=PVCMeta,
+        %% PVC-related state
+        pvc_vcaggr = vectorclock:new(),
+        pvc_vcdep = vectorclock:new(),
+        pvc_hasread = sets:new(),
+
         transactional_protocol=Protocol,
         snapshot_time=CompatibilityTime,
         vec_snapshot_time=CompatibilityTime,
@@ -704,8 +701,8 @@ pvc_single_read(Key, State = #tx_coord_state{
 }) ->
     case pvc_key_was_updated(ClientOps, Key) of
         false ->
-            HasRead = Transaction#transaction.pvc_meta#pvc_tx_meta.hasread,
-            VCaggr = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+            HasRead = Transaction#transaction.pvc_hasread,
+            VCaggr = Transaction#transaction.pvc_vcaggr,
             clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr),
             {next_state, pvc_read_res, State};
         Value ->
@@ -743,8 +740,8 @@ pvc_perform_read(Key, Transaction, ClientOps) ->
             %% partition.
             %%
             %% We will wait for the reply on the next state.
-            HasRead = Transaction#transaction.pvc_meta#pvc_tx_meta.hasread,
-            VCaggr = Transaction#transaction.pvc_meta#pvc_tx_meta.time#pvc_time.vcaggr,
+            HasRead = Transaction#transaction.pvc_hasread,
+            VCaggr = Transaction#transaction.pvc_vcaggr,
             clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr);
         Value ->
             %% If updated, reply to ourselves with the last value.
@@ -998,13 +995,9 @@ pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOp
 
 -spec pvc_update_transaction(partition_id(), vectorclock(), vectorclock(), tx()) -> tx().
 pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
-    pvc_meta=PVCMeta=#pvc_tx_meta{
-        hasread=HasRead,
-        time=PVCTime=#pvc_time{
-            vcdep=TVCdep,
-            vcaggr=TVCaggr
-        }
-    }
+    pvc_hasread = HasRead,
+    pvc_vcdep = TVCdep,
+    pvc_vcaggr = TVCaggr
 }) ->
 
     NewHasRead = sets:add_element(FromPartition, HasRead),
@@ -1012,10 +1005,9 @@ pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
     NewVCdep = vectorclock:max(TVCdep, VCdep),
     NewVCaggr = vectorclock:max(TVCaggr, VCaggr),
 
-    Transaction#transaction{pvc_meta=PVCMeta#pvc_tx_meta{
-        hasread=NewHasRead,
-        time=PVCTime#pvc_time{vcdep=NewVCdep, vcaggr=NewVCaggr}
-    }}.
+    Transaction#transaction{pvc_hasread=NewHasRead,
+                            pvc_vcdep = NewVCdep,
+                            pvc_vcaggr = NewVCaggr}.
 
 %% The following function is used to apply the updates that were performed by the running
 %% transaction, to the result returned by a read.
@@ -1092,10 +1084,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
                     ok = clocksi_vnode:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
 
-                    InitialCommitVC = Transaction#transaction
-                        .pvc_meta#pvc_tx_meta
-                        .time#pvc_time
-                        .vcdep,
+                    InitialCommitVC = Transaction#transaction.pvc_vcdep,
 
                     VoteState = State#tx_coord_state{
                         num_to_ack = NumToAck,
