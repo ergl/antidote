@@ -109,7 +109,7 @@ get_smaller_from_dots(Dots, VC, Tree, Acc) ->
                     %% The visited vector is small enough, so we compare it
                     %% with the running max. If our max doesn't change,
                     %% we're already done
-                    Selected = vectorclock:max([Acc, Value]),
+                    Selected = vectorclock:max(Acc, Value),
                     case vectorclock:eq(Selected, Acc) of
                         true ->
 %%                            lager:info("Too small, raise found"),

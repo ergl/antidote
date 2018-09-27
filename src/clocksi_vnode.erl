@@ -453,7 +453,7 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
 %%                    "[~p] PVC fetched MRVC ~p",
 %%                    [Partition, dict:to_list(PrevMRVC)]
 %%                ),
-                MRVC = vectorclock_partition:max([VC, PrevMRVC]),
+                MRVC = vectorclock:max(VC, PrevMRVC),
                 ok = pvc_update_mrvc(PVCState, MRVC),
 
                 %% Store commits, update CLog
