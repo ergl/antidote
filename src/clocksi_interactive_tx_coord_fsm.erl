@@ -1009,8 +1009,6 @@ pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
 
     NewHasRead = sets:add_element(FromPartition, HasRead),
 
-    %% FIXME(borja): Hot point is here
-    %% FIXME(borja): Maybe try reducing the number of partitions?
     NewVCdep = vectorclock:max(TVCdep, VCdep),
     NewVCaggr = vectorclock:max(TVCaggr, VCaggr),
 
