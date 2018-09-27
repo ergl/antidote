@@ -54,7 +54,7 @@
     handle_exit/3]).
 
 -export([pvc_process_cqueue/1,
-         pvc_get_most_recent_vc/1]).
+         pvc_get_most_recent_vc/2]).
 
 -ignore_xref([start_vnode/1]).
 
@@ -118,9 +118,13 @@ async_read_data_item(Node, Transaction, Key, Type) ->
 %% but this is the least complicated way I could come up with
 %% to get around blocking the virtual node while waiting for
 %% the clock to catch up.
--spec pvc_get_most_recent_vc(index_node()) -> {ok, vectorclock_partition:partition_vc()} | {error, reason()}.
-pvc_get_most_recent_vc(Node) ->
-    riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER).
+-spec pvc_get_most_recent_vc(index_node(), atom()) -> vectorclock_partition:partition_vc().
+pvc_get_most_recent_vc(Node, TableName) ->
+    case catch pvc_get_mrvc(TableName) of
+        {'EXIT', _} ->
+            riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER);
+        Value -> Value
+    end.
 
 -spec pvc_process_cqueue(index_node()) -> ok.
 pvc_process_cqueue(Node) ->
@@ -272,15 +276,22 @@ abort(ListofNodes, TxId) ->
     end, ok, ListofNodes).
 
 get_cache_name(Partition, Base) ->
-    list_to_atom(atom_to_list(node()) ++ atom_to_list(Base) ++ "-" ++ integer_to_list(Partition)).
+    BinNode = atom_to_binary(node(), latin1),
+    BinBase = atom_to_binary(Base, latin1),
+    BinPart = integer_to_binary(Partition),
+    Name = <<BinNode/binary, BinBase/binary, <<"-">>/binary, BinPart/binary>>,
+    case catch binary_to_existing_atom(Name, latin1) of
+        {'EXIT', _} -> binary_to_atom(Name, latin1);
+        Normal -> Normal
+    end.
 
 %% @doc Initializes all data structures that vnode needs to track information
 %%      the transactions it participates on.
 init([Partition]) ->
-    PreparedTx = open_table(Partition),
-    CommittedTx = ets:new(committed_tx, [set]),
+    PreparedTx = open_table(Partition, prepared),
+    CommittedTx = open_table(Partition, committed_tx),
 
-    PVCTable = pvc_atomic_state_init(),
+    PVCTable = pvc_atomic_state_init(Partition),
     CommitQueue = pvc_commit_queue:new(),
 
     {ok, #state{
@@ -323,22 +334,26 @@ check_table_ready([{Partition, Node} | Rest]) ->
             false
     end.
 
-open_table(Partition) ->
-    case ets:info(get_cache_name(Partition, prepared)) of
-    undefined ->
-        ets:new(get_cache_name(Partition, prepared),
-            [set, protected, named_table, ?TABLE_CONCURRENCY]);
-    _ ->
-        %% Other vnode hasn't finished closing tables
-        lager:debug("Unable to open ets table in clocksi vnode, retrying"),
-        timer:sleep(100),
-        try
-        ets:delete(get_cache_name(Partition, prepared))
-        catch
-        _:_Reason->
-            ok
-        end,
-        open_table(Partition)
+-spec open_table(partition_id(), atom()) -> atom() | ets:tid().
+open_table(Partition, Name) ->
+    open_table(Partition, Name, [set, protected, named_table, ?TABLE_CONCURRENCY]).
+
+open_table(Partition, Name, Options) ->
+    CacheName = get_cache_name(Partition, Name),
+    case ets:info(CacheName) of
+        undefined ->
+            ets:new(CacheName, Options);
+        _ ->
+            %% Other vnode hasn't finished closing tables
+            lager:debug("Unable to open ets table in clocksi vnode, retrying"),
+            timer:sleep(100),
+            try
+                ets:delete(CacheName)
+            catch
+                _:_Reason ->
+                    ok
+            end,
+            open_table(Partition, Name, Options)
     end.
 
 loop_until_started(_Partition, 0) ->
@@ -375,7 +390,7 @@ handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
 handle_command(pvc_mostrecentvc, _Sender, State) ->
-    {reply, {ok, pvc_get_mrvc(State)}, State};
+    {reply, pvc_get_mrvc(State#state.pvc_atomic_state), State};
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
@@ -438,7 +453,7 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
 %%                    "[~p] PVC fetched MRVC ~p",
 %%                    [Partition, dict:to_list(PrevMRVC)]
 %%                ),
-                MRVC = vectorclock_partition:max([VC, PrevMRVC]),
+                MRVC = vectorclock:max(VC, PrevMRVC),
                 ok = pvc_update_mrvc(PVCState, MRVC),
 
                 %% Store commits, update CLog
@@ -537,9 +552,9 @@ terminate(_Reason, #state{partition = Partition} = _State) ->
 %%% Internal Functions
 %%%===================================================================
 
--spec pvc_atomic_state_init() -> cache_id().
-pvc_atomic_state_init() ->
-    PVCTable = ets:new(pvc_state_table, [set]),
+-spec pvc_atomic_state_init(partition_id()) -> cache_id().
+pvc_atomic_state_init(Partition) ->
+    PVCTable = open_table(Partition, pvc_state_table),
     true = ets:insert(PVCTable, [{seq_number, 0}, {mrvc, vectorclock:new()}]),
     PVCTable.
 
@@ -547,10 +562,7 @@ pvc_atomic_state_init() ->
 pvc_faa_lastprep(PVCTable) ->
     ets:update_counter(PVCTable, seq_number, 1).
 
--spec pvc_get_mrvc(#state{} | cache_id()) -> vectorclock().
-pvc_get_mrvc(#state{pvc_atomic_state = PVCTable}) ->
-    pvc_get_mrvc(PVCTable);
-
+-spec pvc_get_mrvc(cache_id()) -> vectorclock().
 pvc_get_mrvc(PVCTable) ->
     ets:lookup_element(PVCTable, mrvc, 2).
 
@@ -624,10 +636,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_commit_queue:contains_disputed(WriteSet, CommitQueue),
 
-    PrepareVC = Transaction#transaction
-        .pvc_meta#pvc_tx_meta
-        .time#pvc_time
-        .vcdep,
+    PrepareVC = Transaction#transaction.pvc_vcdep,
 
     %% Get the keys in the writeset
     PartitionKeys = [Key || {Key, _, _} <- WriteSet],

@@ -33,6 +33,7 @@
     start_transaction/3,
     start_transaction/2,
     abort_transaction/1,
+    read_single/2,
     read_objects/2,
     read_objects/3,
     read_objects/4,
@@ -79,14 +80,14 @@ commit_transaction(TxId) ->
         Res -> Res
     end.
 
+read_single(Key, #tx_id{server_pid = Pid}) ->
+    gen_fsm:sync_send_event(Pid, {read_single, Key}, ?OP_TIMEOUT).
+
 read_keys([], _) ->
     {ok, []};
 
 read_keys(Keys, #tx_id{server_pid = Pid}) when is_list(Keys) ->
-    CompatKeys = lists:map(fun(K) ->
-        {K, antidote_crdt_lwwreg}
-    end, Keys),
-    gen_fsm:sync_send_event(Pid, {read_objects, CompatKeys}, ?OP_TIMEOUT);
+    gen_fsm:sync_send_event(Pid, {read_objects, Keys}, ?OP_TIMEOUT);
 
 read_keys(Key, TxId) ->
     read_keys([Key], TxId).
