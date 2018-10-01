@@ -34,7 +34,6 @@
 -define(DC_META_UTIL, mock_partition_fsm).
 -define(DC_UTIL, mock_partition_fsm).
 -define(VECTORCLOCK, mock_partition_fsm).
--define(PARTITION_VC, mock_partition_fsm).
 -define(LOG_UTIL, mock_partition_fsm).
 -define(CLOCKSI_VNODE, mock_partition_fsm).
 -define(CLOCKSI_DOWNSTREAM, mock_partition_fsm).
@@ -43,7 +42,6 @@
 -define(DC_META_UTIL, dc_meta_data_utilities).
 -define(DC_UTIL, dc_utilities).
 -define(VECTORCLOCK, vectorclock).
--define(PARTITION_VC, vectorclock_partition).
 -define(LOG_UTIL, log_utilities).
 -define(CLOCKSI_VNODE, clocksi_vnode).
 -define(CLOCKSI_DOWNSTREAM, clocksi_downstream).
@@ -298,8 +296,8 @@ create_pvc_tx_record(Name, Protocol) ->
 
     Transaction = #transaction{
         %% PVC-related state
-        pvc_vcaggr = vectorclock:new(),
-        pvc_vcdep = vectorclock:new(),
+        pvc_vcaggr = pvc_vclock:new(),
+        pvc_vcdep = pvc_vclock:new(),
         pvc_hasread = sets:new(),
 
         transactional_protocol=Protocol,
@@ -993,7 +991,7 @@ pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOp
                                      return_accumulator={ReadValues, Rest}}}
     end.
 
--spec pvc_update_transaction(partition_id(), vectorclock(), vectorclock(), tx()) -> tx().
+-spec pvc_update_transaction(partition_id(), pvc_vc(), pvc_vc(), tx()) -> tx().
 pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
     pvc_hasread = HasRead,
     pvc_vcdep = TVCdep,
@@ -1002,8 +1000,8 @@ pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
 
     NewHasRead = sets:add_element(FromPartition, HasRead),
 
-    NewVCdep = vectorclock:max(TVCdep, VCdep),
-    NewVCaggr = vectorclock:max(TVCaggr, VCaggr),
+    NewVCdep = pvc_vclock:max(TVCdep, VCdep),
+    NewVCaggr = pvc_vclock:max(TVCaggr, VCaggr),
 
     Transaction#transaction{pvc_hasread=NewHasRead,
                             pvc_vcdep = NewVCdep,
@@ -1272,7 +1270,7 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
             end,
 
             %% Update the commit vc with the sequence number from the partition.
-            CommitVC = vectorclock_partition:set_partition_time(From, SeqNumber, PrevCommitVC),
+            CommitVC = pvc_vclock:set_time(From, SeqNumber, PrevCommitVC),
             NewState = State#tx_coord_state{return_accumulator = [{pvc, #pvc_decide_meta{
                 outcome = Outcome,
                 commit_vc = CommitVC

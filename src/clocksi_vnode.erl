@@ -118,7 +118,7 @@ async_read_data_item(Node, Transaction, Key, Type) ->
 %% but this is the least complicated way I could come up with
 %% to get around blocking the virtual node while waiting for
 %% the clock to catch up.
--spec pvc_get_most_recent_vc(index_node(), atom()) -> vectorclock_partition:partition_vc().
+-spec pvc_get_most_recent_vc(index_node(), atom()) -> pvc_vc().
 pvc_get_most_recent_vc(Node, TableName) ->
     case catch pvc_get_mrvc(TableName) of
         {'EXIT', _} ->
@@ -453,7 +453,7 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{
 %%                    "[~p] PVC fetched MRVC ~p",
 %%                    [Partition, dict:to_list(PrevMRVC)]
 %%                ),
-                MRVC = vectorclock:max(VC, PrevMRVC),
+                MRVC = pvc_vclock:max(VC, PrevMRVC),
                 ok = pvc_update_mrvc(PVCState, MRVC),
 
                 %% Store commits, update CLog
@@ -555,18 +555,18 @@ terminate(_Reason, #state{partition = Partition} = _State) ->
 -spec pvc_atomic_state_init(partition_id()) -> cache_id().
 pvc_atomic_state_init(Partition) ->
     PVCTable = open_table(Partition, pvc_state_table),
-    true = ets:insert(PVCTable, [{seq_number, 0}, {mrvc, vectorclock:new()}]),
+    true = ets:insert(PVCTable, [{seq_number, 0}, {mrvc, pvc_vclock:new()}]),
     PVCTable.
 
 -spec pvc_faa_lastprep(cache_id()) -> non_neg_integer().
 pvc_faa_lastprep(PVCTable) ->
     ets:update_counter(PVCTable, seq_number, 1).
 
--spec pvc_get_mrvc(cache_id()) -> vectorclock().
+-spec pvc_get_mrvc(cache_id()) -> pvc_vc().
 pvc_get_mrvc(PVCTable) ->
     ets:lookup_element(PVCTable, mrvc, 2).
 
--spec pvc_update_mrvc(cache_id(), vectorclock()) -> ok.
+-spec pvc_update_mrvc(cache_id(), pvc_vc()) -> ok.
 pvc_update_mrvc(PVCTable, NewVC) ->
     true = ets:update_element(PVCTable, mrvc, {2, NewVC}),
     ok.
@@ -671,7 +671,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 %% @doc Check if any of the keys in a transaction writeset are too stale with
 %%      respect to the most recent committed version.
 %%
--spec pvc_are_keys_stale(partition_id(), list(key()), vectorclock_partition:partition_vc(), cache_id()) -> boolean().
+-spec pvc_are_keys_stale(partition_id(), list(key()), pvc_vc(), cache_id()) -> boolean().
 pvc_are_keys_stale(_, [], _, _) ->
     false;
 
@@ -681,7 +681,7 @@ pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
             false;
 
         [{Key, SelfPartition, CommitTime}] ->
-            PrepareTime = vectorclock_partition:get_partition_time(SelfPartition, PrepareVC),
+            PrepareTime = pvc_vclock:get_time(SelfPartition, PrepareVC),
             CommitTime > PrepareTime
     end,
     case StaleKey of
@@ -692,15 +692,15 @@ pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
             pvc_are_keys_stale(SelfPartition, Keys, PrepareVC, CommittedTx)
     end.
 
--spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), vectorclock_partition:partition_vc()) -> ok.
+-spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), pvc_vc()) -> ok.
 pvc_store_key_commitvc(Partition, CommittedTx, WriteSet, CommitVC) ->
-    PartitionTime = vectorclock_partition:get_partition_time(Partition, CommitVC),
+    PartitionTime = pvc_vclock:get_time(Partition, CommitVC),
     Objects = [{Key, Partition, PartitionTime} || {Key, _, _} <- WriteSet],
     true = ets:insert(CommittedTx, Objects),
     ok.
 
 %% @doc Propagate prepare log records for all keys in this partition with the given prepare time.
--spec pvc_append_prepare(partition_id(), txid(), list(), vectorclock_partition:partition_vc()) -> ok.
+-spec pvc_append_prepare(partition_id(), txid(), list(), pvc_vc()) -> ok.
 pvc_append_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
     Payload = #prepare_log_payload{
         %% Compatibility time, same as clocksi, but ignored otherwise
@@ -730,8 +730,8 @@ pvc_append_abort(SelfPartition, TxnId, WriteSet) ->
     partition_id(),
     txid(),
     list(),
-    vectorclock_partition:partition_vc(),
-    vectorclock_partition:partition_vc()
+    pvc_vc(),
+    pvc_vc()
 ) -> ok.
 pvc_append_commits(SelfPartition, TxnId, WriteSet, CommitVC, MaxVC) ->
     Time = #pvc_time{
@@ -740,7 +740,7 @@ pvc_append_commits(SelfPartition, TxnId, WriteSet, CommitVC, MaxVC) ->
     },
 
     DCId = dc_meta_data_utilities:get_my_dc_id(),
-    SeqNumber = vectorclock_partition:get_partition_time(SelfPartition, CommitVC),
+    SeqNumber = pvc_vclock:get_time(SelfPartition, CommitVC),
     Payload = #commit_log_payload{
         pvc_metadata = Time,
 
@@ -785,14 +785,14 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
     end, ordsets:new(), WriteSet).
 
 %% @doc Update the materializer cache with the newest snapshots (VLog)
--spec pvc_vlog_apply(txid(), list(), vectorclock_partition:partition_vc(), list()) -> ok | error.
+-spec pvc_vlog_apply(txid(), list(), pvc_vc(), list()) -> ok | error.
 pvc_vlog_apply(TxnId, [{FirstKey,_,_}|_]=WriteSet, CommitVC, IndexList) ->
     %% All the keys in the WS are in the same partition
     {TargetPartition, _} = log_utilities:get_key_partition(FirstKey),
     DCId = dc_meta_data_utilities:get_my_dc_id(),
 
     Update = fun({Key, Type, Op}, Acc) ->
-        CommitTime = vectorclock_partition:get_partition_time(TargetPartition, CommitVC),
+        CommitTime = pvc_vclock:get_time(TargetPartition, CommitVC),
 
         {ok, DownstreamOp} = Type:downstream(Op, Type:new()),
         Value = Type:value(DownstreamOp),

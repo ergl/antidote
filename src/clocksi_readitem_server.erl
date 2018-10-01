@@ -114,7 +114,7 @@ async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
     ).
 
 %% @doc PVC-only asynchronous read
--spec pvc_async_read(key(), sets:set(), vectorclock()) -> ok.
+-spec pvc_async_read(key(), sets:set(), pvc_vc()) -> ok.
 pvc_async_read(Key, HasRead, VCaggr) ->
     %% If not read, go through wait process
     {Partition, Node}=IndexNode = log_utilities:get_key_partition(Key),
@@ -278,7 +278,7 @@ handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
 %%      to the coordinator the value of that snapshot, along with the commit
 %%      vector clock time of that snapshot.
 %%
--spec pvc_vlog_read_internal(term(), partition_id(), key(), vectorclock(), #mat_state{}) -> ok.
+-spec pvc_vlog_read_internal(term(), partition_id(), key(), pvc_vc(), #mat_state{}) -> ok.
 pvc_vlog_read_internal(Coordinator, Partition, Key, MaxVC, MatState) ->
     case materializer_vnode:pvc_read(Key, MaxVC, MatState) of
         {error, Reason} ->
@@ -295,7 +295,7 @@ pvc_vlog_read_internal(Coordinator, Partition, Key, MaxVC, MatState) ->
 %%
 %%      Once this happens, perform the read at this partition.
 %%
--spec pvc_fresh_read_internal(term(), index_node(), key(), sets:set(), vectorclock(), #state{}) -> ok.
+-spec pvc_fresh_read_internal(term(), index_node(), key(), sets:set(), pvc_vc(), #state{}) -> ok.
 pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCaggr, State = #state{
     pvc_atomic_cache = AtomicCache
 }) ->
@@ -312,12 +312,12 @@ pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCa
 %%
 %%      If it is not, will sleep for 1000 ms and try again.
 %%
--spec pvc_check_time(partition_id(), vectorclock(), vectorclock()) -> ready
+-spec pvc_check_time(partition_id(), pvc_vc(), pvc_vc()) -> ready
                                                                     | {not_ready, non_neg_integer()}.
 
 pvc_check_time(Partition, MostRecentVC, VCaggr) ->
-    MostRecentTime = vectorclock_partition:get_partition_time(Partition, MostRecentVC),
-    AggregateTime = vectorclock_partition:get_partition_time(Partition, VCaggr),
+    MostRecentTime = pvc_vclock:get_time(Partition, MostRecentVC),
+    AggregateTime = pvc_vclock:get_time(Partition, VCaggr),
     case MostRecentTime < AggregateTime of
         true -> {not_ready, ?PVC_WAIT_MS};
         false -> ready
@@ -334,7 +334,7 @@ pvc_check_time(Partition, MostRecentVC, VCaggr) ->
     index_node(),
     key(),
     sets:set(),
-    vectorclock(),
+    pvc_vc(),
     #state{}
 ) -> ok.
 
@@ -353,7 +353,7 @@ pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, #state{
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
--spec pvc_find_maxvc(index_node(), sets:set(), vectorclock(), atom()) -> {ok, vectorclock_partition:partition_vc()}
+-spec pvc_find_maxvc(index_node(), sets:set(), pvc_vc(), atom()) -> {ok, pvc_vc()}
                                                                        | {error, reason()}.
 
 pvc_find_maxvc({CurrentPartition, _} = IndexNode, HasRead, VCaggr, AtomicCache) ->
@@ -365,8 +365,8 @@ pvc_find_maxvc({CurrentPartition, _} = IndexNode, HasRead, VCaggr, AtomicCache) 
     end,
 
     %% If the selected time is too old, we should abort the read
-    MaxSelectedTime = vectorclock_partition:get_partition_time(CurrentPartition, MaxVC),
-    CurrentThresholdTime = vectorclock_partition:get_partition_time(CurrentPartition, VCaggr),
+    MaxSelectedTime = pvc_vclock:get_time(CurrentPartition, MaxVC),
+    CurrentThresholdTime = pvc_vclock:get_time(CurrentPartition, VCaggr),
     ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
     case ValidVersionTime of
         true ->

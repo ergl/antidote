@@ -474,7 +474,7 @@ pvc_internal_read(Key, MinSnapshotTime, #mat_state{
 }) ->
     {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
         [] ->
-            {<<>>, vectorclock:new()};
+            {<<>>, pvc_vclock:new()};
 
         [{_, PrevVersionLog}] ->
             pvc_version_log:get_smaller(MinSnapshotTime, PrevVersionLog)

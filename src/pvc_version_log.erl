@@ -23,7 +23,7 @@
 -include("antidote.hrl").
 -include("pvc.hrl").
 
--type vlog() :: {partition_id(), type(), {non_neg_integer(), dict:dict(integer(), {term(), vectorclock()})}}.
+-type vlog() :: {partition_id(), type(), {non_neg_integer(), dict:dict(integer(), {term(), pvc_vc()})}}.
 
 %% API
 -export([new/2,
@@ -34,9 +34,9 @@
 new(AtId, Type) ->
     {AtId, Type, {1, dict:new()}}.
 
--spec insert(vectorclock(), term(), vlog()) -> vlog().
+-spec insert(pvc_vc(), term(), vlog()) -> vlog().
 insert(VC, Value, {Id, Type, {Smallest, Dict}}) ->
-    Key = vectorclock_partition:get_partition_time(Id, VC),
+    Key = pvc_vclock:get_time(Id, VC),
     {Id, Type, maybe_gc(Smallest, dict:store(Key, {Value, VC}, Dict))}.
 
 maybe_gc(Smallest, Dict) ->
@@ -57,13 +57,13 @@ gc_dict(N, N, Acc) ->
 gc_dict(S, E, Acc) when E > S ->
     gc_dict(S + 1, E, dict:erase(S, Acc)).
 
--spec get_smaller(vectorclock(), vlog()) -> {term(), vectorclock()}.
+-spec get_smaller(pvc_vc(), vlog()) -> {term(), vectorclock()}.
 get_smaller(VC, {Id, Type, {_, Dict}}) ->
     case dict:is_empty(Dict) of
         true ->
             base_entry(Type);
         false ->
-            LookupKey = vectorclock_partition:get_partition_time(Id, VC),
+            LookupKey = pvc_vclock:get_time(Id, VC),
             get_smaller(LookupKey, Type, Dict)
     end.
 
@@ -82,7 +82,5 @@ get_smaller(LookupKey, Type, Dict) ->
 
 %% Util
 
-base_entry(Type) ->
-    Value = Type:value(Type:new()),
-    CommitTime = vectorclock:new(),
-    {Value, CommitTime}.
+base_entry(_Type) ->
+    {<<>>, pvc_vclock:new()}.

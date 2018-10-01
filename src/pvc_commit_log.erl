@@ -23,7 +23,7 @@
 -include("antidote.hrl").
 -include("pvc.hrl").
 
--type clog() :: {partition_id(), {non_neg_integer(), gb_trees:tree(non_neg_integer(), vectorclock())}}.
+-type clog() :: {partition_id(), {non_neg_integer(), gb_trees:tree(non_neg_integer(), pvc_vc())}}.
 
 -export_type([clog/0]).
 
@@ -43,9 +43,9 @@ new_at(AtId) ->
 %%
 %% If this assumption doesn't hold, this will fail
 %%
--spec insert(vectorclock_partition:partition_vc(), clog()) -> clog().
+-spec insert(pvc_vc(), clog()) -> clog().
 insert(VC, {Id, {Smallest, Tree}}) ->
-    Key = vectorclock_partition:get_partition_time(Id, VC),
+    Key = pvc_vclock:get_time(Id, VC),
 %%    lager:info("[~p] Inserting ~p at ~p", [Id, dict:to_list(VC), Key]),
     {Id, maybe_gc(Smallest, gb_trees:insert(Key, VC, Tree))}.
 
@@ -72,17 +72,17 @@ gc_tree(S, E, Acc) when E > S ->
 %%
 %%    max { e \in Clog | forall idx. e[idx] <= VC[idx] }
 %%
--spec get_smaller_from_dots([partition_id()], vectorclock(), clog()) -> vectorclock().
+-spec get_smaller_from_dots([partition_id()], pvc_vc(), clog()) -> pvc_vc().
 get_smaller_from_dots([], _, {_, {_, Tree}}) ->
     case gb_trees:is_empty(Tree) of
         true ->
-            vectorclock:new();
+            pvc_vclock:new();
         false ->
             element(2, gb_trees:largest(Tree))
     end;
 
 get_smaller_from_dots(Dots, VC, {_, {_, Tree}}) ->
-    case catch get_smaller_from_dots(Dots, VC, gb_trees:balance(Tree), vectorclock_partition:new()) of
+    case catch get_smaller_from_dots(Dots, VC, gb_trees:balance(Tree), pvc_vclock:new()) of
         {found, Max} ->
 %%            lager:info("get_smaller_from_dots found ~p", [dict:to_list(Max)]),
             Max;
@@ -109,8 +109,8 @@ get_smaller_from_dots(Dots, VC, Tree, Acc) ->
                     %% The visited vector is small enough, so we compare it
                     %% with the running max. If our max doesn't change,
                     %% we're already done
-                    Selected = vectorclock:max(Acc, Value),
-                    case vectorclock:eq(Selected, Acc) of
+                    Selected = pvc_vclock:max(Acc, Value),
+                    case pvc_vclock:eq(Selected, Acc) of
                         true ->
 %%                            lager:info("Too small, raise found"),
                             throw({found, Selected});
@@ -125,10 +125,10 @@ get_smaller_from_dots(Dots, VC, Tree, Acc) ->
 %%
 %%  vc_ge_for_dots([a, ... , z], A, B) == A[a] =< B[b] ^ .. ^ A[z] =< B[z]
 %%
--spec vc_ge_for_dots(list(partition_id()), vectorclock(), vectorclock()) -> boolean().
+-spec vc_ge_for_dots(list(partition_id()), pvc_vc(), pvc_vc()) -> boolean().
 vc_ge_for_dots(Dots, A, B) ->
     Compared = lists:map(fun(Dot) ->
-        {vectorclock:get_clock_of_dc(Dot, A), vectorclock:get_clock_of_dc(Dot, B)}
+        {pvc_vclock:get_time(Dot, A), pvc_vclock:get_time(Dot, B)}
     end, Dots),
     lists:all(fun({X, Y}) -> X =< Y end, Compared).
 
@@ -136,7 +136,7 @@ vc_ge_for_dots(Dots, A, B) ->
 
 %% Peeked at the internals of gb_trees for this
 
--spec get_root(gb_trees:tree()) -> {integer(), vectorclock()} | none.
+-spec get_root(gb_trees:tree()) -> {integer(), pvc_vc()} | none.
 get_root({_, nil}) ->
     none;
 
