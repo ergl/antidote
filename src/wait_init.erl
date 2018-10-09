@@ -51,29 +51,27 @@ wait_ready(Node) ->
 -spec check_ready(node()) -> boolean().
 check_ready(Node) ->
     lager:debug("Checking if node ~w is ready ~n", [Node]),
-    case rpc:call(Node, clocksi_vnode, check_tables_ready, []) of
-        true ->
-            case rpc:call(Node, clocksi_readitem_server, check_servers_ready, []) of
-            true ->
-                case rpc:call(Node, materializer_vnode, check_tables_ready, []) of
-                true ->
-                    case rpc:call(Node, stable_meta_data_server, check_tables_ready, []) of
-                    true ->
-                        lager:debug("Node ~w is ready! ~n", [Node]),
-                        true;
-                    false ->
-                        lager:debug("Node ~w is not ready ~n", [Node]),
-                        false
-                    end;
-                false ->
-                    lager:debug("Node ~w is not ready ~n", [Node]),
-                    false
-                end;
-            false ->
-                lager:debug("Checking if node ~w is ready ~n", [Node]),
-                false
-            end;
+    check_all(Node, [
+        check_node(Node, clocksi_vnode, check_tables_ready),
+        check_node(Node, clocksi_readitem_server, check_servers_ready),
+        check_node(Node, materializer_vnode, check_tables_ready),
+        check_node(Node, stable_meta_data_server, check_tables_ready)
+    ]).
+
+-spec check_node(node(), atom(), atom()) -> fun(() -> boolean()).
+check_node(Node, Module, Function) ->
+    fun() -> rpc:call(Node, Module, Function, []) end.
+
+-spec check_all(node(), [fun(() -> boolean())]) -> boolean().
+check_all(Node, []) ->
+    lager:debug("Node ~w is ready! ~n", [Node]),
+    true;
+
+check_all(Node, [FunHead | Rest]) ->
+    case FunHead() of
         false ->
-            lager:debug("Checking if node ~w is ready ~n", [Node]),
-            false
+            lager:debug("Node ~w is not ready ~n", [Node]),
+            false;
+        true ->
+            check_all(Node, Rest)
     end.
