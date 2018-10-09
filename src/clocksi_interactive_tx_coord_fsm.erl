@@ -701,7 +701,7 @@ pvc_single_read(Key, State = #tx_coord_state{
         false ->
             HasRead = Transaction#transaction.pvc_hasread,
             VCaggr = Transaction#transaction.pvc_vcaggr,
-            clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr),
+            pvc_read_replica:async_read(Key, HasRead, VCaggr),
             {next_state, pvc_read_res, State};
         Value ->
             gen_fsm:reply(Sender, {ok, Value}),
@@ -740,7 +740,7 @@ pvc_perform_read(Key, Transaction, ClientOps) ->
             %% We will wait for the reply on the next state.
             HasRead = Transaction#transaction.pvc_hasread,
             VCaggr = Transaction#transaction.pvc_vcaggr,
-            clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr);
+            pvc_read_replica:async_read(Key, HasRead, VCaggr);
         Value ->
             %% If updated, reply to ourselves with the last value.
             gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})

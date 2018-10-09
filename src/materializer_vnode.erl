@@ -69,7 +69,7 @@
          handle_exit/3]).
 
 %% PVC-only functions
--export([pvc_read/3,
+-export([pvc_replica_read/4,
          pvc_update/1,
          pvc_update_indices/1,
          pvc_key_range/4]).
@@ -98,23 +98,19 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
             internal_read(Key, Type, SnapshotTime, TxId, MatState)
     end.
 
-%% @doc Same as read/5, but return also the commit time of the snapshot.
-%%
-%%      Will also bypass the ops cache as we don't need it.
-%%
--spec pvc_read(key(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
-pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) ->
+-spec pvc_replica_read(partition_id(), key(), pvc_vc(), atom() | cache_id()) -> {ok, val(), pvc_vc()} | {error, reason()}.
+pvc_replica_read(Partition, Key, SnapshotTime, VLogCache) ->
     case ets:info(VLogCache) of
         undefined ->
             riak_core_vnode_master:sync_command(
-                {MatState#mat_state.partition, node()},
+                {Partition, node()},
                 {pvc_read, Key, SnapshotTime},
                 materializer_vnode_master,
                 infinity
             );
 
         _ ->
-            pvc_internal_read(Key, SnapshotTime, MatState)
+            pvc_internal_read(Key, SnapshotTime, VLogCache)
     end.
 
 -spec get_cache_name(non_neg_integer(), atom()) -> atom().
@@ -316,7 +312,7 @@ handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
     {reply, read(Key, Type, SnapshotTime, Transaction, State), State};
 
 handle_command({pvc_read, Key, SnapshotTime}, _Sender, State) ->
-    {reply, pvc_internal_read(Key, SnapshotTime, State), State};
+    {reply, pvc_internal_read(Key, SnapshotTime, State#mat_state.pvc_vlog_cache), State};
 
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
@@ -468,10 +464,8 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
     end.
 
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
--spec pvc_internal_read(key(), snapshot_time(), #mat_state{}) -> {ok, term(), snapshot_time()}.
-pvc_internal_read(Key, MinSnapshotTime, #mat_state{
-    pvc_vlog_cache = VLogCache
-}) ->
+-spec pvc_internal_read(key(), snapshot_time(), cache_id()) -> {ok, term(), snapshot_time()}.
+pvc_internal_read(Key, MinSnapshotTime, VLogCache) ->
     {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
         [] ->
             {<<>>, pvc_vclock:new()};

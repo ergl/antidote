@@ -33,6 +33,9 @@
          all_ready/0,
          replica_ready/3]).
 
+%% protocol API
+-export([async_read/3]).
+
 %% gen_fsm callbacks
 -export([init/1,
          handle_call/3,
@@ -61,7 +64,9 @@
     committed_cache_replica :: atom()
 }).
 
-%% API
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Replica management API
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% @doc Start a replica responsible for serving reads to this partion
 %%
@@ -103,12 +108,32 @@ replica_ready(Node, Partition, N) ->
             replica_ready(Node, Partition, N - 1)
     end.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Protocol API
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% @doc Perform an asynchronous read in a replica
+-spec async_read(key(), sets:set(), pvc_vc()) -> ok.
+async_read(Key, HasRead, VCaggr) ->
+    %% If not read, go through wait process
+    {Partition, Node}=IndexNode = log_utilities:get_key_partition(Key),
+    To = {global, random_replica(Node, Partition)},
+    Msg = case sets:is_element(Partition, HasRead) of
+              true -> {read, self(), Key, VCaggr};
+              false -> {read_with_scan, self(), IndexNode, Key, HasRead, VCaggr}
+          end,
+    gen_server:cast(To, Msg).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([Partition, Id]) ->
+    %% TODO(borja): Move to PVC storage vnode
     VLog = materializer_vnode:get_cache_name(Partition, pvc_snapshot_cache),
+    %% TODO(borja): Move to PVC storage vnode
     StateReplica = clocksi_vnode:get_cache_name(Partition, pvc_state_table),
-    %% TODO(borja): Change name of ETS table
+    %% TODO(borja): Change name of ETS table, move to PVC storage vnode
     Committed = clocksi_vnode:get_cache_name(Partition, committed_tx),
 
     Self = generate_replica_name(node(), Partition, Id),
@@ -125,10 +150,116 @@ handle_call(shutdown, _From, State) ->
 handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
 
+handle_cast({read, Coordinator, Key, VCaggr}, State) ->
+    #state{partition = SelfPartition, vlog_replica = VLog} = State,
+    ok = vlog_read_internal(Coordinator, SelfPartition, Key, VCaggr, VLog),
+    {noreply, State};
+
+handle_cast({read_with_scan, Coordinator, IndexNode, Key, HasRead, VCaggr}, State) ->
+    ok = read_with_scan_internal(Coordinator, IndexNode, Key, HasRead, VCaggr, State),
+    {noreply, State};
+
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
+handle_info({wait_scan, Coordinator, IndexNode, Key, HasRead, VCaggr}, State) ->
+    ok = read_with_scan_internal(Coordinator, IndexNode, Key, HasRead, VCaggr, State),
+    {noreply, State};
+
+handle_info(Info, State) ->
+    lager:info("Unhandled msg ~p", [Info]),
+    {noreply, State}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% @doc Given a key and a version vector clock, get the appropiate snapshot
+%%
+%%      It will scan the materializer for the specific snapshot, and reply
+%%      to the coordinator the value of that snapshot, along with the commit
+%%      vector clock time of that snapshot.
+%%
+-spec vlog_read_internal(term(), partition_id(), key(), pvc_vc(), atom()) -> ok.
+vlog_read_internal(Coordinator, Partition, Key, MaxVC, VLog) ->
+    case materializer_vnode:pvc_replica_read(Partition, Key, MaxVC, VLog) of
+        {error, Reason} ->
+            gen_fsm:send_event(Coordinator, {error, Reason});
+        {ok, Value, CommitVC} ->
+            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, Key, Value, CommitVC, MaxVC})
+    end.
+
+-spec read_with_scan_internal(term(), index_node(), key(), sets:set(), pvc_vc(), #state{}) -> ok.
+read_with_scan_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCaggr, State = #state{
+    partition_state_replica = AtomicCache
+}) ->
+    MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache),
+    case check_time(Partition, MostRecentVC, VCaggr) of
+        {not_ready, WaitTime} ->
+            erlang:send_after(WaitTime, self(), {wait_scan, Coordinator, IndexNode, Key, HasRead, VCaggr}),
+            ok;
+        ready ->
+            scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, State)
+    end.
+
+%% @doc Check if this partition is ready to proceed with a PVC read.
+%%
+%%      If it is not, will sleep for 1000 ms and try again.
+%%
+-spec check_time(partition_id(), pvc_vc(), pvc_vc()) -> ready
+                                                        | {not_ready, non_neg_integer()}.
+
+check_time(Partition, MostRecentVC, VCaggr) ->
+    MostRecentTime = pvc_vclock:get_time(Partition, MostRecentVC),
+    AggregateTime = pvc_vclock:get_time(Partition, VCaggr),
+    case MostRecentTime < AggregateTime of
+        true -> {not_ready, ?PVC_WAIT_MS};
+        false -> ready
+    end.
+
+%% @doc Scan the replication log for a valid vector clock time for a read at this partition
+%%
+%%      The valid time is the maximum vector clock such that for every partition
+%%      that the current partition has read, that partition time is smaller or
+%%      equal than the VCaggr of the current transaction.
+%%
+-spec scan_and_read(term(), index_node(), key(), sets:set(), pvc_vc(), #state{}) -> ok.
+scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, #state{
+    partition_state_replica = AtomicCache,
+    partition = SelfPartition,
+    vlog_replica = VLog
+}) ->
+    MaxVCRes = find_max_vc(IndexNode, HasRead, VCaggr, AtomicCache),
+    case MaxVCRes of
+        {error, Reason} ->
+            gen_fsm:send_event(Coordinator, {error, Reason});
+
+        {ok, MaxVC} ->
+            vlog_read_internal(Coordinator, SelfPartition, Key, MaxVC, VLog)
+    end.
+
+%% @doc Scan the log for the maximum aggregate time that will be used for a read
+-spec find_max_vc(index_node(), sets:set(), pvc_vc(), atom()) -> {ok, pvc_vc()}
+                                                               | {error, reason()}.
+find_max_vc({CurrentPartition, _} = IndexNode, HasRead, VCaggr, AtomicCache) ->
+    %% If this is the first partition we're reading, our MaxVC will be
+    %% the current MostRecentVC at this partition
+    MaxVC = case sets:size(HasRead) of
+        0 -> clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache);
+        _ -> logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr)
+    end,
+
+    %% If the selected time is too old, we should abort the read
+    MaxSelectedTime = pvc_vclock:get_time(CurrentPartition, MaxVC),
+    CurrentThresholdTime = pvc_vclock:get_time(CurrentPartition, VCaggr),
+    ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
+    case ValidVersionTime of
+        true ->
+            {ok, MaxVC};
+
+        false ->
+            {error, maxvc_bad_vc}
+    end.
 
 -spec generate_replica_name(node(), partition_id(), non_neg_integer()) -> binary().
 generate_replica_name(Node, Partition, Id) ->
@@ -136,6 +267,10 @@ generate_replica_name(Node, Partition, Id) ->
     BinPart = integer_to_binary(Partition),
     BinNode = atom_to_binary(Node, latin1),
     <<BinId/binary, "=", BinPart/binary, "=", BinNode/binary>>.
+
+-spec random_replica(node(), partition_id()) -> binary().
+random_replica(Node, Partition) ->
+    generate_replica_name(Node, Partition, rand_compat:uniform(?READ_CONCURRENCY)).
 
 -spec start_replicas(node(), partition_id(), non_neg_integer()) -> ok.
 start_replicas(_Node, _Partition, 0) ->
@@ -190,11 +325,9 @@ all_ready([Node | Rest]) ->
         false
     end.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Unused
-
-handle_info(Info, State) ->
-    lager:info("Unhandled msg ~p", [Info]),
-    {noreply, State}.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 terminate(_Reason, _State) -> ok.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
