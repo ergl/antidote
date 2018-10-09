@@ -417,7 +417,7 @@ handle_command(pvc_mostrecentvc, _Sender, State) ->
     {reply, pvc_get_mrvc(State#state.pvc_atomic_state), State};
 
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
-    {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
+    {VoteMsg, NewState} = pvc_prepare_internal(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
 handle_command({pvc_decide, Transaction, WriteSet, IndexList, CommitVC, Outcome}, _Sender, State = #state{
@@ -647,7 +647,7 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
-pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
+pvc_prepare_internal(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
     partition = Partition,
     committed_tx = CommittedTransactions,
 
