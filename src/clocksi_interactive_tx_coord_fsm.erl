@@ -58,43 +58,44 @@
 
 %% Callbacks
 -export([init/1,
-    code_change/4,
-    handle_event/3,
-    handle_info/3,
-    handle_sync_event/4,
-    terminate/3,
-    stop/1]).
+         code_change/4,
+         handle_event/3,
+         handle_info/3,
+         handle_sync_event/4,
+         terminate/3,
+         stop/1]).
 
 %% States
 -export([create_transaction_record/6,
-    start_tx/2,
-    init_state/3,
-    perform_update/6,
-    perform_read/4,
-    execute_op/2,
-    execute_op/3,
-    receive_read_objects_result/2,
-    pvc_read_res/2,
-    receive_logging_responses/2,
-    finish_op/3,
-    prepare/1,
-    prepare_2pc/1,
-    pvc_log_responses/2,
-    pvc_receive_votes/2,
-    process_prepared/2,
-    receive_prepared/2,
-    single_committing/2,
-    committing_2pc/3,
-    committing_single/3,
-    committing/3,
-    receive_committed/2,
-    receive_aborted/2,
-    abort/1,
-    abort/2,
-    perform_singleitem_read/2,
-    perform_singleitem_update/3,
-    reply_to_client/1,
-    generate_name/1]).
+         start_tx/2,
+         init_state/3,
+         perform_update/6,
+         perform_read/4,
+         execute_op/2,
+         execute_op/3,
+         receive_read_objects_result/2,
+         receive_logging_responses/2,
+         finish_op/3,
+         prepare/1,
+         prepare_2pc/1,
+         process_prepared/2,
+         receive_prepared/2,
+         single_committing/2,
+         committing_2pc/3,
+         committing_single/3,
+         committing/3,
+         receive_committed/2,
+         receive_aborted/2,
+         abort/1,
+         abort/2,
+         perform_singleitem_read/2,
+         perform_singleitem_update/3,
+         reply_to_client/1,
+         generate_name/1]).
+
+%% PVC states
+-export([pvc_read_res/2,
+         pvc_receive_votes/2]).
 
 %%%===================================================================
 %%% API
@@ -1027,86 +1028,28 @@ apply_tx_updates_to_snapshot(Key, CoordState, Type, Snapshot)->
             clocksi_materializer:materialize_eager(Type, Snapshot, FileteredAndReversedUpdates)
     end.
 
-pvc_prepare(State = #tx_coord_state{
-    from=From,
-    client_ops=ClientOps,
-    transaction=Transaction,
-    updated_partitions=UpdatedPartitions
-}) ->
-    %% Sanity check
-    pvc = State#tx_coord_state.transactional_protocol,
+pvc_prepare(State = #tx_coord_state{from=From,
+                                    transaction=Transaction,
+                                    updated_partitions=UpdatedPartitions}) ->
+
     case UpdatedPartitions of
         [] ->
-            %%lager:info("{~p} PVC commit readonly", [erlang:phash2(Transaction#transaction.txn_id)]),
-            %% No need to perform 2pc if read-only
             gen_fsm:reply(From, ok),
             {stop, normal, State};
 
         _ ->
-            ok = pvc_propagate_updates(Transaction, ClientOps),
-            {next_state, pvc_log_responses, State#tx_coord_state{
-                return_accumulator = ok,
-                num_to_read = length(ClientOps)
-            }}
+            ok = clocksi_vnode:prepare(UpdatedPartitions, Transaction),
+            NumToAck = length(UpdatedPartitions),
+
+            InitialCommitVC = Transaction#transaction.pvc_vcdep,
+
+            VoteState = State#tx_coord_state{
+                num_to_ack = NumToAck,
+                return_accumulator = [{pvc, InitialCommitVC}]
+            },
+
+            {next_state, pvc_receive_votes, VoteState}
     end.
-
-pvc_log_responses(LogResponse, State = #tx_coord_state{
-    num_to_read=NumToRead,
-    transaction=Transaction,
-    transactional_protocol=pvc,
-    return_accumulator=ReturnAcc,
-    updated_partitions=Partitions
-}) ->
-
-    Status = case LogResponse of
-        {error, Reason} ->
-            {error, Reason};
-        {ok, _} ->
-            ReturnAcc;
-        timeout ->
-            ReturnAcc
-    end,
-
-    case NumToRead > 1 of
-        true ->
-            {next_state, pvc_log_responses, State#tx_coord_state{
-                num_to_read=NumToRead - 1,
-                return_accumulator=Status
-            }};
-
-        false ->
-            case Status of
-                ok ->
-%%                    lager:info("{~p} PVC prepare", [erlang:phash2(Transaction#transaction.txn_id)]),
-
-                    ok = clocksi_vnode:prepare(Partitions, Transaction),
-                    NumToAck = length(Partitions),
-
-                    InitialCommitVC = Transaction#transaction.pvc_vcdep,
-
-                    VoteState = State#tx_coord_state{
-                        num_to_ack = NumToAck,
-                        return_accumulator = [{pvc, InitialCommitVC}]
-                    },
-
-                    {next_state, pvc_receive_votes, VoteState};
-
-                _ ->
-                    abort(State)
-            end
-    end.
-
--spec pvc_propagate_updates(tx(), list({key(), type(), op()})) -> ok.
-pvc_propagate_updates(#transaction{txn_id=TxId}, Ops) ->
-    lists:foreach(fun({Key, Type, Update}) ->
-        Partition = log_utilities:get_key_partition(Key),
-        DownstreamOp = Type:downstream(Update, Type:new()),
-        ok = async_log_propagation(Partition,
-                                   TxId,
-                                   Key,
-                                   Type,
-                                   DownstreamOp)
-    end, Ops).
 
 %% @doc this function sends a prepare message to all updated partitions and goes
 %%      to the "receive_prepared"state.
