@@ -76,6 +76,10 @@ init(_Args) ->
                             permanent, 5000, supervisor,
                             [clockSI_interactive_tx_coord_sup]},
 
+    %% PVC replica supervisor
+    PVCReplicaSup = ?CHILD(pvc_read_replica_sup, supervisor, []),
+
+
     ClockSIReadSup = {clocksi_readitem_sup,
                       {clocksi_readitem_sup, start_link, []},
                       permanent, 5000, supervisor,
@@ -121,6 +125,7 @@ init(_Args) ->
       [LoggingMaster,
        AntidoteConfig,
        RubisKeyGen,
+       PVCReplicaSup,
        ClockSIMaster,
        ClockSIiTxCoordSup,
        ClockSIReadSup,

@@ -404,6 +404,12 @@ handle_command(check_servers_ready, _Sender, SD0 = #state{partition = Partition}
     Result = clocksi_readitem_server:check_partition_ready(node(), Partition, ?READ_CONCURRENCY),
     {reply, Result, SD0};
 
+handle_command(pvc_check_servers_ready, _Sender, SD0 = #state{partition = Partition, read_servers = Serv}) ->
+    ok = pvc_read_replica:start_replicas(Partition, Serv),
+    Node = node(),
+    Result = pvc_read_replica:replica_ready(Node, Partition, ?READ_CONCURRENCY),
+    {reply, Result, SD0};
+
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 

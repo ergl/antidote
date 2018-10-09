@@ -133,6 +133,11 @@ start_bg_processes(MetaDataName) ->
     ok = lists:foreach(fun({_, true}) ->
                            ok
                        end, Responses2),
+    lager:info("Starting pvc read replicas"),
+    Responses3 = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, pvc_check_servers_ready),
+    ok = lists:foreach(fun({_, true}) ->
+                           ok
+                       end, Responses3),
     ok.
 
 %% This should be called once the DC is up and running successfully
@@ -181,6 +186,11 @@ check_node_restart() ->
             ok = lists:foreach(fun({_, true}) ->
                                    ok
                                end, Responses2),
+            lager:info("Starting pvc read replicas"),
+            Responses3 = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, pvc_check_servers_ready),
+            ok = lists:foreach(fun({_, true}) ->
+                                   ok
+                               end, Responses3),
             %% Reconnect this node to other DCs
             OtherDCs = dc_meta_data_utilities:get_dc_descriptors(),
             Responses3 = reconnect_dcs_after_restart(OtherDCs, MyNode),
