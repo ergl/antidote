@@ -464,14 +464,14 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
     end.
 
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
--spec pvc_internal_read(key(), snapshot_time(), cache_id()) -> {ok, term(), snapshot_time()}.
-pvc_internal_read(Key, MinSnapshotTime, VLogCache) ->
+-spec pvc_internal_read(key(), pvc_vc(), cache_id()) -> {ok, val(), pvc_vc()}.
+pvc_internal_read(Key, MinVC, VLogCache) ->
     {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
         [] ->
             {<<>>, pvc_vclock:new()};
 
         [{_, PrevVersionLog}] ->
-            pvc_version_log:get_smaller(MinSnapshotTime, PrevVersionLog)
+            pvc_version_log:get_smaller(MinVC, PrevVersionLog)
     end,
     {ok, Val, CommitVC}.
 
