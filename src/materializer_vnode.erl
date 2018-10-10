@@ -850,13 +850,12 @@ pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
                                           pvc_vlog_cache = VLogCache}) ->
 
     #clocksi_payload{key = Key,
-                     type = Type,
                      op_param = DownstreamOp,
                      snapshot_time = SnapshotTime} = Payload,
 
     VersionLog = case ets:lookup(VLogCache, Key) of
         [] ->
-            pvc_version_log:new(Partition, Type);
+            pvc_version_log:new(Partition);
 
         [{_, PrevVersionLog}] ->
             PrevVersionLog

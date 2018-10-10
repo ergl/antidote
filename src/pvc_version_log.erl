@@ -23,21 +23,34 @@
 -include("antidote.hrl").
 -include("pvc.hrl").
 
--type vlog() :: {partition_id(), type(), {non_neg_integer(), dict:dict(integer(), {term(), pvc_vc()})}}.
+-define(bottom, {<<>>, pvc_vclock:new()}).
+
+-record(vlog, {
+    at :: partition_id(),
+    smallest :: non_neg_integer() | bottom,
+    data :: dict:dict(integer(), {val(), pvc_vc()})
+}).
+
+-type vlog() :: #vlog{}.
 
 %% API
--export([new/2,
+-export([new/1,
          insert/3,
          get_smaller/2]).
 
--spec new(partition_id(), type()) -> vlog().
-new(AtId, Type) ->
-    {AtId, Type, {1, dict:new()}}.
+-spec new(partition_id()) -> vlog().
+new(AtId) ->
+    #vlog{at=AtId, smallest=bottom, data=dict:new()}.
 
 -spec insert(pvc_vc(), term(), vlog()) -> vlog().
-insert(VC, Value, {Id, Type, {Smallest, Dict}}) ->
+insert(VC, Value, V=#vlog{at=Id, smallest=bottom, data=Dict}) ->
     Key = pvc_vclock:get_time(Id, VC),
-    {Id, Type, maybe_gc(Smallest, dict:store(Key, {Value, VC}, Dict))}.
+    V#vlog{smallest=Key, data=dict:store(Key, {Value, VC}, Dict)};
+
+insert(VC, Value, V=#vlog{at=Id, smallest=Smallest, data=Dict}) ->
+    Key = pvc_vclock:get_time(Id, VC),
+    {NewSmallest, NewDict} = maybe_gc(Smallest, dict:store(Key, {Value, VC}, Dict)),
+    V#vlog{smallest = NewSmallest, data=NewDict}.
 
 maybe_gc(Smallest, Dict) ->
     Size = dict:size(Dict),
@@ -54,33 +67,34 @@ maybe_gc(Smallest, Dict) ->
 gc_dict(N, N, Acc) ->
     Acc;
 
-gc_dict(S, E, Acc) when E > S ->
-    gc_dict(S + 1, E, dict:erase(S, Acc)).
+gc_dict(Start, Edge, Acc) when Edge > Start ->
+    gc_dict(Start + 1, Edge, dict:erase(Start, Acc)).
 
--spec get_smaller(pvc_vc(), vlog()) -> {term(), vectorclock()}.
-get_smaller(VC, {Id, Type, {_, Dict}}) ->
+-spec get_smaller(pvc_vc(), vlog()) -> {val(), pvc_vc()}.
+get_smaller(VC, #vlog{at=Id, smallest=Smallest, data=Dict}) ->
     case dict:is_empty(Dict) of
         true ->
-            base_entry(Type);
+            ?bottom;
         false ->
             LookupKey = pvc_vclock:get_time(Id, VC),
-            get_smaller(LookupKey, Type, Dict)
+            %% TODO(borja): Test this
+            case Smallest =/= bottom andalso LookupKey < Smallest of
+                true ->
+                    ?bottom;
+                false ->
+                    get_smaller_internal(LookupKey, Dict)
+            end
     end.
 
--spec get_smaller(non_neg_integer(), type(), dict:dict()) -> {term(), vectorclock()}.
-get_smaller(0, Type, _) ->
-    base_entry(Type);
+-spec get_smaller_internal(non_neg_integer(), dict:dict()) -> {term(), vectorclock()}.
+get_smaller_internal(0, _) ->
+    ?bottom;
 
-get_smaller(LookupKey, Type, Dict) ->
+get_smaller_internal(LookupKey, Dict) ->
     case dict:find(LookupKey, Dict) of
         error ->
-            get_smaller(LookupKey - 1, Type, Dict);
+            get_smaller_internal(LookupKey - 1, Dict);
 
         {ok, Snapshot} ->
             Snapshot
     end.
-
-%% Util
-
-base_entry(_Type) ->
-    {<<>>, pvc_vclock:new()}.
