@@ -77,7 +77,6 @@ get_smaller(VC, #vlog{at=Id, smallest=Smallest, data=Dict}) ->
             ?bottom;
         false ->
             LookupKey = pvc_vclock:get_time(Id, VC),
-            %% TODO(borja): Test this
             case Smallest =/= bottom andalso LookupKey < Smallest of
                 true ->
                     ?bottom;
