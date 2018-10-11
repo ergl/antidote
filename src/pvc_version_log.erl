@@ -28,6 +28,7 @@
 -record(vlog, {
     at :: partition_id(),
     smallest :: non_neg_integer() | bottom,
+    biggest :: non_neg_integer(),
     data :: dict:dict(integer(), {val(), pvc_vc()})
 }).
 
@@ -40,17 +41,17 @@
 
 -spec new(partition_id()) -> vlog().
 new(AtId) ->
-    #vlog{at=AtId, smallest=bottom, data=dict:new()}.
+    #vlog{at=AtId, smallest=bottom, biggest=0, data=dict:new()}.
 
 -spec insert(pvc_vc(), term(), vlog()) -> vlog().
-insert(VC, Value, V=#vlog{at=Id, smallest=bottom, data=Dict}) ->
+insert(VC, Value, V=#vlog{at=Id, smallest=bottom, biggest=Big, data=Dict}) ->
     Key = pvc_vclock:get_time(Id, VC),
-    V#vlog{smallest=Key, data=dict:store(Key, {Value, VC}, Dict)};
+    V#vlog{smallest=Key, biggest=max(Big,Key), data=dict:store(Key, {Value, VC}, Dict)};
 
-insert(VC, Value, V=#vlog{at=Id, smallest=Smallest, data=Dict}) ->
+insert(VC, Value, V=#vlog{at=Id, smallest=Smallest, biggest=Big, data=Dict}) ->
     Key = pvc_vclock:get_time(Id, VC),
     {NewSmallest, NewDict} = maybe_gc(Smallest, dict:store(Key, {Value, VC}, Dict)),
-    V#vlog{smallest = NewSmallest, data=NewDict}.
+    V#vlog{smallest=NewSmallest, biggest=max(Big, Key), data=NewDict}.
 
 maybe_gc(Smallest, Dict) ->
     Size = dict:size(Dict),
@@ -71,16 +72,24 @@ gc_dict(Start, Edge, Acc) when Edge > Start ->
     gc_dict(Start + 1, Edge, dict:erase(Start, Acc)).
 
 -spec get_smaller(pvc_vc(), vlog()) -> {val(), pvc_vc()}.
-get_smaller(VC, #vlog{at=Id, smallest=Smallest, data=Dict}) ->
+get_smaller(VC, #vlog{at=Id, smallest=Smallest, biggest=Big, data=Dict}) ->
     case dict:is_empty(Dict) of
         true ->
             ?bottom;
         false ->
             LookupKey = pvc_vclock:get_time(Id, VC),
-            case Smallest =/= bottom andalso LookupKey < Smallest of
-                true ->
+            %% TODO(borja): Check this is sound
+            TooBig = LookupKey > Big,
+            TooSmall = Smallest =/= bottom andalso LookupKey < Smallest,
+            if
+                TooBig ->
+                    {ok, Version} = dict:find(Big, Dict),
+                    Version;
+
+                TooSmall ->
                     ?bottom;
-                false ->
+
+                true ->
                     get_smaller_internal(LookupKey, Dict)
             end
     end.
