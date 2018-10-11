@@ -24,6 +24,7 @@
 
 %% PVC-Only API
 -export([start_transaction/0,
+         read_single/2,
          read_keys/2,
          update_keys/2,
          commit_transaction/1]).
@@ -33,7 +34,6 @@
     start_transaction/3,
     start_transaction/2,
     abort_transaction/1,
-    read_single/2,
     read_objects/2,
     read_objects/3,
     read_objects/4,
@@ -43,9 +43,7 @@
 ]).
 
 %% Unsafe load API
--export([
-    unsafe_load/2
-]).
+-export([unsafe_load/2]).
 
 %% @doc UNSAFE: Blindly write a random binary blobs of size Size to N keys
 %%
