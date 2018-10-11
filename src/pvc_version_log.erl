@@ -25,11 +25,19 @@
 
 -define(bottom, {<<>>, pvc_vclock:new()}).
 
+-type versions() :: orddict:dict(integer(), {val(), pvc_vc()}).
+
 -record(vlog, {
+    %% The partition where this structure resides
     at :: partition_id(),
-    smallest :: non_neg_integer() | bottom,
-    biggest :: non_neg_integer(),
-    data :: dict:dict(integer(), {val(), pvc_vc()})
+    %% The actual version list
+    %% The data is structured as an ordered dict where the value is a
+    %% snapshot, and the key, the time of that snapshot at this partition.
+    %%
+    %% This snapshot time is stored as a negative number, as the default
+    %% ordered dict implementation orders them in ascending order, and
+    %% we want them in descending order.
+    data :: versions()
 }).
 
 -type vlog() :: #vlog{}.
@@ -41,68 +49,44 @@
 
 -spec new(partition_id()) -> vlog().
 new(AtId) ->
-    #vlog{at=AtId, smallest=bottom, biggest=0, data=dict:new()}.
+    #vlog{at=AtId, data=orddict:new()}.
 
 -spec insert(pvc_vc(), term(), vlog()) -> vlog().
-insert(VC, Value, V=#vlog{at=Id, smallest=bottom, biggest=Big, data=Dict}) ->
+insert(VC, Value, V=#vlog{at=Id, data=Dict}) ->
     Key = pvc_vclock:get_time(Id, VC),
-    V#vlog{smallest=Key, biggest=max(Big,Key), data=dict:store(Key, {Value, VC}, Dict)};
+    V#vlog{data=maybe_gc(orddict:store(-Key, {Value, VC}, Dict))}.
 
-insert(VC, Value, V=#vlog{at=Id, smallest=Smallest, biggest=Big, data=Dict}) ->
-    Key = pvc_vclock:get_time(Id, VC),
-    {NewSmallest, NewDict} = maybe_gc(Smallest, dict:store(Key, {Value, VC}, Dict)),
-    V#vlog{smallest=NewSmallest, biggest=max(Big, Key), data=NewDict}.
-
-maybe_gc(Smallest, Dict) ->
-    Size = dict:size(Dict),
+maybe_gc(Data) ->
+    Size = orddict:size(Data),
     case Size > ?VERSION_THRESHOLD of
-        false ->
-            {Smallest, Dict};
-        true ->
-            StartingAt = Smallest,
-            Edge = Smallest + (Size - ?MAX_VERSIONS),
-            NewTree = gc_dict(StartingAt, Edge, Dict),
-            {Edge, NewTree}
+        false -> Data;
+        true -> lists:sublist(Data, ?MAX_VERSIONS)
     end.
 
-gc_dict(N, N, Acc) ->
-    Acc;
-
-gc_dict(Start, Edge, Acc) when Edge > Start ->
-    gc_dict(Start + 1, Edge, dict:erase(Start, Acc)).
-
 -spec get_smaller(pvc_vc(), vlog()) -> {val(), pvc_vc()}.
-get_smaller(VC, #vlog{at=Id, smallest=Smallest, biggest=Big, data=Dict}) ->
-    case dict:is_empty(Dict) of
-        true ->
+get_smaller(VC, #vlog{at=Id, data=[{MaxTime, MaxVersion} | _]=Data}) ->
+    case Data of
+        [] ->
             ?bottom;
-        false ->
+
+        _ ->
             LookupKey = pvc_vclock:get_time(Id, VC),
-            %% TODO(borja): Check this is sound
-            TooBig = LookupKey > Big,
-            TooSmall = Smallest =/= bottom andalso LookupKey < Smallest,
-            if
-                TooBig ->
-                    {ok, Version} = dict:find(Big, Dict),
-                    Version;
-
-                TooSmall ->
-                    ?bottom;
-
+            case LookupKey > abs(MaxTime) of
                 true ->
-                    get_smaller_internal(LookupKey, Dict)
+                    MaxVersion;
+                false ->
+                    get_smaller_internal(-LookupKey, Data)
             end
     end.
 
--spec get_smaller_internal(non_neg_integer(), dict:dict()) -> {term(), vectorclock()}.
-get_smaller_internal(0, _) ->
+-spec get_smaller_internal(integer(), versions()) -> {val(), pvc_vc()}.
+get_smaller_internal(_, []) ->
     ?bottom;
 
-get_smaller_internal(LookupKey, Dict) ->
-    case dict:find(LookupKey, Dict) of
-        error ->
-            get_smaller_internal(LookupKey - 1, Dict);
-
-        {ok, Snapshot} ->
-            Snapshot
+get_smaller_internal(LookupKey, [{Time, Version} | Rest]) ->
+    case LookupKey =< Time of
+        true ->
+            Version;
+        false ->
+            get_smaller_internal(LookupKey, Rest)
     end.
