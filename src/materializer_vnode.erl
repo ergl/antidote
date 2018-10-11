@@ -98,7 +98,7 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
             internal_read(Key, Type, SnapshotTime, TxId, MatState)
     end.
 
--spec pvc_replica_read(partition_id(), key(), pvc_vc(), atom() | cache_id()) -> {ok, val(), pvc_vc()} | {error, reason()}.
+-spec pvc_replica_read(partition_id(), key(), pvc_vc(), atom() | cache_id()) -> {val(), pvc_vc()}.
 pvc_replica_read(Partition, Key, SnapshotTime, VLogCache) ->
     case ets:info(VLogCache) of
         undefined ->
@@ -464,16 +464,15 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
     end.
 
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
--spec pvc_internal_read(key(), pvc_vc(), cache_id()) -> {ok, val(), pvc_vc()}.
+-spec pvc_internal_read(key(), pvc_vc(), cache_id()) -> {val(), pvc_vc()}.
 pvc_internal_read(Key, MinVC, VLogCache) ->
-    {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
+    case ets:lookup(VLogCache, Key) of
         [] ->
             {<<>>, pvc_vclock:new()};
 
         [{_, PrevVersionLog}] ->
             pvc_version_log:get_smaller(MinVC, PrevVersionLog)
-    end,
-    {ok, Val, CommitVC}.
+    end.
 
 %% @doc This function takes care of reading. It is implemented here for not blocking the
 %% vnode when the write function calls it. That is done for garbage collection.

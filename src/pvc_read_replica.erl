@@ -182,12 +182,8 @@ handle_info(Info, State) ->
 %%
 -spec vlog_read_internal(term(), partition_id(), key(), pvc_vc(), atom()) -> ok.
 vlog_read_internal(Coordinator, Partition, Key, MaxVC, VLog) ->
-    case materializer_vnode:pvc_replica_read(Partition, Key, MaxVC, VLog) of
-        {error, Reason} ->
-            gen_fsm:send_event(Coordinator, {error, Reason});
-        {ok, Value, CommitVC} ->
-            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, Key, Value, CommitVC, MaxVC})
-    end.
+    {Value, CommitVC} = materializer_vnode:pvc_replica_read(Partition, Key, MaxVC, VLog),
+    gen_fsm:send_event(Coordinator, {readreturn, Partition, Key, Value, CommitVC, MaxVC}).
 
 -spec read_with_scan_internal(term(), index_node(), key(), sets:set(), pvc_vc(), #state{}) -> ok.
 read_with_scan_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCaggr, State = #state{

@@ -712,7 +712,7 @@ pvc_single_read(Key, State = #tx_coord_state{
 pvc_read_res({error, maxvc_bad_vc}, State) ->
     abort(State#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]});
 
-pvc_read_res({pvc_readreturn, From, _Key, Value, VCdep, VCaggr}, State = #tx_coord_state{transaction = Tx}) ->
+pvc_read_res({readreturn, From, _Key, Value, VCdep, VCaggr}, State = #tx_coord_state{transaction = Tx}) ->
     gen_fsm:reply(State#tx_coord_state.from, {ok, Value}),
     {next_state, execute_op, State#tx_coord_state{transaction = pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
 
@@ -961,7 +961,7 @@ receive_read_objects_result(Msg, State=#tx_coord_state{transactional_protocol=pv
             pvc_read_loop(Key, Value, Transaction, State);
 
         %% A message from the read_item server, must update the transaction
-        {pvc_readreturn, From, Key, Value, VCdep, VCaggr} ->
+        {readreturn, From, Key, Value, VCdep, VCaggr} ->
             %% Update Transaction state (read partitions, version vectors, etc)
             UpdatedTransaction = pvc_update_transaction(From, VCdep, VCaggr, Transaction),
             %% Update the state and loop until all keys have been read
