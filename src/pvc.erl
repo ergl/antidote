@@ -29,6 +29,13 @@
          update_keys/2,
          commit_transaction/1]).
 
+%% New FSM
+-export([new_start/0,
+         new_read/2,
+         new_update/2,
+         new_update/3,
+         new_commit/1]).
+
 %% API
 -export([
     start_transaction/3,
@@ -44,6 +51,32 @@
 
 %% Unsafe load API
 -export([unsafe_load/2]).
+
+%% New FSM API
+
+-spec new_start() -> {ok, txid()} | {error, reason()}.
+new_start() ->
+    {ok, _} = pvc_coord_sup:start_fsm([self()]),
+    receive
+        {ok, TxId} -> {ok, TxId};
+        Err -> {error, Err}
+    end.
+
+-spec new_read(key(), txid()) -> {ok, val()} | {error, reason()}.
+new_read(Key, #tx_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, {read, Key}, ?OP_TIMEOUT).
+
+-spec new_update([{key(), val()}], txid()) -> ok.
+new_update(Updates, #tx_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, {update_batch, Updates}, ?OP_TIMEOUT).
+
+-spec new_update(key(), val(), txid()) -> ok.
+new_update(Key, Val, #tx_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, {update, Key, Val}, ?OP_TIMEOUT).
+
+-spec new_commit(txid()) -> ok | {error, reason()}.
+new_commit(#tx_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, commit, ?OP_TIMEOUT).
 
 %% @doc UNSAFE: Blindly write a random binary blobs of size Size to N keys
 %%
