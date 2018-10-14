@@ -42,7 +42,7 @@ new_at(AtId) ->
     #clog{at=AtId, smallest=bottom, data=gb_trees:empty()}.
 
 %% The Commit Log at the i-th partition (CLog_i) is only updated
-%% when if there is a new transaction committed at i. This means
+%% when there is a new transaction committed at i. This means
 %% that the entries in CLog_i are strictly monotonic at their i-th
 %% entry. We can use this to store the entries in a tree, where the
 %% key is the i-th value of an entry.
