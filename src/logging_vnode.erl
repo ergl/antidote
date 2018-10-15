@@ -90,10 +90,7 @@
     recovered_vector :: vectorclock(),
     senders_awaiting_ack :: dict:dict(),
     last_read :: term(),
-    %% Store commits in memory for the CLog
-    %% We should find a way to cleanup, otherwise
-    %% this will keep growing with each committed tx
-    %% FIXME(borja): Hot memory point
+    %% @deprecated
     pvc_clog :: pvc_commit_log:clog()
 }).
 

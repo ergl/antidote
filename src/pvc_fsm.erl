@@ -42,11 +42,11 @@
 
 -type ws() :: orddict:orddict(key(), val()).
 -type partitions() :: orddict:orddict(index_node(), ws()).
+-type index_buffer() :: orddict:orddict(index_node(), ordsets:ordset(key())).
 
 -export_type([ws/0,
               partitions/0]).
 
-%% TODO(borja): Implement index operations
 -record(state, {
     %% Client PID
     from :: pid(),
@@ -62,7 +62,10 @@
     %% Partitions to Ack
     num_to_ack = 0 :: non_neg_integer(),
     %% Commit status
-    ack_outcome = undefined :: undefined | {ok, pvc_vc()} | {error, reason()}
+    ack_outcome = undefined :: undefined | {ok, pvc_vc()} | {error, reason()},
+    %% Mapping of partitions -> keys
+    %% Used to buffer the list of keys that must be indexed
+    index_buffer = orddict:new() :: index_buffer()
 }).
 
 %% internal types
@@ -70,7 +73,6 @@
 -type fsm_state() :: #state{}.
 -type step(T) :: {next_state, T, fsm_state()}.
 -type stop() :: {stop, normal, fsm_state()}.
-
 
 %% External API
 
@@ -91,6 +93,12 @@ init([From]) ->
 -spec client_command(term(), pid(), fsm_state()) -> step(_) | stop().
 client_command({unsafe_load, NKeys, Size}, Sender, State) ->
     unsafe_load_internal(NKeys, Size, State#state{from=Sender});
+
+client_command({index, Keys}, Sender, State) ->
+    index_internal(Keys, State#state{from=Sender});
+
+client_command({scan_range, Root, Range, Limit}, Sender, State) ->
+    scan_range_internal(Root, Range, Limit, State#state{from=Sender});
 
 client_command({read, Key}, Sender, State) ->
     read_internal(Key, State#state{from=Sender});
@@ -192,6 +200,60 @@ unsafe_loop(N, Val, State=#state{updated_partitions=UpdatedPartitions}) ->
     NewState = State#state{updated_partitions=NewUpdatedPartitions},
     unsafe_loop(N - 1, Val, NewState).
 
+%% @doc Add the list of given keys to the index buffer
+-spec index_internal([key()], fsm_state()) -> step(client_command).
+index_internal(Keys, State=#state{from=Sender,
+                                  index_buffer=IndexBuffer}) ->
+    gen_fsm:reply(Sender, ok),
+
+    NewIndexBuffer = lists:foldl(fun(Key, AccBuffer) ->
+        P = log_utilities:get_key_partition(Key),
+        KeySet = case orddict:find(P, AccBuffer) of
+            error -> ordsets:new();
+            {ok, S} -> S
+        end,
+        lager:info("Adding ~p to the keyset", [Key]),
+        orddict:store(P, ordsets:add_element(Key, KeySet), AccBuffer)
+    end, IndexBuffer, Keys),
+    {next_state, client_command, State#state{index_buffer=NewIndexBuffer}}.
+
+%% @doc Perform a range scan starting from Root with limit `Limit`
+-spec scan_range_internal(key(), pvc_indices:range(), non_neg_integer(), fsm_state()) -> step(client_command).
+scan_range_internal(Root, Range, Limit, State = #state{from=Sender,
+                                                       index_buffer=IndexBuffer}) ->
+
+    RootPartition = log_utilities:get_key_partition(Root),
+    %% Get the matching keys in the locally updated set, if any
+    LocalRange = get_local_range(RootPartition, Root, Range, IndexBuffer),
+
+    %% Also get the matching keys stored in the ordered storage
+    StoredRange = pvc_storage_vnode:read_range(RootPartition, Root, Range, Limit),
+
+    %% Merge the two ranges (StoredRange is a normal list, not ordered)
+    MergedRange = lists:foldl(fun ordsets:add_element/2, LocalRange, StoredRange),
+    gen_fsm:reply(Sender, {ok, ordsets:to_list(MergedRange)}),
+    {next_state, client_command, State}.
+
+%% @doc Return the locally updated keys belonging to Partition that match
+%%      the given prefix, skipping the root key
+-spec get_local_range(index_node(), key(), pvc_indices:range(), index_buffer()) -> ordsets:ordset(key()).
+get_local_range(Partition, Root, Range, IndexBuffer) ->
+    case orddict:find(Partition, IndexBuffer) of
+        error -> ordsets:new();
+        {ok, KeySet} ->
+            ordsets:fold(fun(Key, Acc) ->
+                case Key of
+                    Root -> Acc; %% Skip the root key
+                    _ -> case pvc_indices:in_range(Key, Range) of
+                        true ->
+                            ordsets:add_element(Key, Acc);
+                        false ->
+                            Acc
+                    end
+                end
+            end, ordsets:new(), KeySet)
+    end.
+
 -spec read_internal(key(), fsm_state()) -> step(read_result | client_command).
 read_internal(Key, State=#state{from=Sender,
                                 writeset=WS,
@@ -262,6 +324,7 @@ commit(State=#state{from=From,
 decide(State=#state{from=Sender,
                     ack_outcome=Outcome,
                     transaction=Transaction,
+                    index_buffer=IndexBuffer,
                     updated_partitions=UpdatedPartitions}) ->
 
     OutcomeMsg = case Outcome of
@@ -271,7 +334,17 @@ decide(State=#state{from=Sender,
     gen_fsm:reply(Sender, OutcomeMsg),
 
     TxId = Transaction#transaction.txn_id,
-    ok = pvc_storage_vnode:decide(UpdatedPartitions, TxId, Outcome),
+    %% Merge the partition updates and the partition keyset
+    %% We don't use orddict:merge/3 because it only combines
+    %% keys that exist in both dictionaries. We might not hold
+    %% indices for all the partitions that have been updated.
+    PartitionsWithIndex = orddict:map(fun(Partition, _) ->
+        case orddict:find(Partition, IndexBuffer) of
+            error -> [];
+            {ok, KeySet} -> KeySet
+        end
+    end, UpdatedPartitions),
+    ok = pvc_storage_vnode:decide(PartitionsWithIndex, TxId, Outcome),
     {stop, normal, State}.
 
 -spec read_abort(fsm_state()) -> stop().

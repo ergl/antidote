@@ -149,7 +149,8 @@ make_index_key(IndexName, IndexValue, RefKey) ->
 
 update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
     ok = pvc:update_batch(Updates, TxId),
-    gen_fsm:sync_send_event(Pid, {pvc_index, Updates}, ?OP_TIMEOUT).
+    Keys = [Key || {Key, _} <- Updates],
+    gen_fsm:sync_send_event(Pid, {index, Keys}, ?OP_TIMEOUT).
 
 %% @doc Read subkeys of the given root key from the ordered storage
 %%
@@ -168,7 +169,7 @@ read_index_range(RootKey, TxId) ->
 -spec read_index_range(key(), non_neg_integer(), txid()) -> {ok, [key()]}.
 read_index_range(RootKey, Limit, #tx_id{server_pid = Pid}) ->
     Range = make_range(RootKey),
-    gen_fsm:sync_send_event(Pid, {pvc_scan_range, {RootKey, Range, Limit}}).
+    gen_fsm:sync_send_event(Pid, {scan_range, RootKey, Range, Limit}).
 
 -spec make_range(binary()) -> range().
 make_range(Key) ->

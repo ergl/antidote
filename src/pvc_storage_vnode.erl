@@ -32,7 +32,8 @@
          decide/3,
          get_max_vc/3,
          get_most_recent_vc/2,
-         read_key/4]).
+         read_key/4,
+         read_range/4]).
 
 %% riak core callbacks
 -export([start_vnode/1,
@@ -72,7 +73,11 @@
     storage :: cache_id(),
 
     %% Ordered ETS table to support range queries
-    %% TODO(borja): Figure out structure
+    %% We don't actually store values here, just keys,
+    %% so we just use the ordered ETS as a shared-memory ordered set
+    %%
+    %% The keys present here are used to build a "range" of keys,
+    %% that will be read later using the normal read procedure
     range_storage :: cache_id(),
 
     %% Commit Queue at this partition
@@ -191,12 +196,12 @@ prepare(Partitions, TxId, CommitVC) ->
     end, Partitions).
 
 %% @doc Send a decide message to all the given partitions
--spec decide(pvc_fsm:partitions(), txid(), term()) -> ok.
+-spec decide([{index_node(), [key()]}], txid(), term()) -> ok.
 decide(Partitions, TxId, Outcome) ->
-    lists:foreach(fun({Node, _}) ->
+    lists:foreach(fun({Node, IndexKeySet}) ->
         riak_core_vnode_master:command(
             Node,
-            {decide, TxId, Outcome},
+            {decide, TxId, IndexKeySet, Outcome},
             {fsm, undefined, self()},
             pvc_storage_vnode_master)
     end, Partitions).
@@ -241,6 +246,21 @@ read_key(Partition, Key, SnapshotTime, Storage) ->
             internal_read_key(Key, SnapshotTime, Storage)
     end.
 
+-spec read_range(index_node(), key(), pvc_indices:range(), non_neg_integer()) -> [key()].
+read_range({Partiton, _}=Node, Root, Range, Limit) ->
+    RangeStorage = get_cache_name(Partiton, pvc_range_storage),
+    case ets:info(RangeStorage) of
+        undefined ->
+            riak_core_vnode_master:sync_command(
+                Node,
+                {read_range, Root, Range, Limit},
+                pvc_storage_vnode_master,
+                infinity
+            );
+        _ ->
+            internal_read_range(Root, Range, Limit, RangeStorage)
+    end.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% Handle Riak core commands
@@ -280,12 +300,15 @@ handle_command(read_replica_ready, _Sender, State=#state{partition=Partition,
 handle_command({read_key, Key, SnapshotTime}, _Sender, State) ->
     {reply, internal_read_key(Key, SnapshotTime, State#state.storage), State};
 
+handle_command({read_range, Root, Range, Limit}, _Sender, State) ->
+    {reply, internal_read_range(Root, Range, Limit, State#state.range_storage), State};
+
 handle_command({prepare, TxId, WriteSet, CommitVC}, _Sender, State) ->
     {Vote, NewState} = prepare_internal(TxId, WriteSet, CommitVC, State),
     {reply, Vote, NewState};
 
-handle_command({decide, TxId, Outcome}, _Sender, State) ->
-    NewState = decide_internal(TxId, Outcome, State),
+handle_command({decide, TxId, IndexKeySet, Outcome}, _Sender, State) ->
+    NewState = decide_internal(TxId, IndexKeySet, Outcome, State),
     {noreply, NewState};
 
 handle_command(process_queue, _Sender, State) ->
@@ -333,6 +356,34 @@ internal_read_key(Key, MinVC, Storage) ->
             {<<>>, pvc_vclock:new()};
         [{Key, PrevVersionLog}] ->
             pvc_version_log:get_smaller(MinVC, PrevVersionLog)
+    end.
+
+-spec internal_read_range(key(), pvc_indices:range(), non_neg_integer(), cache_id()) -> [key()].
+internal_read_range(Root, Range, Limit, RangeStorage) ->
+    case ets:lookup(RangeStorage, Root) of
+        [] -> [];
+        [{Root, _}] ->
+            Next = ets:next(RangeStorage, Root),
+            internal_read_range(Next, Range, Limit, RangeStorage, [])
+    end.
+
+-spec internal_read_range(key(), pvc_indices:range(), non_neg_integer(), cache_id(), [key()]) -> [key()].
+internal_read_range('$end_of_table', _Range, _Limit, _RangeStorage, Acc) ->
+    %% We have reached the end of the table, return
+    Acc;
+
+internal_read_range(_Key, _Range, 0, _RangeStorage, Acc) ->
+    %% We have hit the limit, return
+    Acc;
+
+internal_read_range(Key, Range, Limit, RangeStorage, Acc) ->
+    case pvc_indices:in_range(Key, Range) of
+        true ->
+            Next = ets:next(RangeStorage, Key),
+            internal_read_range(Next, Range, Limit - 1, RangeStorage, [Key | Acc]);
+        false ->
+            %% We are past the useful range, return the accumulator
+            Acc
     end.
 
 -spec ready(partition_id(), atom()) -> boolean().
@@ -383,14 +434,14 @@ are_keys_stale(SelfPartition, [{Key, _} | Rest], PrepareVC, CommittedCache) ->
 incr_last_prepared(PartitionState) ->
     ets:update_counter(PartitionState, seq_number, 1).
 
-decide_internal(TxId, Outcome, State=#state{partition=Partition,
-                                            commit_queue=CommitQueue}) ->
+decide_internal(TxId, IndexKeySet, Outcome, State=#state{partition=Partition,
+                                                         commit_queue=CommitQueue}) ->
 
     NewQueue = case Outcome of
         {error, _} ->
             pvc_commit_queue:remove(TxId, CommitQueue);
         {ok, CommitVC} ->
-            ReadyQueue = pvc_commit_queue:ready(TxId, [], CommitVC, CommitQueue),
+            ReadyQueue = pvc_commit_queue:ready(TxId, IndexKeySet, CommitVC, CommitQueue),
             ok = schedule_queue(Partition),
             ReadyQueue
     end,
@@ -398,11 +449,12 @@ decide_internal(TxId, Outcome, State=#state{partition=Partition,
 
 -spec process_queue_internal(#state{}) -> #state{}.
 process_queue_internal(State=#state{partition=Partition,
-                                    clog = CLog,
-                                    storage = Storage,
-                                    commit_queue = CommitQueue,
-                                    partition_state = PartitionState,
-                                    last_committed_version_cache = CommittedCache}) ->
+                                    clog=CLog,
+                                    storage=Storage,
+                                    range_storage=RangeStorage,
+                                    commit_queue=CommitQueue,
+                                    partition_state=PartitionState,
+                                    last_committed_version_cache=CommittedCache}) ->
 
     {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(CommitQueue),
     case ReadyTx of
@@ -410,9 +462,12 @@ process_queue_internal(State=#state{partition=Partition,
             State#state{commit_queue=NewQueue};
 
         Entries ->
-            NewCLog = lists:foldl(fun({_TxId, WS, VC, _IndexList}, AccClog) ->
+            NewCLog = lists:foldl(fun({_TxId, WS, VC, IndexKeySet}, AccClog) ->
                 %% First, apply update to the VLog
                 ok = vlog_apply_updates(Partition, WS, VC, Storage),
+
+                %% Now, update the range storage
+                ok = update_index_range(IndexKeySet, RangeStorage),
 
                 %% Now, update MRVC with the max of the old value and our VC
                 PrevMRVC = get_mrvc(PartitionState),
@@ -448,6 +503,17 @@ vlog_apply_updates(Partition, [{Key, Value} | Rest], VC, Storage) ->
     true = ets:insert(Storage, {Key, NewVLog}),
     vlog_apply_updates(Partition, Rest, VC, Storage).
 
+%% @doc Add the index key set to the ordered storage
+%%
+%%      All the keys in the set are from this partition
+%%
+-spec update_index_range([key()], cache_id()) -> ok.
+update_index_range(IndexKeySet, RangeStorage) ->
+    Objects = [{Key, nil} || Key <- IndexKeySet],
+    true = ets:insert(RangeStorage, Objects),
+    ok.
+
+%% @doc Cache the last commit time of the keys in the writeset
 -spec cache_last_committed_version(partition_id(), pvc_fsm:ws(), pvc_vc(), cache_id()) -> ok.
 cache_last_committed_version(Partition, WS, CommitVC, CommittedCache) ->
     CommitTime = pvc_vclock:get_time(Partition, CommitVC),

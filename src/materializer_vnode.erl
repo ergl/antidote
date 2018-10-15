@@ -813,7 +813,6 @@ tuple_to_key(Tuple, ToList) ->
     end,
     {Key, Length, OpId, ListLen, Ops}.
 
-%% FIXME(borja): Broken since this will always match and return the empty list
 tuple_to_key_int(Next, Next, _Tuple, Acc) ->
     Acc;
 
