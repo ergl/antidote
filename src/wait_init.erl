@@ -53,6 +53,7 @@ check_ready(Node) ->
     lager:debug("Checking if node ~w is ready ~n", [Node]),
     check_all(Node, [
         check_node(Node, clocksi_vnode, check_tables_ready),
+        check_node(Node, pvc_storage_vnode, check_tables_ready),
         check_node(Node, pvc_read_replica, all_ready),
         check_node(Node, materializer_vnode, check_tables_ready),
         check_node(Node, stable_meta_data_server, check_tables_ready)

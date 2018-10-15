@@ -56,12 +56,7 @@
     partition_state_replica :: atom(),
 
     %% Read replica of the VLog ETS table
-    vlog_replica :: atom(),
-
-    %% Read replica of the last version committed by a key
-    %% This is useful to compute VLog.last(key) without
-    %% traversing the entire VLog
-    committed_cache_replica :: atom()
+    vlog_replica :: atom()
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -129,19 +124,14 @@ async_read(Key, HasRead, VCaggr) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([Partition, Id]) ->
-    %% TODO(borja): Move to PVC storage vnode
-    VLog = materializer_vnode:get_cache_name(Partition, pvc_snapshot_cache),
-    %% TODO(borja): Move to PVC storage vnode
-    StateReplica = clocksi_vnode:get_cache_name(Partition, pvc_state_table),
-    %% TODO(borja): Change name of ETS table, move to PVC storage vnode
-    Committed = clocksi_vnode:get_cache_name(Partition, committed_tx),
+    VLog = pvc_storage_vnode:get_cache_name(Partition, pvc_storage),
+    StateReplica = pvc_storage_vnode:get_cache_name(Partition, pvc_partition_state),
 
     Self = generate_replica_name(node(), Partition, Id),
 
     {ok, #state{self=Self,
                 partition = Partition,
                 vlog_replica = VLog,
-                committed_cache_replica = Committed,
                 partition_state_replica = StateReplica}}.
 
 handle_call(shutdown, _From, State) ->
@@ -182,14 +172,14 @@ handle_info(Info, State) ->
 %%
 -spec vlog_read_internal(term(), partition_id(), key(), pvc_vc(), atom()) -> ok.
 vlog_read_internal(Coordinator, Partition, Key, MaxVC, VLog) ->
-    {Value, CommitVC} = materializer_vnode:pvc_replica_read(Partition, Key, MaxVC, VLog),
+    {Value, CommitVC} = pvc_storage_vnode:read_key(Partition, Key, MaxVC, VLog),
     gen_fsm:send_event(Coordinator, {readreturn, Partition, Key, Value, CommitVC, MaxVC}).
 
 -spec read_with_scan_internal(term(), index_node(), key(), sets:set(), pvc_vc(), #state{}) -> ok.
 read_with_scan_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCaggr, State = #state{
     partition_state_replica = AtomicCache
 }) ->
-    MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache),
+    MostRecentVC = pvc_storage_vnode:get_most_recent_vc(IndexNode, AtomicCache),
     case check_time(Partition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
             erlang:send_after(WaitTime, self(), {wait_scan, Coordinator, IndexNode, Key, HasRead, VCaggr}),
@@ -241,8 +231,8 @@ find_max_vc({CurrentPartition, _} = IndexNode, HasRead, VCaggr, AtomicCache) ->
     %% If this is the first partition we're reading, our MaxVC will be
     %% the current MostRecentVC at this partition
     MaxVC = case sets:size(HasRead) of
-        0 -> clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache);
-        _ -> logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr)
+        0 -> pvc_storage_vnode:get_most_recent_vc(IndexNode, AtomicCache);
+        _ -> pvc_storage_vnode:get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr)
     end,
 
     %% If the selected time is too old, we should abort the read
@@ -305,20 +295,20 @@ all_ready([]) ->
     true;
 
 all_ready([Node | Rest]) ->
-    try
-        %% TODO(borja): Change this to PVC storage node once done
-        Res = riak_core_vnode_master:sync_command(Node,
-                                                  pvc_check_servers_ready,
-                                                  ?CLOCKSI_MASTER,
-                                                  infinity),
-
-        case Res of
-            false -> false;
-            true ->
-                all_ready(Rest)
-        end
+    Res = try
+        riak_core_vnode_master:sync_command(Node,
+                                            tables_ready,
+                                            pvc_storage_vnode_master,
+                                            infinity)
     catch _:_  ->
+        %% If virtual node is not up and runnning for any reason, return false
         false
+    end,
+    case Res of
+        false ->
+            false;
+        true ->
+            all_ready(Rest)
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

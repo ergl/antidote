@@ -29,7 +29,8 @@
 
 %% states
 -export([client_command/3,
-         read_result/2]).
+         read_result/2,
+         decide_vote/2]).
 
 %% gen_fsm callbacks
 -export([init/1,
@@ -45,6 +46,9 @@
 -export_type([ws/0,
               partitions/0]).
 
+%% TODO(borja): Implement index operations
+%% TODO(borja): Make a per-partition writeset to send to pvc_storage_vnode
+%%              Right now, it's global. That's a problem for unsafe_load
 -record(state, {
     %% Client PID
     from :: pid(),
@@ -85,9 +89,15 @@ init([From]) ->
 
 %% States
 
--spec client_command(term(), pid(), fsm_state()) -> step(_).
+-spec client_command(term(), pid(), fsm_state()) -> step(_) | stop().
+client_command({unsafe_load, NKeys, Size}, Sender, State) ->
+    unsafe_load_internal(NKeys, Size, State#state{from=Sender});
+
 client_command({read, Key}, Sender, State) ->
     read_internal(Key, State#state{from=Sender});
+
+client_command({read_batch, Keys}, Sender, State) ->
+    read_batch_internal(Keys, State#state{from=Sender});
 
 client_command({update, Key, Value}, Sender, State) ->
     update_internal(Key, Value, State#state{from=Sender});
@@ -108,6 +118,26 @@ read_result({error, maxvc_bad_vc}, State) ->
 read_result({readreturn, From, _Key, Value, VCdep, Vcaggr}, State=#state{transaction=Tx}) ->
     gen_fsm:reply(State#state.from, {ok, Value}),
     {next_state, client_command, State#state{transaction=update_transaction(From, VCdep, Vcaggr, Tx)}}.
+
+-spec decide_vote({vote, partition_id(), term()}, fsm_state()) -> stop().
+decide_vote({vote, From, Vote}, State = #state{num_to_ack=NAck,
+                                               ack_outcome=AccOutcome}) ->
+
+    case Vote of
+        {error, Reason} ->
+            decide(State#state{num_to_ack=0, ack_outcome = {error, Reason}});
+
+        {ok, SeqNumber} ->
+            {ok, PrevCommitVC} = AccOutcome,
+            CommitVC = pvc_vclock:set_time(From, SeqNumber, PrevCommitVC),
+            NewState = State#state{ack_outcome={ok, CommitVC}},
+            case NAck > 1 of
+                true ->
+                    {next_state, decide_vote, NewState#state{num_to_ack=NAck - 1}};
+                false ->
+                    decide(NewState)
+            end
+    end.
 
 %% internal
 
@@ -145,6 +175,23 @@ update_transaction(From, VCdep, Vcaggr, Tx = #transaction{
                    pvc_vcaggr=NewVCaggr,
                    pvc_hasread=NewHasRead}.
 
+-spec unsafe_load_internal(non_neg_integer(), non_neg_integer(), fsm_state()) -> stop().
+unsafe_load_internal(NKeys, Size, State) ->
+    Val = crypto:strong_rand_bytes(Size),
+    NewState = unsafe_loop(NKeys, Val, State),
+    commit(NewState).
+
+unsafe_loop(0, _, State) ->
+    State;
+
+unsafe_loop(N, Val, State=#state{writeset=WS, updated_partitions=Partitions}) ->
+    Key = integer_to_binary(N, 36),
+    Partition = log_utilities:get_key_partition(Key),
+    NewWriteSet = orddict:store(Key, Val, WS),
+    NewPartitions = ordsets:add_element(Partition, Partitions),
+    NewState = State#state{writeset=NewWriteSet, updated_partitions=NewPartitions},
+    unsafe_loop(N - 1, Val, NewState).
+
 -spec read_internal(key(), fsm_state()) -> step(read_result | client_command).
 read_internal(Key, State=#state{from=Sender,
                                 writeset=WS,
@@ -160,6 +207,12 @@ read_internal(Key, State=#state{from=Sender,
             gen_fsm:reply(Sender, {ok, Value}),
             {next_state, client_command, State}
     end.
+
+%% TODO(borja): Implement this
+-spec read_batch_internal(key(), fsm_state()) -> step(client_command).
+read_batch_internal(_Keys, State) ->
+    gen_fsm:reply(State#state.from, {ok, []}),
+    {next_state, client_command, State}.
 
 -spec update_internal(key(), val(), fsm_state()) -> step(client_command).
 update_internal(Key, Value, State=#state{from=Sender,
@@ -189,25 +242,38 @@ update_batch_internal(Updates, State=#state{from=Sender}) ->
 
 -spec commit(fsm_state()) -> step(decide_vote) | stop().
 commit(State=#state{from=From,
-                    writeset=_WS,
-                    transaction=_Transaction,
-                    updated_partitions=_Partitions}) ->
+                    writeset=WS,
+                    transaction=Transaction,
+                    updated_partitions=Partitions}) ->
 
-    gen_fsm:reply(From, ok),
+    case Partitions of
+        [] ->
+            gen_fsm:reply(From, ok),
+            {stop, normal, State};
+
+        _ ->
+            Ack = ordsets:size(Partitions),
+            TxId = Transaction#transaction.txn_id,
+            CommitVC = Transaction#transaction.pvc_vcdep,
+            ok = pvc_storage_vnode:prepare(Partitions, TxId, WS, CommitVC),
+            {next_state, decide_vote, State#state{num_to_ack=Ack, ack_outcome={ok, CommitVC}}}
+    end.
+
+-spec decide(fsm_state()) -> stop().
+decide(State=#state{from=Sender,
+                    ack_outcome=Outcome,
+                    transaction = Transaction,
+                    updated_partitions = UpdatedPartitions}) ->
+
+    OutcomeMsg = case Outcome of
+        {ok, _} -> ok;
+        Err -> Err
+    end,
+    gen_fsm:reply(Sender, OutcomeMsg),
+
+    TxId = Transaction#transaction.txn_id,
+    ok = pvc_storage_vnode:decide(UpdatedPartitions, TxId, Outcome),
     {stop, normal, State}.
-
-%% TODO(borja): Implement update commit
-%%    case Partitions of
-%%        [] ->
-%%            gen_fsm:reply(From, ok),
-%%            {stop, normal, State};
-%%        _ ->
-%%            Ack = ordsets:size(Partitions),
-%%            TxId = Transaction#transaction.txn_id,
-%%            CommitVC = Transaction#transaction.pvc_vcdep,
-%%            ok = pvc_vnode:prepare(Partitions, TxId, WS, CommitVC),
-%%            {next_state, decide_vote, State#state{num_to_ack=Ack, ack_outcome={ok, CommitVC}}}
-%%    end.
 
 -spec read_abort(fsm_state()) -> stop().
 read_abort(State=#state{from=From,

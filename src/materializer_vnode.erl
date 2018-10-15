@@ -98,6 +98,7 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
             internal_read(Key, Type, SnapshotTime, TxId, MatState)
     end.
 
+%% @deprecated
 -spec pvc_replica_read(partition_id(), key(), pvc_vc(), atom() | cache_id()) -> {val(), pvc_vc()}.
 pvc_replica_read(Partition, Key, SnapshotTime, VLogCache) ->
     case ets:info(VLogCache) of
@@ -128,6 +129,7 @@ update(Key, DownstreamOp) ->
         materializer_vnode_master
     ).
 
+%% @deprecated
 -spec pvc_update(clocksi_payload()) -> ok | {error, reason()}.
 pvc_update(Payload = #clocksi_payload{key = Key}) ->
     IndexNode = log_utilities:get_key_partition(Key),
@@ -311,6 +313,7 @@ handle_command({check_ready}, _Sender, State = #mat_state{partition=Partition, i
 handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
     {reply, read(Key, Type, SnapshotTime, Transaction, State), State};
 
+%% @deprecated
 handle_command({pvc_read, Key, SnapshotTime}, _Sender, State) ->
     {reply, pvc_internal_read(Key, SnapshotTime, State#mat_state.pvc_vlog_cache), State};
 
@@ -318,6 +321,7 @@ handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
     {reply, ok, State};
 
+%% @deprecated
 handle_command({pvc_update, Payload}, _Sender, State) ->
     ok = pvc_update_ops_bypass(Payload, State),
     {reply, ok, State};
@@ -463,6 +467,7 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
             false
     end.
 
+%% @deprecated
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
 -spec pvc_internal_read(key(), pvc_vc(), cache_id()) -> {val(), pvc_vc()}.
 pvc_internal_read(Key, MinVC, VLogCache) ->
@@ -822,6 +827,7 @@ tuple_to_cached_ops(Tuple) ->
     Ops = Tuple,
     {Key, Length, Ops}.
 
+%% @deprecated
 %% @doc Simplified materializer update for pvc
 %%
 %%      Instead of storing ops and applying those to the previous

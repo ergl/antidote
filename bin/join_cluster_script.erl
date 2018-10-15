@@ -338,12 +338,14 @@ check_ready(Node) ->
 
     VNodeReady = rpc:call(Node, clocksi_vnode, check_tables_ready, []),
     ReadServersReady = rpc:call(Node, clocksi_vnode, check_servers_ready, []),
+    PVCVNodeReady = rpc:call(Node, pvc_storage_vnode, check_tables_ready, []),
     PVCReplicaReady = rpc:call(Node, pvc_read_replica, all_ready, []),
     MaterializerReady = rpc:call(Node, materializer_vnode, check_tables_ready, []),
     StableMetadataReady = rpc:call(Node, stable_meta_data_server, check_tables_ready, []),
 
     NodeReady = VNodeReady
         andalso ReadServersReady
+        andalso PVCVNodeReady
         andalso PVCReplicaReady
         andalso MaterializerReady
         andalso StableMetadataReady,

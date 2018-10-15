@@ -107,6 +107,7 @@ start_bg_processes(MetaDataName) ->
     %% Ensure vnodes are running and meta_data
     ok = dc_utilities:ensure_all_vnodes_running_master(inter_dc_log_sender_vnode_master),
     ok = dc_utilities:ensure_all_vnodes_running_master(clocksi_vnode_master),
+    ok = dc_utilities:ensure_all_vnodes_running_master(pvc_storage_vnode_master),
     ok = dc_utilities:ensure_all_vnodes_running_master(logging_vnode_master),
     ok = dc_utilities:ensure_all_vnodes_running_master(materializer_vnode_master),
     lists:foreach(fun(Node) ->
@@ -134,7 +135,7 @@ start_bg_processes(MetaDataName) ->
                            ok
                        end, Responses2),
     lager:info("Starting pvc read replicas"),
-    Responses3 = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, pvc_check_servers_ready),
+    Responses3 = dc_utilities:bcast_my_vnode_sync(pvc_storage_vnode_master, read_replica_ready),
     ok = lists:foreach(fun({_, true}) ->
                            ok
                        end, Responses3),
@@ -161,6 +162,7 @@ check_node_restart() ->
             %% Ensure vnodes are running and meta_data
             ok = dc_utilities:ensure_local_vnodes_running_master(inter_dc_log_sender_vnode_master),
             ok = dc_utilities:ensure_local_vnodes_running_master(clocksi_vnode_master),
+            ok = dc_utilities:ensure_local_vnodes_running_master(pvc_storage_vnode_master),
             ok = dc_utilities:ensure_local_vnodes_running_master(logging_vnode_master),
             ok = dc_utilities:ensure_local_vnodes_running_master(materializer_vnode_master),
             wait_init:wait_ready(MyNode),
@@ -187,7 +189,7 @@ check_node_restart() ->
                                    ok
                                end, Responses2),
             lager:info("Starting pvc read replicas"),
-            Responses3 = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, pvc_check_servers_ready),
+            Responses3 = dc_utilities:bcast_my_vnode_sync(pvc_storage_vnode_master, read_replica_ready),
             ok = lists:foreach(fun({_, true}) ->
                                    ok
                                end, Responses3),

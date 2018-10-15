@@ -80,7 +80,9 @@
     read_servers :: non_neg_integer(),
     prepared_dict :: orddict:orddict(),
 
+    %% @deprecated
     pvc_atomic_state :: cache_id(),
+    %% @deprecated
     pvc_commitqueue :: pvc_commit_queue:cqueue()
 }).
 
@@ -113,6 +115,7 @@ async_read_data_item(Node, Transaction, Key, Type) ->
         {fsm, self()}
     ).
 
+%% @deprecated
 %% @doc Hack-ish way to get the most recent vc in this partition
 %%
 %% Called from clocksi_readitem_server, couples them together,
@@ -127,6 +130,7 @@ pvc_get_most_recent_vc(Node, TableName) ->
         Value -> Value
     end.
 
+%% @deprecated
 -spec pvc_process_cqueue(index_node()) -> ok.
 pvc_process_cqueue(Node) ->
     riak_core_vnode_master:command(Node, pvc_process_cqueue, ?CLOCKSI_MASTER).
@@ -190,6 +194,7 @@ get_active_txns_internal(TableName) ->
 send_min_prepared(Partition) ->
     dc_utilities:call_local_vnode(Partition, clocksi_vnode_master, {send_min_prepared}).
 
+%% @deprecated
 %% @doc Sends a prepare request to a Node involved in a tx identified by TxId
 prepare(UpdatedPartitions, Tx = #transaction{transactional_protocol = pvc}) ->
     lists:foreach(fun({Node, WriteSet}) ->
@@ -211,6 +216,7 @@ prepare(ListofNodes, TxId) ->
         )
     end, ok, ListofNodes).
 
+%% @deprecated
 -spec decide(list(), tx(), vectorclock(), boolean()) -> ok.
 decide(OpsAndIndices, Tx, CommitVC, Outcome) ->
     %% Sanity check
@@ -253,6 +259,7 @@ commit(ListofNodes, TxId, CommitTime) ->
         )
     end, ok, ListofNodes).
 
+%% @deprecated
 abort(UpdatedPartitions, Tx = #transaction{
     transactional_protocol = pvc
 }) ->
@@ -404,22 +411,19 @@ handle_command(check_servers_ready, _Sender, SD0 = #state{partition = Partition}
     Result = clocksi_readitem_server:check_partition_ready(node(), Partition, ?READ_CONCURRENCY),
     {reply, Result, SD0};
 
-handle_command(pvc_check_servers_ready, _Sender, SD0 = #state{partition = Partition, read_servers = Serv}) ->
-    ok = pvc_read_replica:start_replicas(Partition, Serv),
-    Node = node(),
-    Result = pvc_read_replica:replica_ready(Node, Partition, ?READ_CONCURRENCY),
-    {reply, Result, SD0};
-
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 
+%% @deprecated
 handle_command(pvc_mostrecentvc, _Sender, State) ->
     {reply, pvc_get_mrvc(State#state.pvc_atomic_state), State};
 
+%% @deprecated
 handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare_internal(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
+%% @deprecated
 handle_command({pvc_decide, Transaction, WriteSet, IndexList, CommitVC, Outcome}, _Sender, State = #state{
     partition = Partition,
     pvc_commitqueue = CQueue
@@ -441,19 +445,20 @@ handle_command({pvc_decide, Transaction, WriteSet, IndexList, CommitVC, Outcome}
     end,
     {noreply, State#state{pvc_commitqueue = NewQueue}};
 
+%% @deprecated
 handle_command({pvc_abort, Transaction, WriteSet}, _Sender, State = #state{
     partition = Partition
 }) ->
     ok = pvc_append_abort(Partition, Transaction#transaction.txn_id, WriteSet),
     {noreply, State};
 
+%% @deprecated
 handle_command(pvc_process_cqueue, _Sender, State = #state{
     partition = Partition,
     pvc_commitqueue = CQueue,
     committed_tx = CommittedTx,
     pvc_atomic_state = PVCState
 }) ->
-    %% TODO(borja): Don't dequeue just yet, but wait until we're done here?
     {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(CQueue),
     ok = case ReadyTx of
         [] ->
@@ -586,10 +591,12 @@ pvc_atomic_state_init(Partition) ->
 pvc_faa_lastprep(PVCTable) ->
     ets:update_counter(PVCTable, seq_number, 1).
 
+%% @deprecated
 -spec pvc_get_mrvc(cache_id()) -> pvc_vc().
 pvc_get_mrvc(PVCTable) ->
     ets:lookup_element(PVCTable, mrvc, 2).
 
+%% @deprecated
 -spec pvc_update_mrvc(cache_id(), pvc_vc()) -> ok.
 pvc_update_mrvc(PVCTable, NewVC) ->
     true = ets:update_element(PVCTable, mrvc, {2, NewVC}),
@@ -647,6 +654,7 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
+%% @deprecated
 pvc_prepare_internal(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
     partition = Partition,
     committed_tx = CommittedTransactions,
@@ -692,6 +700,7 @@ pvc_prepare_internal(Transaction = #transaction{txn_id = TxnId}, WriteSet, State
     Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
 
+%% @deprecated
 %% @doc Check if any of the keys in a transaction writeset are too stale with
 %%      respect to the most recent committed version.
 %%
@@ -716,6 +725,7 @@ pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
             pvc_are_keys_stale(SelfPartition, Keys, PrepareVC, CommittedTx)
     end.
 
+%% @deprecated
 -spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), pvc_vc()) -> ok.
 pvc_store_key_commitvc(Partition, CommittedTx, WriteSet, CommitVC) ->
     PartitionTime = pvc_vclock:get_time(Partition, CommitVC),
@@ -723,6 +733,7 @@ pvc_store_key_commitvc(Partition, CommittedTx, WriteSet, CommitVC) ->
     true = ets:insert(CommittedTx, Objects),
     ok.
 
+%% @deprecated
 %% @doc Propagate prepare log records for all keys in this partition with the given prepare time.
 -spec pvc_append_prepare(partition_id(), txid(), list(), pvc_vc()) -> ok.
 pvc_append_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
@@ -739,6 +750,7 @@ pvc_append_prepare(SelfPartition, TxnId, WriteSet, PrepareVC) ->
 
     pvc_append_to_logs(SelfPartition, WriteSet, PrepareRecord).
 
+%% @deprecated
 %% @doc Propagate abort log records for all keys in this partition.
 -spec pvc_append_abort(partition_id(), txid(), list()) -> ok.
 pvc_append_abort(SelfPartition, TxnId, WriteSet) ->
@@ -750,6 +762,7 @@ pvc_append_abort(SelfPartition, TxnId, WriteSet) ->
 
     pvc_append_to_logs(SelfPartition, WriteSet, Record).
 
+%% @deprecated
 -spec pvc_append_commits(
     partition_id(),
     txid(),
@@ -785,6 +798,7 @@ pvc_append_commits(SelfPartition, TxnId, WriteSet, CommitVC, MaxVC) ->
         {ok, _} = logging_vnode:append_commit(IndexNode, LogId, Record)
     end, Logs).
 
+%% @deprecated
 %% @doc Propagate a log record for all keys in this partition.
 -spec pvc_append_to_logs(partition_id(), list(), #log_operation{}) -> ok.
 pvc_append_to_logs(SelfPartition, WriteSet, Record) ->
@@ -793,6 +807,7 @@ pvc_append_to_logs(SelfPartition, WriteSet, Record) ->
         {ok, _} = logging_vnode:append(IndexNode, LogId, Record)
     end, Logs).
 
+%% @deprecated
 %% @doc Get the list of log identifiers for the keys in this partition.
 -spec pvc_get_logs_from_keys(partition_id(), list()) -> list().
 pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
@@ -808,6 +823,7 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
         end
     end, ordsets:new(), WriteSet).
 
+%% @deprecated
 %% @doc Update the materializer cache with the newest snapshots (VLog)
 -spec pvc_vlog_apply(txid(), list(), pvc_vc(), list()) -> ok | error.
 pvc_vlog_apply(TxnId, [{FirstKey,_,_}|_]=WriteSet, CommitVC, IndexList) ->

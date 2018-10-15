@@ -28,9 +28,9 @@
 
 -record(cqueue, {
     %% The main commit TxId queue
-    q :: queue:queue({txid(), list()}),
+    q :: queue:queue(txid()),
     %% Mapping between txids and their write sets
-    write_sets :: dict:dict(txid(), list()),
+    write_sets :: dict:dict(txid(), pvc_fsm:ws()),
     %% For the ready tx, put their ids with their commit VC
     %% and their index key list here
     ready_tx :: dict:dict(txid(), {pvc_vc(), list()}),
@@ -40,20 +40,14 @@
 
 -opaque cqueue() :: #cqueue{}.
 
--type writeset() :: [{key(), term(), term()}].
-
 -export_type([cqueue/0]).
 
 -export([new/0,
          enqueue/3,
-         dequeue_ready/1,
-         ready/4,
          remove/2,
+         ready/4,
+         dequeue_ready/1,
          contains_disputed/2]).
-
--spec contains_disputed(writeset(), cqueue()) -> boolean().
-contains_disputed(WS, #cqueue{write_sets = WSDict}) ->
-    is_ws_disputed(dict:to_list(WSDict), WS).
 
 -spec new() -> cqueue().
 new() ->
@@ -62,42 +56,56 @@ new() ->
             write_sets = dict:new(),
             discarded_tx = sets:new()}.
 
--spec enqueue(txid(), writeset(), cqueue()) -> cqueue().
-enqueue(TxId, WS, CQueue = #cqueue{q = Queue, write_sets = WSDict}) ->
-    CQueue#cqueue{q = queue:in(TxId, Queue),
-                  write_sets = dict:store(TxId, WS, WSDict)}.
+%% @doc Enqueue the given transaction id with an associated writeset
+-spec enqueue(txid(), pvc_fsm:ws(), cqueue()) -> cqueue().
+enqueue(TxId, WS, CQueue=#cqueue{q=Queue, write_sets=WSDict}) ->
+    CQueue#cqueue{q=queue:in(TxId, Queue),
+                  write_sets=dict:store(TxId, WS, WSDict)}.
 
--spec ready(txid(), list(), pvc_vc(), cqueue()) -> cqueue().
-ready(TxId, IndexList, VC, CQueue = #cqueue{
-    q = Queue,
-    ready_tx = ReadyDict
-}) ->
-    case queue:member(TxId, Queue) of
-        false ->
-            CQueue;
-        true ->
-            CQueue#cqueue{ready_tx = dict:store(TxId, {VC, IndexList}, ReadyDict)}
-    end.
-
+%% @doc Remove the given transaction from the queue.
+%%
+%%      Given that Erlang doesn't allow to remove elements
+%%      from a queue, we maintain a separate list of transactions
+%%      that have been removed. On dequeue, we keep dequeing until
+%%      we find the first element not on the discarted list.
+%%
 -spec remove(txid(), cqueue()) -> cqueue().
-remove(TxId, CQueue = #cqueue{
-    q = Queue,
-    write_sets = WSDict,
-    discarded_tx = DiscardedSet
-}) ->
+remove(TxId, CQueue=#cqueue{q=Queue,
+                            write_sets=WSDict,
+                            discarded_tx=DiscardedSet}) ->
+
     case queue:member(TxId, Queue) of
         false ->
             CQueue;
         true ->
-            CQueue#cqueue{write_sets = dict:erase(TxId, WSDict),
-                          discarded_tx = sets:add_element(TxId, DiscardedSet)}
+            CQueue#cqueue{write_sets=dict:erase(TxId, WSDict),
+                          discarded_tx=sets:add_element(TxId, DiscardedSet)}
     end.
 
--spec dequeue_ready(cqueue()) -> {[{txid(), writeset(), pvc_vc(), list()}], cqueue()}.
-dequeue_ready(#cqueue{q = Queue,
-                  write_sets = WSDict,
-                  ready_tx = ReadyDict,
-                  discarded_tx = DiscardedSet}) ->
+%% @doc Mark the given transaction as ready
+%%
+%%      Add it to the read_tx dict. On dequeue, only keep
+%%      the elements that are ready
+%%
+-spec ready(txid(), list(), pvc_vc(), cqueue()) -> cqueue().
+ready(TxId, IndexList, VC, CQueue = #cqueue{q=Queue,
+                                            ready_tx=ReadyDict}) ->
+    case queue:member(TxId, Queue) of
+        false ->
+            CQueue;
+        true ->
+            CQueue#cqueue{ready_tx=dict:store(TxId, {VC, IndexList}, ReadyDict)}
+    end.
+
+-spec contains_disputed(pvc_fsm:ws(), cqueue()) -> boolean().
+contains_disputed(WS, #cqueue{write_sets=WSDict}) ->
+    is_ws_disputed(dict:to_list(WSDict), WS).
+
+-spec dequeue_ready(cqueue()) -> {[{txid(), pvc_fsm:ws(), pvc_vc(), list()}], cqueue()}.
+dequeue_ready(#cqueue{q=Queue,
+                      write_sets=WSDict,
+                      ready_tx=ReadyDict,
+                      discarded_tx=DiscardedSet}) ->
 
     {Acc, NewCQueue} = get_ready(queue:out(Queue), WSDict, ReadyDict, DiscardedSet, []),
     {lists:reverse(Acc), NewCQueue}.
@@ -139,7 +147,7 @@ from(Queue, WSDIct, ReadyDict, DiscardedDict) ->
             ready_tx = ReadyDict,
             discarded_tx = DiscardedDict}.
 
--spec is_ws_disputed([{txid(), writeset()}], writeset()) -> boolean().
+-spec is_ws_disputed([{txid(), pvc_fsm:ws()}], pvc_fsm:ws()) -> boolean().
 is_ws_disputed([], _) ->
     false;
 
@@ -154,18 +162,18 @@ is_ws_disputed([{_TxId, OtherWS} | Rest], WS) ->
             is_ws_disputed(Rest, WS)
     end.
 
--spec ws_intersect(writeset(), writeset()) -> boolean().
+-spec ws_intersect(pvc_fsm:ws(), pvc_fsm:ws()) -> boolean().
 ws_intersect([], _) ->
     false;
 
 ws_intersect(_, []) ->
     false;
 
-ws_intersect([{Key, _, _} | WS1], WS2) ->
-    case lists:keyfind(Key, 1, WS2) of
+ws_intersect([{Key, _} | WS1], WS2) ->
+    case orddict:is_key(Key, WS2) of
         false ->
             ws_intersect(WS1, WS2);
-        _ ->
+        true ->
             true
     end.
 
@@ -173,8 +181,8 @@ ws_intersect([{Key, _, _} | WS1], WS2) ->
 -ifdef(TEST).
 
 pvc_commit_queue_conflict_test() ->
-    TestWS = [{key_a, ignore, ignore}],
-    TestWS1 = [{key_b, ignore, ignore}],
+    TestWS = [{key_a, ignore}],
+    TestWS1 = [{key_b, ignore}],
 
     CQ = pvc_commit_queue:new(),
 

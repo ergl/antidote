@@ -80,6 +80,7 @@ init(_Args) ->
                             [clockSI_interactive_tx_coord_sup]},
 
     %% PVC replica supervisor
+    PVCStorage = ?VNODE(pvc_storage_vnode_master, pvc_storage_vnode),
     PVCReplicaSup = ?CHILD(pvc_read_replica_sup, supervisor, []),
 
 
@@ -128,6 +129,7 @@ init(_Args) ->
       [LoggingMaster,
        AntidoteConfig,
        RubisKeyGen,
+       PVCStorage,
        PVCReplicaSup,
        ClockSIMaster,
        PVCCoordinator,
