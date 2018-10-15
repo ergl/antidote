@@ -41,23 +41,22 @@
          code_change/4]).
 
 -type ws() :: orddict:orddict(key(), val()).
--type partitions() :: ordsets:ordset(index_node()).
+-type partitions() :: orddict:orddict(index_node(), ws()).
 
 -export_type([ws/0,
               partitions/0]).
 
 %% TODO(borja): Implement index operations
-%% TODO(borja): Make a per-partition writeset to send to pvc_storage_vnode
-%%              Right now, it's global. That's a problem for unsafe_load
 -record(state, {
     %% Client PID
     from :: pid(),
     %% Active Transaction Object
     transaction :: tx(),
-    %% Mapping of keys -> values
+    %% Mapping of keys -> values.
+    %% Used to cache updates for future reads
     writeset = orddict:new() :: ws(),
-    %% Set of updated partitions
-    updated_partitions = ordsets:new() :: partitions(),
+    %% Set of updated partitions, with their appropiate per-partition writeset
+    updated_partitions = orddict:new() :: partitions(),
     %% Reason to abort
     abort_reason = undefined :: atom(),
     %% Partitions to Ack
@@ -184,12 +183,13 @@ unsafe_load_internal(NKeys, Size, State) ->
 unsafe_loop(0, _, State) ->
     State;
 
-unsafe_loop(N, Val, State=#state{writeset=WS, updated_partitions=Partitions}) ->
+unsafe_loop(N, Val, State=#state{updated_partitions=UpdatedPartitions}) ->
     Key = integer_to_binary(N, 36),
     Partition = log_utilities:get_key_partition(Key),
+    WS = get_partition_writeset(Partition, UpdatedPartitions),
     NewWriteSet = orddict:store(Key, Val, WS),
-    NewPartitions = ordsets:add_element(Partition, Partitions),
-    NewState = State#state{writeset=NewWriteSet, updated_partitions=NewPartitions},
+    NewUpdatedPartitions = orddict:store(Partition, NewWriteSet, UpdatedPartitions),
+    NewState = State#state{updated_partitions=NewUpdatedPartitions},
     unsafe_loop(N - 1, Val, NewState).
 
 -spec read_internal(key(), fsm_state()) -> step(read_result | client_command).
@@ -220,9 +220,7 @@ update_internal(Key, Value, State=#state{from=Sender,
                                          updated_partitions=UpdatedPartitions}) ->
     gen_fsm:reply(Sender, ok),
 
-    Partition = log_utilities:get_key_partition(Key),
-    NewWriteSet = orddict:store(Key, Value, WS),
-    NewPartitions = ordsets:add_element(Partition, UpdatedPartitions),
+    {NewWriteSet, NewPartitions} = update_state(Key, Value, WS, UpdatedPartitions),
     {next_state, client_command, State#state{writeset=NewWriteSet,
                                              updated_partitions=NewPartitions}}.
 
@@ -232,9 +230,11 @@ update_batch_internal(Updates, State=#state{from=Sender}) ->
     gen_fsm:reply(Sender, ok),
 
     NewState = lists:foldl(fun({Key, Value}, Acc) ->
-        Partition = log_utilities:get_key_partition(Key),
-        NewWriteSet = orddict:store(Key, Value, Acc#state.writeset),
-        NewPartitions = ordsets:add_element(Partition, Acc#state.updated_partitions),
+        {NewWriteSet, NewPartitions} = update_state(Key,
+                                                    Value,
+                                                    Acc#state.writeset,
+                                                    Acc#state.updated_partitions),
+
         Acc#state{writeset=NewWriteSet, updated_partitions=NewPartitions}
     end, State, Updates),
 
@@ -242,7 +242,6 @@ update_batch_internal(Updates, State=#state{from=Sender}) ->
 
 -spec commit(fsm_state()) -> step(decide_vote) | stop().
 commit(State=#state{from=From,
-                    writeset=WS,
                     transaction=Transaction,
                     updated_partitions=Partitions}) ->
 
@@ -252,18 +251,18 @@ commit(State=#state{from=From,
             {stop, normal, State};
 
         _ ->
-            Ack = ordsets:size(Partitions),
+            Ack = orddict:size(Partitions),
             TxId = Transaction#transaction.txn_id,
             CommitVC = Transaction#transaction.pvc_vcdep,
-            ok = pvc_storage_vnode:prepare(Partitions, TxId, WS, CommitVC),
+            ok = pvc_storage_vnode:prepare(Partitions, TxId, CommitVC),
             {next_state, decide_vote, State#state{num_to_ack=Ack, ack_outcome={ok, CommitVC}}}
     end.
 
 -spec decide(fsm_state()) -> stop().
 decide(State=#state{from=Sender,
                     ack_outcome=Outcome,
-                    transaction = Transaction,
-                    updated_partitions = UpdatedPartitions}) ->
+                    transaction=Transaction,
+                    updated_partitions=UpdatedPartitions}) ->
 
     OutcomeMsg = case Outcome of
         {ok, _} -> ok;
@@ -281,6 +280,30 @@ read_abort(State=#state{from=From,
 
     gen_fsm:reply(From, {error, Reason}),
     {stop, normal, State}.
+
+%% Util functions
+
+%% @doc Util function to update the FSM state with a new client update
+-spec update_state(key(), val(), ws(), partitions()) -> {ws(), partitions()}.
+update_state(Key, Value, WriteSet, UpdatedPartitions) ->
+    Partition = log_utilities:get_key_partition(Key),
+    NewWriteSet = orddict:store(Key, Value, WriteSet),
+    PartitionWS = get_partition_writeset(Partition, UpdatedPartitions),
+    %% Store the per-partition WriteSet
+    NewUpdatedPartitions = orddict:store(Partition,
+                                         orddict:store(Key, Value, PartitionWS),
+                                         UpdatedPartitions),
+    {NewWriteSet, NewUpdatedPartitions}.
+
+%% @doc Util function to implement a default-valued orddict:find
+-spec get_partition_writeset(index_node(), partitions()) -> ws().
+get_partition_writeset(Partition, UpdatedPartitions) ->
+    case orddict:find(Partition, UpdatedPartitions) of
+        error ->
+            [];
+        {ok, Value} ->
+            Value
+    end.
 
 %% gen_fsm mock callbacks
 code_change(_OldVsn, StateName, State, _Extra) -> {ok, StateName, State}.

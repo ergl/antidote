@@ -28,7 +28,7 @@
          check_tables_ready/0]).
 
 %% API
--export([prepare/4,
+-export([prepare/3,
          decide/3,
          get_max_vc/3,
          get_most_recent_vc/2,
@@ -179,17 +179,21 @@ check_tables_ready([IndexNode | Rest]) ->
 
 %% API
 
-prepare(Partitions, TxId, WriteSet, CommitVC) ->
-    lists:foreach(fun(Node) ->
+%% @doc Send a prepare message to all the given partitions
+-spec prepare(pvc_fsm:partitions(), txid(), pvc_vc()) -> ok.
+prepare(Partitions, TxId, CommitVC) ->
+    lists:foreach(fun({Node, WS}) ->
         riak_core_vnode_master:command(
             Node,
-            {prepare, TxId, WriteSet, CommitVC},
+            {prepare, TxId, WS, CommitVC},
             {fsm, undefined, self()},
             pvc_storage_vnode_master)
     end, Partitions).
 
+%% @doc Send a decide message to all the given partitions
+-spec decide(pvc_fsm:partitions(), txid(), term()) -> ok.
 decide(Partitions, TxId, Outcome) ->
-    lists:foreach(fun(Node) ->
+    lists:foreach(fun({Node, _}) ->
         riak_core_vnode_master:command(
             Node,
             {decide, TxId, Outcome},
@@ -400,7 +404,6 @@ process_queue_internal(State=#state{partition=Partition,
                                     partition_state = PartitionState,
                                     last_committed_version_cache = CommittedCache}) ->
 
-    %% TODO(borja): Don't dequeue just yet, but wait until we're done here?
     {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(CommitQueue),
     case ReadyTx of
         [] ->
@@ -430,27 +433,20 @@ process_queue_internal(State=#state{partition=Partition,
 
 %% @doc Apply the updates in the writeset to this partition storage
 %%
-%%      Given that there might be keys in the writeset that are not from
-%%      this partition, get only the ones that should be here.
+%%      All the keys in the writeset are from this partition.
 %%
 -spec vlog_apply_updates(partition_id(), pvc_fsm:ws(), pvc_vc(), cache_id()) -> ok.
 vlog_apply_updates(_Partition, [], _VC, _Storage) ->
     ok;
 
 vlog_apply_updates(Partition, [{Key, Value} | Rest], VC, Storage) ->
-    {KeyPartition, _} = log_utilities:get_key_partition(Key),
-    case Partition of
-        KeyPartition ->
-            VLog = case ets:lookup(Storage, Key) of
-                [] -> pvc_version_log:new(Partition);
-                [{Key, PrevVLog}] -> PrevVLog
-            end,
-            NewtVLog = pvc_version_log:insert(VC, Value, VLog),
-            true = ets:insert(Storage, {Key, NewtVLog}),
-            ok;
-        _ ->
-            vlog_apply_updates(Partition, Rest, VC, Storage)
-    end.
+    VLog = case ets:lookup(Storage, Key) of
+        [] -> pvc_version_log:new(Partition);
+        [{Key, PrevVLog}] -> PrevVLog
+    end,
+    NewVLog = pvc_version_log:insert(VC, Value, VLog),
+    true = ets:insert(Storage, {Key, NewVLog}),
+    vlog_apply_updates(Partition, Rest, VC, Storage).
 
 -spec cache_last_committed_version(partition_id(), pvc_fsm:ws(), pvc_vc(), cache_id()) -> ok.
 cache_last_committed_version(Partition, WS, CommitVC, CommittedCache) ->
