@@ -30,6 +30,7 @@
 %% states
 -export([client_command/3,
          read_result/2,
+         read_batch_result/2,
          decide_vote/2]).
 
 %% gen_fsm callbacks
@@ -52,6 +53,12 @@
     from :: pid(),
     %% Active Transaction Object
     transaction :: tx(),
+    %% Read accumulator for batch reads
+    %% Contains the list of keys that have been requested
+    %% When a key is read, it is swapped for its value
+    read_accumulator = [] :: [key() | val()],
+    %% Keys to be read (batch reads)
+    read_remaining = [] :: [key()],
     %% Mapping of keys -> values.
     %% Used to cache updates for future reads
     writeset = orddict:new() :: ws(),
@@ -125,6 +132,16 @@ read_result({error, maxvc_bad_vc}, State) ->
 read_result({readreturn, From, _Key, Value, VCdep, Vcaggr}, State=#state{transaction=Tx}) ->
     gen_fsm:reply(State#state.from, {ok, Value}),
     {next_state, client_command, State#state{transaction=update_transaction(From, VCdep, Vcaggr, Tx)}}.
+
+-spec read_batch_result(term(), fsm_state()) -> step(read_batch_result | client_command) | stop().
+read_batch_result({error, maxvc_bad_vc}, State) ->
+    read_abort(State#state{abort_reason=pvc_bad_vc});
+
+read_batch_result({key_was_updated, Key, Value}, State) ->
+    read_batch_loop(Key, Value, State);
+
+read_batch_result({readreturn, From, Key, Value, VCdep, Vcaggr}, State=#state{transaction=Tx}) ->
+    read_batch_loop(Key, Value, State#state{transaction=update_transaction(From, VCdep, Vcaggr, Tx)}).
 
 -spec decide_vote({vote, partition_id(), term()}, fsm_state()) -> stop().
 decide_vote({vote, From, Vote}, State = #state{num_to_ack=NAck,
@@ -270,11 +287,55 @@ read_internal(Key, State=#state{from=Sender,
             {next_state, client_command, State}
     end.
 
-%% TODO(borja): Implement this
--spec read_batch_internal(key(), fsm_state()) -> step(client_command).
-read_batch_internal(_Keys, State) ->
-    gen_fsm:reply(State#state.from, {ok, []}),
-    {next_state, client_command, State}.
+-spec read_batch_internal(key(), fsm_state()) -> step(read_batch_result).
+read_batch_internal([Key | Rest]=Keys, State=#state{transaction=Transaction,writeset=WS}) ->
+    ok = perform_read_batch(Key, Transaction, WS),
+    {next_state, read_batch_result, State#state{read_accumulator=Keys,
+                                                read_remaining=Rest}}.
+
+-spec perform_read_batch(key(), tx(), ws()) -> ok.
+perform_read_batch(Key, Transaction, WriteSet) ->
+    case orddict:find(Key, WriteSet) of
+        error ->
+            HasRead = Transaction#transaction.pvc_hasread,
+            VCaggr = Transaction#transaction.pvc_vcaggr,
+            pvc_read_replica:async_read(Key, HasRead, VCaggr);
+        {ok, Value} ->
+            gen_fsm:send_event(self(), {key_was_updated, Key, Value})
+    end.
+
+-spec read_batch_loop(key(), val(), fsm_state()) -> step(client_command | read_batch_result).
+read_batch_loop(Key, Value, State=#state{from=Sender,
+                                         writeset=WS,
+                                         transaction=Transaction,
+                                         read_accumulator=ReadAcc,
+                                         read_remaining=RemainingKeys}) ->
+
+    %% Replace the key with the value inside ReadAcc
+    ReadValues = replace(ReadAcc, Key, Value),
+    case RemainingKeys of
+        [] ->
+            gen_fsm:reply(Sender, {ok, ReadValues}),
+            {next_state, client_command, State#state{read_accumulator=[]}};
+        [NextKey | Rest] ->
+            ok = perform_read_batch(NextKey, Transaction, WS),
+            {next_state, read_batch_result, State#state{read_remaining=Rest,
+                                                        read_accumulator=ReadValues}}
+    end.
+
+%% @doc Replaces the first occurrence of a key
+%%
+%%      Errors if the key is not present in the list
+%%
+-spec replace([key() | val()], key(), val()) -> [key() | val()] | error.
+replace([], _, _) ->
+    error;
+
+replace([Key | Rest], Key, Value) ->
+    [Value | Rest];
+
+replace([OtherKey | Rest], Key, Value) ->
+    [OtherKey | replace(Rest, Key, Value)].
 
 -spec update_internal(key(), val(), fsm_state()) -> step(client_command).
 update_internal(Key, Value, State=#state{from=Sender,
