@@ -20,11 +20,10 @@
 
 -module(pvc_commit_log).
 
--include("antidote.hrl").
 -include("pvc.hrl").
 
 -record(clog, {
-    at :: partition_id(),
+    at :: chash:index_as_int(),
     smallest :: non_neg_integer() | bottom,
     data :: gb_trees:tree(non_neg_integer(), pvc_vc())
 }).
@@ -37,7 +36,7 @@
          insert/2,
          get_smaller_from_dots/3]).
 
--spec new_at(partition_id()) -> clog().
+-spec new_at(chash:index_as_int()) -> clog().
 new_at(AtId) ->
     #clog{at=AtId, smallest=bottom, data=gb_trees:empty()}.
 
@@ -84,7 +83,7 @@ gc_tree(Start, Edge, Acc) when Edge > Start ->
 %%
 %%    max { e \in Clog | forall idx. e[idx] <= VC[idx] }
 %%
--spec get_smaller_from_dots([partition_id()], pvc_vc(), clog()) -> pvc_vc().
+-spec get_smaller_from_dots([chash:index_as_int()], pvc_vc(), clog()) -> pvc_vc().
 get_smaller_from_dots([], _, #clog{data=Tree}) ->
     case gb_trees:is_empty(Tree) of
         true ->
@@ -132,7 +131,7 @@ get_smaller_from_dots(Dots, VC, Tree, Acc) ->
 %%
 %%  vc_ge_for_dots([a, ... , z], A, B) == A[a] =< B[b] ^ .. ^ A[z] =< B[z]
 %%
--spec vc_ge_for_dots(list(partition_id()), pvc_vc(), pvc_vc()) -> boolean().
+-spec vc_ge_for_dots(list(chash:index_as_int()), pvc_vc(), pvc_vc()) -> boolean().
 vc_ge_for_dots(Dots, A, B) ->
     Compared = lists:map(fun(Dot) ->
         {pvc_vclock:get_time(Dot, A), pvc_vclock:get_time(Dot, B)}

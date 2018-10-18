@@ -20,7 +20,9 @@
 
 -module(pvc).
 
+%% For types key, val, reason
 -include("antidote.hrl").
+-include("pvc.hrl").
 
 %% PVC-Only API
 -export([start_transaction/0,
@@ -35,7 +37,7 @@
 
 %% New FSM API
 
--spec start_transaction() -> {ok, txid()} | {error, reason()}.
+-spec start_transaction() -> {ok, txn_id()} | {error, reason()}.
 start_transaction() ->
     {ok, _} = pvc_coord_sup:start_fsm([self()]),
     receive
@@ -43,25 +45,25 @@ start_transaction() ->
         Err -> {error, Err}
     end.
 
--spec read(key(), txid()) -> {ok, val()} | {error, reason()}.
-read(Key, #tx_id{server_pid=Pid}) ->
-    gen_fsm:sync_send_event(Pid, {read, Key}, ?OP_TIMEOUT).
+-spec read(key(), txn_id()) -> {ok, val()} | {error, reason()}.
+read(Key, #txn_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, {read, Key}, infinity).
 
--spec read_batch([key()], txid()) -> {ok, [val()]} | {error, reason()}.
-read_batch(Keys, #tx_id{server_pid=Pid}) ->
-    gen_fsm:sync_send_event(Pid, {read_batch, Keys}, ?OP_TIMEOUT).
+-spec read_batch([key()], txn_id()) -> {ok, [val()]} | {error, reason()}.
+read_batch(Keys, #txn_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, {read_batch, Keys}, infinity).
 
--spec update_batch([{key(), val()}], txid()) -> ok.
-update_batch(Updates, #tx_id{server_pid=Pid}) ->
-    gen_fsm:sync_send_event(Pid, {update_batch, Updates}, ?OP_TIMEOUT).
+-spec update_batch([{key(), val()}], txn_id()) -> ok.
+update_batch(Updates, #txn_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, {update_batch, Updates}, infinity).
 
--spec update(key(), val(), txid()) -> ok.
-update(Key, Val, #tx_id{server_pid=Pid}) ->
-    gen_fsm:sync_send_event(Pid, {update, Key, Val}, ?OP_TIMEOUT).
+-spec update(key(), val(), txn_id()) -> ok.
+update(Key, Val, #txn_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, {update, Key, Val}, infinity).
 
--spec commit_transaction(txid()) -> ok | {error, reason()}.
-commit_transaction(#tx_id{server_pid=Pid}) ->
-    gen_fsm:sync_send_event(Pid, commit, ?OP_TIMEOUT).
+-spec commit_transaction(txn_id()) -> ok | {error, reason()}.
+commit_transaction(#txn_id{server_pid=Pid}) ->
+    gen_fsm:sync_send_event(Pid, commit, infinity).
 
 %% @doc UNSAFE: Blindly write a random binary blobs of size Size to N keys
 %%
@@ -71,8 +73,8 @@ commit_transaction(#tx_id{server_pid=Pid}) ->
 %% The keys that are updated are integer_to_binary(1, 36) .. integer_to_binary(N, 36)
 unsafe_load(N, Size) ->
     case start_transaction() of
-        {ok, #tx_id{server_pid = Pid}} ->
-            gen_fsm:sync_send_event(Pid, {unsafe_load, N, Size}, ?OP_TIMEOUT);
+        {ok, #txn_id{server_pid = Pid}} ->
+            gen_fsm:sync_send_event(Pid, {unsafe_load, N, Size}, infinity);
         Err ->
             {error, Err}
     end.

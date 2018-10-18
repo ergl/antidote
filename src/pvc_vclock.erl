@@ -20,7 +20,9 @@
 
 -module(pvc_vclock).
 
+%% For partition_id
 -include("antidote.hrl").
+-include("pvc.hrl").
 
 %% API
 -export([new/0,

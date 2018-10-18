@@ -22,7 +22,9 @@
 
 -behavior(gen_fsm).
 
+%% For type partition_id, index_node, key, val
 -include("antidote.hrl").
+-include("pvc.hrl").
 
 %% supervisor callback
 -export([start_link/1]).
@@ -41,10 +43,6 @@
          terminate/3,
          code_change/4]).
 
--type ws() :: orddict:orddict(key(), val()).
--type partitions() :: orddict:orddict(index_node(), ws()).
--type index_buffer() :: orddict:orddict(index_node(), ordsets:ordset(key())).
-
 -export_type([ws/0,
               partitions/0]).
 
@@ -52,7 +50,7 @@
     %% Client PID
     from :: pid(),
     %% Active Transaction Object
-    transaction :: tx(),
+    transaction :: txn(),
     %% Read accumulator for batch reads
     %% Contains the list of keys that have been requested
     %% When a key is read, it is swapped for its value
@@ -91,7 +89,7 @@ start_link(From) ->
 
 init([From]) ->
     Transaction = create_transaction(),
-    From ! {ok, Transaction#transaction.txn_id},
+    From ! {ok, Transaction#txn.id},
     {ok, client_command, #state{from=From,
                                 transaction=Transaction}}.
 
@@ -165,39 +163,31 @@ decide_vote({vote, From, Vote}, State = #state{num_to_ack=NAck,
 
 %% internal
 
--spec create_transaction() -> tx().
+-spec create_transaction() -> txn().
 create_transaction() ->
     _ = rand_compat:seed(erlang:phash2([node()]),
                          erlang:monotonic_time(),
                          erlang:unique_integer()),
 
-    Now = dc_utilities:now_microsec(),
-    CompatTime = vectorclock:new(),
+    #txn{id=#txn_id{server_pid=self()},
+         has_read=sets:new(),
+         vc_dep=pvc_vclock:new(),
+         vc_aggr=pvc_vclock:new()}.
 
-    TxId = #tx_id{server_pid=self(),
-                  local_start_time=Now},
-
-
-    #transaction{txn_id=TxId,
-                 snapshot_time=CompatTime,
-                 vec_snapshot_time=CompatTime,
-                 pvc_hasread=sets:new(),
-                 pvc_vcdep=pvc_vclock:new(),
-                 pvc_vcaggr=pvc_vclock:new()}.
-
--spec update_transaction(partition_id(), pvc_vc(), pvc_vc(), tx()) -> tx().
-update_transaction(From, VCdep, Vcaggr, Tx = #transaction{
-    pvc_hasread = HasRead,
-    pvc_vcaggr = T_VCaggr,
-    pvc_vcdep = T_VCdep
+-spec update_transaction(partition_id(), pvc_vc(), pvc_vc(), txn()) -> txn().
+update_transaction(From, VCdep, Vcaggr, Tx = #txn{
+    has_read = HasRead,
+    vc_aggr = T_VCaggr,
+    vc_dep = T_VCdep
 }) ->
+
     NewHasRead =  sets:add_element(From, HasRead),
     NewVCdep = pvc_vclock:max(T_VCdep, VCdep),
     NewVCaggr = pvc_vclock:max(T_VCaggr, Vcaggr),
 
-    Tx#transaction{pvc_vcdep=NewVCdep,
-                   pvc_vcaggr=NewVCaggr,
-                   pvc_hasread=NewHasRead}.
+    Tx#txn{vc_dep=NewVCdep,
+           vc_aggr=NewVCaggr,
+           has_read=NewHasRead}.
 
 -spec unsafe_load_internal(non_neg_integer(), non_neg_integer(), fsm_state()) -> stop().
 unsafe_load_internal(NKeys, Size, State) ->
@@ -277,8 +267,8 @@ read_internal(Key, State=#state{from=Sender,
                                 transaction=Transaction}) ->
     case orddict:find(Key, WS) of
         error ->
-            HasRead = Transaction#transaction.pvc_hasread,
-            VCaggr = Transaction#transaction.pvc_vcaggr,
+            HasRead = Transaction#txn.has_read,
+            VCaggr = Transaction#txn.vc_aggr,
             pvc_read_replica:async_read(Key, HasRead, VCaggr),
             {next_state, read_result, State};
 
@@ -293,12 +283,12 @@ read_batch_internal([Key | Rest]=Keys, State=#state{transaction=Transaction,writ
     {next_state, read_batch_result, State#state{read_accumulator=Keys,
                                                 read_remaining=Rest}}.
 
--spec perform_read_batch(key(), tx(), ws()) -> ok.
+-spec perform_read_batch(key(), txn(), ws()) -> ok.
 perform_read_batch(Key, Transaction, WriteSet) ->
     case orddict:find(Key, WriteSet) of
         error ->
-            HasRead = Transaction#transaction.pvc_hasread,
-            VCaggr = Transaction#transaction.pvc_vcaggr,
+            HasRead = Transaction#txn.has_read,
+            VCaggr = Transaction#txn.vc_aggr,
             pvc_read_replica:async_read(Key, HasRead, VCaggr);
         {ok, Value} ->
             gen_fsm:send_event(self(), {key_was_updated, Key, Value})
@@ -375,8 +365,8 @@ commit(State=#state{from=From,
 
         _ ->
             Ack = orddict:size(Partitions),
-            TxId = Transaction#transaction.txn_id,
-            CommitVC = Transaction#transaction.pvc_vcdep,
+            TxId = Transaction#txn.id,
+            CommitVC = Transaction#txn.vc_dep,
             ok = pvc_storage_vnode:prepare(Partitions, TxId, CommitVC),
             {next_state, decide_vote, State#state{num_to_ack=Ack, ack_outcome={ok, CommitVC}}}
     end.
@@ -394,7 +384,7 @@ decide(State=#state{from=Sender,
     end,
     gen_fsm:reply(Sender, OutcomeMsg),
 
-    TxId = Transaction#transaction.txn_id,
+    TxId = Transaction#txn.id,
     %% Merge the partition updates and the partition keyset
     %% We don't use orddict:merge/3 because it only combines
     %% keys that exist in both dictionaries. We might not hold
@@ -418,7 +408,7 @@ read_abort(State=#state{from=From,
 %% Util functions
 
 %% @doc Util function to update the FSM state with a new client update
--spec update_state(key(), val(), ws(), partitions()) -> {ws(), partitions()}.
+-spec update_state(key(), val(), ws(), partition_id()) -> {ws(), partitions()}.
 update_state(Key, Value, WriteSet, UpdatedPartitions) ->
     Partition = log_utilities:get_key_partition(Key),
     NewWriteSet = orddict:store(Key, Value, WriteSet),

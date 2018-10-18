@@ -99,39 +99,8 @@
 
 -record(commit_log_payload, {
     commit_time :: dc_and_commit_time(),
-    snapshot_time :: snapshot_time(),
-
-    %% PVC-related commit metadata
-    %% Commit time of a transaction at the given partition
-    pvc_metadata :: pvc_time()
+    snapshot_time :: snapshot_time()
 }).
-
-%% PVC
-
-%% Time (in ms) a partition should wait between retries at checking
-%% a partition's most recent vc during reads.
--define(PVC_WAIT_MS, 1000).
-
--type pvc_vc() :: pvc_vclock:vc().
-
--record(pvc_decide_meta, {
-    %% The cumulative outcome of the votes.
-    %% Only keep one as we exit as soon as we receive a negative one.
-    %% If the vote is false, reason() encodes why
-    outcome :: true | {false, reason()},
-    %% The current commit vectorclock.
-    %% We don't care about its value if the outcome was false.
-    commit_vc :: pvc_vc() | undefined
-}).
-
--record(pvc_time, {
-    %% VC representing the causal dependencies picked up during execution
-    vcdep :: pvc_vc(),
-    %% VC representing the minimum snapshot version that must be read
-    vcaggr :: pvc_vc()
-}).
-
--type pvc_time() :: #pvc_time{} | undefined.
 
 -record(update_log_payload, {
     key :: key(),
@@ -143,11 +112,7 @@
 -record(abort_log_payload, {}).
 
 -record(prepare_log_payload, {
-    prepare_time :: non_neg_integer(),
-
-    %% Tentative commit time for the transaction
-    pvc_prepare_clock :: pvc_vc()
-                       | undefined
+    prepare_time :: non_neg_integer()
 }).
 
 -type any_log_payload() :: #update_log_payload{}
@@ -196,12 +161,6 @@
 -define(CLOCKSI_TIMEOUT, 1000).
 
 -record(transaction, {
-    %% VC representing the minimum snapshot version that must be read
-    pvc_vcaggr :: pvc_vc(),
-    %% VC representing the causal dependencies picked up during execution
-    pvc_vcdep :: pvc_vc(),
-    %% Represents the partitions where the transaction has fixed a snapshot
-    pvc_hasread :: sets:set(partition_id()),
     transactional_protocol :: transactional_protocol(),
     snapshot_time :: snapshot_time(),
     vec_snapshot_time :: snapshot_time(),
@@ -218,7 +177,7 @@
 }).
 
 %%---------------------------------------------------------------------
--type transactional_protocol() :: clocksi | gr | pvc.
+-type transactional_protocol() :: clocksi | gr.
 -type downstream_record() :: term().
 -type actor() :: term().
 -type key() :: term().
@@ -311,7 +270,6 @@
 %%----------------------------------------------------------------------
 
 -record(tx_coord_state, {
-    transactional_protocol :: transactional_protocol(),
     from :: undefined | {pid(), term()} | pid(),
     transaction :: undefined | tx(),
     updated_partitions :: list(),
@@ -329,9 +287,7 @@
     internal_read_set :: orddict:orddict(),
     is_static :: boolean(),
     full_commit :: boolean(),
-    stay_alive :: boolean(),
-
-    pvc_keys_to_index :: dict:dict()
+    stay_alive :: boolean()
 }).
 
 %% The record is using during materialization to keep the
@@ -356,13 +312,5 @@
     partition :: partition_id(),
     ops_cache :: cache_id(),
     snapshot_cache :: cache_id(),
-    is_ready :: boolean(),
-
-    %% PVC only
-
-    %% Normal, hash-based VLog
-    pvc_vlog_cache :: cache_id() | undefined,
-
-    %% Ordered VLog to support range queries
-    pvc_index_set :: cache_id() | undefined
+    is_ready :: boolean()
 }).

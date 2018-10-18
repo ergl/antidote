@@ -22,7 +22,11 @@
 
 -behavior(gen_server).
 
+%% For partition_id, index_node, key, val
 -include("antidote.hrl").
+-include("pvc.hrl").
+
+-define(NUM_REPLICAS, 20).
 
 %% supervision tree
 -export([start_link/2]).
@@ -193,7 +197,7 @@ read_with_scan_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCa
 %%      If it is not, will sleep for 1000 ms and try again.
 %%
 -spec check_time(partition_id(), pvc_vc(), pvc_vc()) -> ready
-                                                        | {not_ready, non_neg_integer()}.
+                                                     |  {not_ready, non_neg_integer()}.
 
 check_time(Partition, MostRecentVC, VCaggr) ->
     MostRecentTime = pvc_vclock:get_time(Partition, MostRecentVC),
@@ -256,7 +260,7 @@ generate_replica_name(Node, Partition, Id) ->
 
 -spec random_replica(node(), partition_id()) -> binary().
 random_replica(Node, Partition) ->
-    generate_replica_name(Node, Partition, rand_compat:uniform(?READ_CONCURRENCY)).
+    generate_replica_name(Node, Partition, rand_compat:uniform(?NUM_REPLICAS)).
 
 -spec start_replicas(node(), partition_id(), non_neg_integer()) -> ok.
 start_replicas(_Node, _Partition, 0) ->
@@ -290,7 +294,7 @@ stop_replicas(Node, Partition, N) ->
     end,
     stop_replicas(Node, Partition, N - 1).
 
--spec all_ready([{partition_id(), node()}]) -> boolean().
+-spec all_ready([index_node()]) -> boolean().
 all_ready([]) ->
     true;
 

@@ -66,7 +66,7 @@
          stop/1]).
 
 %% States
--export([create_transaction_record/6,
+-export([create_transaction_record/5,
          start_tx/2,
          init_state/3,
          perform_update/6,
@@ -92,10 +92,6 @@
          perform_singleitem_update/3,
          reply_to_client/1,
          generate_name/1]).
-
-%% PVC states
--export([pvc_read_res/2,
-         pvc_receive_votes/2]).
 
 %%%===================================================================
 %%% API
@@ -172,9 +168,7 @@ init([From, ClientClock, UpdateClock, StayAlive, Operations]) ->
     {ok, execute_op, State#tx_coord_state{operations = Operations, from = From}, 0}.
 
 init_state(StayAlive, FullCommit, IsStatic) ->
-    {ok, Protocol} = antidote_config:get(?TRANSACTION_CONFIG, clocksi),
     #tx_coord_state {
-        transactional_protocol = Protocol,
         transaction = undefined,
         updated_partitions = [],
         client_ops = [],
@@ -187,9 +181,7 @@ init_state(StayAlive, FullCommit, IsStatic) ->
         is_static = IsStatic,
         return_accumulator = [],
         internal_read_set = orddict:new(),
-        stay_alive = StayAlive,
-
-        pvc_keys_to_index = dict:new()
+        stay_alive = StayAlive
     }.
 
 -spec generate_name(pid()) -> atom().
@@ -210,7 +202,6 @@ start_tx({start_tx, From, ClientClock, UpdateClock, Operation}, SD0) ->
     {next_state, execute_op, InitState, 0}.
 
 start_tx_internal(From, ClientClock, UpdateClock, SD = #tx_coord_state{
-    transactional_protocol=Protocol,
     stay_alive=StayAlive,
     is_static=IsStatic
 }) ->
@@ -219,8 +210,7 @@ start_tx_internal(From, ClientClock, UpdateClock, SD = #tx_coord_state{
         UpdateClock,
         StayAlive,
         From,
-        false,
-        Protocol
+        false
     ),
     case IsStatic of
         true ->
@@ -234,21 +224,13 @@ start_tx_internal(From, ClientClock, UpdateClock, SD = #tx_coord_state{
                                 update_clock | no_update_clock,
                                 boolean(),
                                 pid() | undefined,
-                                boolean(),
-                                any()) -> {tx(), txid()}.
+                                boolean()) -> {tx(), txid()}.
 
-create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic, Protocol) ->
+create_transaction_record(ClientClock, UpdateClock, StayAlive, From, _IsStatic) ->
     %% Seed the random because you pick a random read server, this is stored in the process state
     _Res = rand_compat:seed(erlang:phash2([node()]), erlang:monotonic_time(), erlang:unique_integer()),
     Name = generate_server_name(StayAlive, From),
-    case Protocol of
-        clocksi ->
-            create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol);
-        gr ->
-            create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol);
-        pvc ->
-            create_pvc_tx_record(Name, Protocol)
-    end.
+    create_cure_gr_tx_record(Name, ClientClock, UpdateClock).
 
 -spec generate_server_name(boolean(), pid() | undefined) -> atom() | pid().
 generate_server_name(true, From) when is_pid(From) ->
@@ -260,11 +242,10 @@ generate_server_name(false, _) ->
 -spec create_cure_gr_tx_record(
     atom(),
     snapshot_time() | ignore,
-    update_clock | no_update_clock,
-    transactional_protocol()
+    update_clock | no_update_clock
 ) -> {tx(), txid()}.
 
-create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol) ->
+create_cure_gr_tx_record(Name, ClientClock, UpdateClock) ->
     {ok, SnapshotTime} = case ClientClock of
         ignore ->
             get_snapshot_time();
@@ -280,30 +261,9 @@ create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol) ->
 
     TransactionId = #tx_id{local_start_time=LocalClock, server_pid=Name},
     Transaction = #transaction{
-        transactional_protocol=Protocol,
+        transactional_protocol=undefined,
         snapshot_time=LocalClock,
         vec_snapshot_time=SnapshotTime,
-        txn_id=TransactionId
-    },
-    {Transaction, TransactionId}.
-
--spec create_pvc_tx_record(atom(), transactional_protocol()) -> {tx(), txid()}.
-create_pvc_tx_record(Name, Protocol) ->
-    Now = ?DC_UTIL:now_microsec(),
-    CompatibilityTime = ?VECTORCLOCK:new(),
-
-    TransactionId = #tx_id{server_pid=Name,
-                           local_start_time=Now},
-
-    Transaction = #transaction{
-        %% PVC-related state
-        pvc_vcaggr = pvc_vclock:new(),
-        pvc_vcdep = pvc_vclock:new(),
-        pvc_hasread = sets:new(),
-
-        transactional_protocol=Protocol,
-        snapshot_time=CompatibilityTime,
-        vec_snapshot_time=CompatibilityTime,
         txn_id=TransactionId
     },
     {Transaction, TransactionId}.
@@ -314,14 +274,12 @@ create_pvc_tx_record(Name, Protocol) ->
 %%      transaction fsm and directly in the calling thread.
 -spec perform_singleitem_read(key(), type()) -> {ok, val(), snapshot_time()} | {error, reason()}.
 perform_singleitem_read(Key, Type) ->
-    TransactionalProtocol = transactional_protocol:get_protocol(),
     {Transaction, _TransactionId} = create_transaction_record(
         ignore,
         update_clock,
         false,
         undefined,
-        true,
-        TransactionalProtocol
+        true
     ),
 
     Partition = ?LOG_UTIL:get_key_partition(Key),
@@ -345,14 +303,12 @@ perform_singleitem_read(Key, Type) ->
 ) -> {ok, {txid(), [], snapshot_time()}} | {error, term()}.
 
 perform_singleitem_update(Key, Type, Params) ->
-    {ok, TransactionalProtocol} = antidote_config:get(?TRANSACTION_CONFIG, cure),
     {Transaction, _TransactionId} = create_transaction_record(
         ignore,
         update_clock,
         false,
         undefined,
-        true,
-        TransactionalProtocol
+        true
     ),
     Partition = ?LOG_UTIL:get_key_partition(Key),
     %% Execute pre_commit_hook if any
@@ -551,20 +507,12 @@ execute_op({update, Args}, Sender, SD0) ->
 execute_op({OpType, Args}, Sender, State) ->
     execute_command(OpType, Args, Sender, State).
 
-%% @doc UNSAFE: Execute a blind write of size Size to NKeys
-execute_command(unsafe_load, {NKeys, Size}, Sender, State = #tx_coord_state{
-    transactional_protocol = pvc
-}) ->
-    pvc_unsafe_load(NKeys, Size, Sender, State);
-
 %% @doc Execute the commit protocol
 execute_command(prepare, Protocol, Sender, State0) ->
     State = State0#tx_coord_state{from=Sender, commit_protocol=Protocol},
     case Protocol of
         two_phase ->
             prepare_2pc(State);
-        pvc_commit ->
-            pvc_prepare(State);
         _ ->
             prepare(State)
     end;
@@ -586,182 +534,11 @@ execute_command(read, {Key, Type}, Sender, State = #tx_coord_state{
             }}
     end;
 
-%% @doc Read a single key, asynchronous (PVC only)
-execute_command(read_single, Key, Sender, State) ->
-    pvc_single_read(Key, State#tx_coord_state{from=Sender});
-
-%% @doc Read a batch of objects, asynchronous
-execute_command(read_objects, Keys, Sender, State = #tx_coord_state{
-    transactional_protocol=pvc
-}) ->
-    pvc_read(Keys, Sender, State);
-
 execute_command(read_objects, Objects, Sender, State) ->
     clocksi_read(Objects, Sender, State);
 
-%% @doc Perform update operations on a batch of Objects
-execute_command(update_objects, UpdateOps, Sender, State = #tx_coord_state{
-    transactional_protocol=pvc
-}) ->
-    pvc_update(UpdateOps, Sender, State);
-
 execute_command(update_objects, UpdateOps, Sender, State) ->
-    clocksi_update(UpdateOps, Sender, State);
-
-execute_command(pvc_index, Updates, Sender, State = #tx_coord_state{
-    transactional_protocol=pvc,
-    pvc_keys_to_index=ToIndexDict
-}) ->
-    NewIndexSet = lists:foldl(fun({K, _}, Acc) ->
-        P = log_utilities:get_key_partition(K),
-        pvc_add_to_index_dict(P, K, Acc)
-    end, ToIndexDict, Updates),
-    gen_fsm:reply(Sender, ok),
-    {next_state, execute_op, State#tx_coord_state{pvc_keys_to_index=NewIndexSet}};
-
-execute_command(pvc_scan_range, {Root, Range, Limit}, Sender, State = #tx_coord_state{
-    transactional_protocol=pvc,
-    pvc_keys_to_index=ToIndexDict
-}) ->
-    Partition = log_utilities:get_key_partition(Root),
-
-    %% Get the matching keys in the locally updated set, if any
-    LocalIndexSet = pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict),
-
-    %% Also get the matching keys stored in the ordered storage
-    StoredIndexKeys = materializer_vnode:pvc_key_range(Partition, Root, Range, Limit),
-
-    %% Merge them (don't store duplicates)
-    MergedKeys = lists:foldl(fun ordsets:add_element/2, LocalIndexSet, StoredIndexKeys),
-    gen_fsm:reply(Sender, {ok, ordsets:to_list(MergedKeys)}),
-    {next_state, execute_op, State}.
-
-pvc_unsafe_load(NKeys, Size, Sender, State) ->
-    Val = crypto:strong_rand_bytes(Size),
-    NewState = pvc_unsafe_load_update(NKeys, Val, State),
-    pvc_prepare(NewState#tx_coord_state{from=Sender}).
-
-pvc_unsafe_load_update(0, _, State) ->
-    State;
-
-pvc_unsafe_load_update(N, Val, S = #tx_coord_state{client_ops=Ops0,updated_partitions=P0}) ->
-    Key = integer_to_binary(N, 36),
-    Op = {Key, antidote_crdt_lwwreg, {assign, Val}},
-    {P, Ops} = pvc_perform_update(Op, P0, Ops0),
-    pvc_unsafe_load_update(N - 1, Val, S#tx_coord_state{client_ops=Ops,updated_partitions=P}).
-
--spec pvc_add_to_index_dict(index_node(), key(), dict:dict()) -> dict:dict().
-pvc_add_to_index_dict(Part, Key, Dict) ->
-    S = case dict:find(Part, Dict) of
-        error ->
-            ordsets:new();
-        {ok, Set} ->
-            Set
-    end,
-    NewS = ordsets:add_element(Key, S),
-    dict:store(Part, NewS, Dict).
-
-%% @doc Return the locally updated keys belonging to Partition that match
-%%      the given prefix, skipping the root key
--spec pvc_get_local_matching_keys(
-    partition_id(),
-    key(),
-    pvc_indices:range(),
-    dict:dict()
-) -> ordsets:ordset().
-
-pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
-    case dict:find(Partition, ToIndexDict) of
-        error ->
-            ordsets:new();
-
-        {ok, S} ->
-            ordsets:fold(fun(Key, Acc) ->
-                case Key of
-                    Root ->
-                        Acc;
-                    _ ->
-                        case pvc_indices:in_range(Key, Range) of
-                            true ->
-                                ordsets:add_element(Key, Acc);
-                            false ->
-                                Acc
-                        end
-                end
-            end, ordsets:new(), S)
-    end.
-
-pvc_single_read(Key, State = #tx_coord_state{
-    from = Sender,
-    client_ops = ClientOps,
-    transaction = Transaction
-}) ->
-    case pvc_key_was_updated(ClientOps, Key) of
-        false ->
-            HasRead = Transaction#transaction.pvc_hasread,
-            VCaggr = Transaction#transaction.pvc_vcaggr,
-            pvc_read_replica:async_read(Key, HasRead, VCaggr),
-            {next_state, pvc_read_res, State};
-        Value ->
-            gen_fsm:reply(Sender, {ok, Value}),
-            {next_state, execute_op, State}
-    end.
-
-pvc_read_res({error, maxvc_bad_vc}, State) ->
-    abort(State#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]});
-
-pvc_read_res({readreturn, From, _Key, Value, VCdep, VCaggr}, State = #tx_coord_state{transaction = Tx}) ->
-    gen_fsm:reply(State#tx_coord_state.from, {ok, Value}),
-    {next_state, execute_op, State#tx_coord_state{transaction = pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
-
-%% @doc Loop through all the keys, calling the appropriate partitions
-pvc_read(Keys, Sender, State = #tx_coord_state{
-    client_ops=ClientOps,
-    transaction=Transaction
-}) ->
-    [FirstKey | Rest] = Keys,
-    ok = pvc_perform_read(FirstKey, Transaction, ClientOps),
-    {next_state, receive_read_objects_result, State#tx_coord_state{from=Sender,
-                                                                   return_accumulator={Keys, Rest}}}.
-
--spec pvc_perform_read(key(), tx(), list()) -> ok.
-pvc_perform_read(Key, Transaction, ClientOps) ->
-    %% If the key has already been updated in this transaction,
-    %% return the last assigned value directly.
-    %% This works because we restrict ourselves to lww-registers,
-    %% so we don't need to depend on previous values.
-    case pvc_key_was_updated(ClientOps, Key) of
-        false ->
-            %% If the key has never been updated, request the most
-            %% recent compatible version of the key to the holding
-            %% partition.
-            %%
-            %% We will wait for the reply on the next state.
-            HasRead = Transaction#transaction.pvc_hasread,
-            VCaggr = Transaction#transaction.pvc_vcaggr,
-            pvc_read_replica:async_read(Key, HasRead, VCaggr);
-        Value ->
-            %% If updated, reply to ourselves with the last value.
-            gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
-    end.
-
-%% @doc Check if a key was updated by the client.
-%%
-%%      If it was, return the assigned value, returns false otherwise
-%%
-%%      Note that this function assumes that only lww-registers are being used,
-%%      and that the client operations only contain one entry per key (we discard
-%%      the rest when a new one is issued, see pvc_perform_update/3.
-%%
--spec pvc_key_was_updated(list(), key()) -> op_param() | false.
-pvc_key_was_updated(ClientOps, Key) ->
-    case lists:keyfind(Key, 1, ClientOps) of
-        {Key, _, {assign, Value}} ->
-            Value;
-
-        false ->
-            false
-    end.
+    clocksi_update(UpdateOps, Sender, State).
 
 clocksi_read(Objects, Sender, State = #tx_coord_state{transaction=Transaction}) ->
     ExecuteReads = fun({Key, Type}, AccState) ->
@@ -811,59 +588,6 @@ clocksi_update(UpdateOps, Sender, State = #tx_coord_state{transaction=Transactio
             {next_state, receive_logging_responses, LoggingState};
         false ->
             {next_state, receive_logging_responses, LoggingState, 0}
-    end.
-
-pvc_update(UpdateOps, Sender, State) ->
-    PerformUpdates = fun(Op, AccState=#tx_coord_state{
-        client_ops=ClientOps,
-        updated_partitions=UpdatedPartitions
-    }) ->
-        {NewUpdatedPartitions, NewClientOps} = pvc_perform_update(Op, UpdatedPartitions, ClientOps),
-        AccState#tx_coord_state{
-            client_ops=NewClientOps,
-            updated_partitions=NewUpdatedPartitions
-        }
-    end,
-
-    NewCoordState = lists:foldl(PerformUpdates, State, UpdateOps),
-    %%FinalOps = NewCoordState#tx_coord_state.client_ops,
-    %%PrettifyOps = fun({Key, _, {assign, Value}}) -> {Key, Value} end,
-    %%lager:info(
-    %%    "{~p} PVC update with ops ~p",
-    %%    [erlang:phash2(Transaction#transaction.txn_id), lists:map(PrettifyOps, FinalOps)]
-    %%),
-    gen_fsm:reply(Sender, ok),
-    {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}.
-
-pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
-    %% Don't read snapshot, will do that at commit time
-    %% As we only allow lww-registers, we don't need to keep track of all
-    %% generated updates, so we just keep the most recent one.
-    NewUpdatedPartitions = pvc_swap_writeset(UpdatedPartitions, Op),
-    UpdatedOps = pvc_swap_operations(ClientOps, Op),
-    {NewUpdatedPartitions, UpdatedOps}.
-
-pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
-    Partition = log_utilities:get_key_partition(Key),
-    case lists:keyfind(Partition, 1, UpdatedPartitions) of
-        false ->
-            [{Partition, [Update]} | UpdatedPartitions];
-        {Partition, WS} ->
-            NewWS = case lists:keyfind(Key, 1, WS) of
-                false ->
-                    [Update | WS];
-                _ ->
-                    lists:keyreplace(Key, 1, WS, Update)
-            end,
-            lists:keyreplace(Partition, 1, UpdatedPartitions, {Partition, NewWS})
-    end.
-
-pvc_swap_operations(ClientOps, {Key, _, _}=Update) ->
-    case lists:keyfind(Key, 1, ClientOps) of
-        false ->
-            [Update | ClientOps];
-        _ ->
-            lists:keyreplace(Key, 1, ClientOps, Update)
     end.
 
 %% @doc This state reached after an execute_op(update_objects[Params]).
@@ -941,69 +665,7 @@ receive_read_objects_result({ok, {Key, Type, Snapshot}}, CoordState = #tx_coord_
                 num_to_read=0,
                 internal_read_set=NewReadSet
             }}
-    end;
-
-receive_read_objects_result(Msg, State=#tx_coord_state{transactional_protocol=pvc,
-                                                       transaction=Transaction}) ->
-
-    case Msg of
-        %% Read abort
-        {error, maxvc_bad_vc} ->
-            %% lager:info("{~p} PVC read received abort", [erlang:phash2(Transaction#transaction.txn_id)]),
-            abort(State#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]});
-
-        %% The key has been already updated, returns the value directly
-        {pvc_key_was_updated, Key, Value} ->
-            %% Update the state and loop until all keys have been read
-            pvc_read_loop(Key, Value, Transaction, State);
-
-        %% A message from the read_item server, must update the transaction
-        {readreturn, From, Key, Value, VCdep, VCaggr} ->
-            %% Update Transaction state (read partitions, version vectors, etc)
-            UpdatedTransaction = pvc_update_transaction(From, VCdep, VCaggr, Transaction),
-            %% Update the state and loop until all keys have been read
-            pvc_read_loop(Key, Value, UpdatedTransaction, State)
     end.
-
--spec pvc_read_loop(key(), val(), tx(), #tx_coord_state{}) -> _.
-pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOps,
-                                                             return_accumulator={RequestedKeys, RemainingKeys}}) ->
-
-    %% Replace the key with the value inside RequestedKeys
-    ReadValues = replace_first(RequestedKeys, Key, Value),
-    case RemainingKeys of
-        [] ->
-            %% If this was the last key to be read, return the results to the client
-            gen_fsm:reply(State#tx_coord_state.from, {ok, ReadValues}),
-            {next_state,
-                execute_op,
-                State#tx_coord_state{return_accumulator=[],
-                                     transaction=Transaction}};
-
-        [NextKey | Rest] ->
-            %% If there are keys left to read, schedule next read and loop back
-            ok = pvc_perform_read(NextKey, Transaction, ClientOps),
-            {next_state,
-                receive_read_objects_result,
-                State#tx_coord_state{transaction=Transaction,
-                                     return_accumulator={ReadValues, Rest}}}
-    end.
-
--spec pvc_update_transaction(partition_id(), pvc_vc(), pvc_vc(), tx()) -> tx().
-pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
-    pvc_hasread = HasRead,
-    pvc_vcdep = TVCdep,
-    pvc_vcaggr = TVCaggr
-}) ->
-
-    NewHasRead = sets:add_element(FromPartition, HasRead),
-
-    NewVCdep = pvc_vclock:max(TVCdep, VCdep),
-    NewVCaggr = pvc_vclock:max(TVCaggr, VCaggr),
-
-    Transaction#transaction{pvc_hasread=NewHasRead,
-                            pvc_vcdep = NewVCdep,
-                            pvc_vcaggr = NewVCaggr}.
 
 %% The following function is used to apply the updates that were performed by the running
 %% transaction, to the result returned by a read.
@@ -1023,29 +685,6 @@ apply_tx_updates_to_snapshot(Key, CoordState, Type, Snapshot)->
         {Partition, WS} ->
             FileteredAndReversedUpdates=clocksi_vnode:reverse_and_filter_updates_per_key(WS, Key),
             clocksi_materializer:materialize_eager(Type, Snapshot, FileteredAndReversedUpdates)
-    end.
-
-pvc_prepare(State = #tx_coord_state{from=From,
-                                    transaction=Transaction,
-                                    updated_partitions=UpdatedPartitions}) ->
-
-    case UpdatedPartitions of
-        [] ->
-            gen_fsm:reply(From, ok),
-            {stop, normal, State};
-
-        _ ->
-            ok = clocksi_vnode:prepare(UpdatedPartitions, Transaction),
-            NumToAck = length(UpdatedPartitions),
-
-            InitialCommitVC = Transaction#transaction.pvc_vcdep,
-
-            VoteState = State#tx_coord_state{
-                num_to_ack = NumToAck,
-                return_accumulator = [{pvc, InitialCommitVC}]
-            },
-
-            {next_state, pvc_receive_votes, VoteState}
     end.
 
 %% @doc this function sends a prepare message to all updated partitions and goes
@@ -1180,81 +819,6 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
             end
     end.
 
-pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
-%%    transaction = Tx,
-    num_to_ack = NumToAck,
-    return_accumulator = [{pvc, Acc}]
-}) ->
-
-%%    lager:info("{~p} PVC received VOTE(~p, ~p) from ~p", [erlang:phash2(Tx#transaction.txn_id), Outcome, SeqNumber, From]),
-
-    case Outcome of
-        {false, _} ->
-            pvc_decide(State#tx_coord_state{
-                num_to_ack = 0,
-                return_accumulator = [{pvc, #pvc_decide_meta{
-                    outcome = Outcome,
-                    %% Don't care about commit vc if we're aborting
-                    commit_vc = undefined
-                }}]
-            });
-
-        true ->
-            PrevCommitVC = case Acc of
-                %% We know the commit time will be defined since we break out of
-                %% the loop as soon as we receive a negative vote.
-                #pvc_decide_meta{commit_vc = PrevVC} -> PrevVC;
-
-                %% If this is the first vote, it will be a bare vectorclock
-                InitVC -> InitVC
-            end,
-
-            %% Update the commit vc with the sequence number from the partition.
-            CommitVC = pvc_vclock:set_time(From, SeqNumber, PrevCommitVC),
-            NewState = State#tx_coord_state{return_accumulator = [{pvc, #pvc_decide_meta{
-                outcome = Outcome,
-                commit_vc = CommitVC
-            }}]},
-            case NumToAck > 1 of
-                true ->
-                    {next_state, pvc_receive_votes, NewState#tx_coord_state{num_to_ack = NumToAck - 1}};
-                false ->
-                    pvc_decide(NewState)
-            end
-    end.
-
-pvc_decide(State = #tx_coord_state{
-    from = From,
-    client_ops = ClientOps,
-    transaction = Transaction,
-    updated_partitions = UpdatedPartitions,
-    pvc_keys_to_index = ToIndexDict,
-    return_accumulator = [{pvc, #pvc_decide_meta{
-        outcome = Outcome,
-        commit_vc = CommitVC
-    }}]
-}) ->
-    _TxId = Transaction#transaction.txn_id,
-    Reply = case Outcome of
-        {false, Reason} ->
-%%            lager:info("{~p} PVC aborted prepare", [erlang:phash2(TxId)]),
-            {error, Reason};
-        true ->
-%%            lager:info("{~p} PVC decide with CommitVC ~p", [erlang:phash2(TxId), dict:to_list(CommitVC)]),
-            execute_post_commit_hooks(ClientOps)
-    end,
-    OpsAndIndices = lists:map(fun({Part, WS}) ->
-        case dict:find(Part, ToIndexDict) of
-            error ->
-                {Part, WS, []};
-            {ok, Set} ->
-                {Part, WS, ordsets:to_list(Set)}
-        end
-    end, UpdatedPartitions),
-    ok = clocksi_vnode:decide(OpsAndIndices, Transaction, CommitVC, Outcome),
-    gen_fsm:reply(From, Reply),
-    {stop, normal, State}.
-
 
 %% @doc in this state, the fsm waits for prepare_time from each updated
 %%      partitions in order to compute the final tx timestamp (the maximum
@@ -1373,22 +937,6 @@ receive_committed(committed, S0 = #tx_coord_state{num_to_ack = NumToAck}) ->
                 num_to_ack = NumToAck - 1
             }}
     end.
-
-abort(CoordState = #tx_coord_state{from = From,
-                                   transaction = Transaction,
-                                   transactional_protocol = pvc,
-                                   return_accumulator = AbortReason,
-                                   updated_partitions = UpdatedPartitions}) ->
-
-    ok = clocksi_vnode:abort(UpdatedPartitions, Transaction),
-    AbortMsg = case AbortReason of
-        [{pvc_msg, Msg}] ->
-            Msg;
-        _ ->
-            {aborted, Transaction#transaction.txn_id}
-    end,
-    gen_fsm:reply(From, {error, AbortMsg}),
-    {stop, normal, CoordState};
 
 %% @doc when an error occurs or an updated partition
 %% does not pass the certification check, the transaction aborts.

@@ -20,7 +20,6 @@
 
 -module(pvc_indices).
 
--include("antidote.hrl").
 -include("pvc.hrl").
 
 -define(CLAIMED, claimed).
@@ -38,17 +37,17 @@
 
 -export([in_range/2]).
 
--spec u_index(binary(), binary(), binary(), txid()) -> ok.
+-spec u_index(binary(), binary(), binary(), txn_id()) -> ok.
 u_index(IndexName, IndexValue, RefKey, TxId) ->
     Key = make_u_index_key(IndexName, IndexValue),
     pvc:update(Key, RefKey, TxId).
 
--spec read_u_index(binary(), binary(), txid()) -> {ok, val()} | {error, reason()}.
+-spec read_u_index(binary(), binary(), txn_id()) -> {ok, term()} | {error, atom()}.
 read_u_index(IndexName, IndexValue, TxId) ->
     Key = make_u_index_key(IndexName, IndexValue),
     pvc:read(Key, TxId).
 
--spec index(binary(), binary(), binary(), txid()) -> ok.
+-spec index(binary(), binary(), binary(), txn_id()) -> ok.
 index(IndexName, IndexValue, RefKey, TxId) ->
     MainIndexKey = make_root_index_key(IndexName),
     RootKey = make_root_index_key(IndexName, IndexValue),
@@ -68,7 +67,7 @@ index(IndexName, IndexValue, RefKey, TxId) ->
     end,
     update_indices(Updates, TxId).
 
--spec read_index(binary(), txid()) -> {ok, list()} | {error, reason()}.
+-spec read_index(binary(), txn_id()) -> {ok, list()} | {error, atom()}.
 read_index(IndexName, TxId) ->
     MainIndexKey = make_root_index_key(IndexName),
     case claimed_index(MainIndexKey, TxId) of
@@ -88,7 +87,7 @@ read_index(IndexName, TxId) ->
             end
     end.
 
--spec read_index(binary(), binary(), txid()) -> {ok, list()} | {error, reason()}.
+-spec read_index(binary(), binary(), txn_id()) -> {ok, list()} | {error, atom()}.
 read_index(IndexName, IndexValue, TxId) ->
     RootKey = make_root_index_key(IndexName, IndexValue),
     case claimed_index(RootKey, TxId) of
@@ -147,16 +146,16 @@ make_root_index_key(IndexName, IndexValue) ->
 make_index_key(IndexName, IndexValue, RefKey) ->
     <<IndexName/binary, ?INDEX_SEP/binary, IndexValue/binary, ?INDEX_SEP/binary, RefKey/binary>>.
 
-update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
+update_indices(Updates, TxId = #txn_id{server_pid = Pid}) ->
     ok = pvc:update_batch(Updates, TxId),
     Keys = [Key || {Key, _} <- Updates],
-    gen_fsm:sync_send_event(Pid, {index, Keys}, ?OP_TIMEOUT).
+    gen_fsm:sync_send_event(Pid, {index, Keys}, infinity).
 
 %% @doc Read subkeys of the given root key from the ordered storage
 %%
 %%      Doesn't return all keys, but only up to INDEX_PAGE_LIMIT
 %%
--spec read_index_range(key(), txid()) -> {ok, [key()]}.
+-spec read_index_range(term(), txn_id()) -> {ok, [term()]}.
 read_index_range(RootKey, TxId) ->
     read_index_range(RootKey, ?INDEX_PAGE_LIMIT, TxId).
 
@@ -166,8 +165,8 @@ read_index_range(RootKey, TxId) ->
 %%      unique keys this will fetch from the ordered storage. Keys not yet
 %%      persisted (such as those in the write set) don't count towards the limit.
 %%
--spec read_index_range(key(), non_neg_integer(), txid()) -> {ok, [key()]}.
-read_index_range(RootKey, Limit, #tx_id{server_pid = Pid}) ->
+-spec read_index_range(term(), non_neg_integer(), txn_id()) -> {ok, [term()]}.
+read_index_range(RootKey, Limit, #txn_id{server_pid = Pid}) ->
     Range = make_range(RootKey),
     gen_fsm:sync_send_event(Pid, {scan_range, RootKey, Range, Limit}).
 

@@ -20,7 +20,7 @@
 
 -module(pvc_commit_queue).
 
--include("antidote.hrl").
+-include("pvc.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -28,14 +28,14 @@
 
 -record(cqueue, {
     %% The main commit TxId queue
-    q :: queue:queue(txid()),
+    q :: queue:queue(txn_id()),
     %% Mapping between txids and their write sets
-    write_sets :: dict:dict(txid(), pvc_fsm:ws()),
+    write_sets :: dict:dict(txn_id(), ws()),
     %% For the ready tx, put their ids with their commit VC
     %% and their index key list here
-    ready_tx :: dict:dict(txid(), {pvc_vc(), list()}),
+    ready_tx :: dict:dict(txn_id(), {pvc_vc(), list()}),
     %% A set of txids that have been discarded
-    discarded_tx :: sets:set(txid())
+    discarded_tx :: sets:set(txn_id())
 }).
 
 -opaque cqueue() :: #cqueue{}.
@@ -57,7 +57,7 @@ new() ->
             discarded_tx = sets:new()}.
 
 %% @doc Enqueue the given transaction id with an associated writeset
--spec enqueue(txid(), pvc_fsm:ws(), cqueue()) -> cqueue().
+-spec enqueue(txn_id(), ws(), cqueue()) -> cqueue().
 enqueue(TxId, WS, CQueue=#cqueue{q=Queue, write_sets=WSDict}) ->
     CQueue#cqueue{q=queue:in(TxId, Queue),
                   write_sets=dict:store(TxId, WS, WSDict)}.
@@ -69,7 +69,7 @@ enqueue(TxId, WS, CQueue=#cqueue{q=Queue, write_sets=WSDict}) ->
 %%      that have been removed. On dequeue, we keep dequeing until
 %%      we find the first element not on the discarted list.
 %%
--spec remove(txid(), cqueue()) -> cqueue().
+-spec remove(txn_id(), cqueue()) -> cqueue().
 remove(TxId, CQueue=#cqueue{q=Queue,
                             write_sets=WSDict,
                             discarded_tx=DiscardedSet}) ->
@@ -87,7 +87,7 @@ remove(TxId, CQueue=#cqueue{q=Queue,
 %%      Add it to the read_tx dict. On dequeue, only keep
 %%      the elements that are ready
 %%
--spec ready(txid(), list(), pvc_vc(), cqueue()) -> cqueue().
+-spec ready(txn_id(), list(), pvc_vc(), cqueue()) -> cqueue().
 ready(TxId, IndexList, VC, CQueue = #cqueue{q=Queue,
                                             ready_tx=ReadyDict}) ->
     case queue:member(TxId, Queue) of
@@ -97,11 +97,11 @@ ready(TxId, IndexList, VC, CQueue = #cqueue{q=Queue,
             CQueue#cqueue{ready_tx=dict:store(TxId, {VC, IndexList}, ReadyDict)}
     end.
 
--spec contains_disputed(pvc_fsm:ws(), cqueue()) -> boolean().
+-spec contains_disputed(ws(), cqueue()) -> boolean().
 contains_disputed(WS, #cqueue{write_sets=WSDict}) ->
     is_ws_disputed(dict:to_list(WSDict), WS).
 
--spec dequeue_ready(cqueue()) -> {[{txid(), pvc_fsm:ws(), pvc_vc(), list()}], cqueue()}.
+-spec dequeue_ready(cqueue()) -> {[{txn_id(), ws(), pvc_vc(), list()}], cqueue()}.
 dequeue_ready(#cqueue{q=Queue,
                       write_sets=WSDict,
                       ready_tx=ReadyDict,
@@ -147,7 +147,7 @@ from(Queue, WSDIct, ReadyDict, DiscardedDict) ->
             ready_tx = ReadyDict,
             discarded_tx = DiscardedDict}.
 
--spec is_ws_disputed([{txid(), pvc_fsm:ws()}], pvc_fsm:ws()) -> boolean().
+-spec is_ws_disputed([{txn_id(), ws()}], ws()) -> boolean().
 is_ws_disputed([], _) ->
     false;
 
@@ -162,7 +162,7 @@ is_ws_disputed([{_TxId, OtherWS} | Rest], WS) ->
             is_ws_disputed(Rest, WS)
     end.
 
--spec ws_intersect(pvc_fsm:ws(), pvc_fsm:ws()) -> boolean().
+-spec ws_intersect(ws(), ws()) -> boolean().
 ws_intersect([], _) ->
     false;
 

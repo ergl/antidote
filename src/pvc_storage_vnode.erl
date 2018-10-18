@@ -21,7 +21,11 @@
 -module(pvc_storage_vnode).
 -behaviour(riak_core_vnode).
 
+%% For index_node, partition_id, key, val, cache_id, some macros
 -include("antidote.hrl").
+-include("pvc.hrl").
+
+-define(NUM_REPLICAS, 20).
 
 %% vnode management API
 -export([get_cache_name/2,
@@ -105,7 +109,7 @@ init([Partition]) ->
     CLog = pvc_commit_log:new_at(Partition),
 
     {ok, #state{partition=Partition,
-                n_replicas=?READ_CONCURRENCY,
+                n_replicas=?NUM_REPLICAS,
                 partition_state=State,
                 last_committed_version_cache=CommittedCache,
                 storage=Storage,
@@ -168,7 +172,7 @@ check_tables_ready([IndexNode | Rest]) ->
         riak_core_vnode_master:sync_command(IndexNode,
                                             tables_ready,
                                             pvc_storage_vnode_master,
-                                            ?OP_TIMEOUT)
+                                            infinity)
     catch _:_Reason ->
         %% If virtual node is not up and runnning for any reason, return false
         false
@@ -185,7 +189,7 @@ check_tables_ready([IndexNode | Rest]) ->
 %% API
 
 %% @doc Send a prepare message to all the given partitions
--spec prepare(pvc_fsm:partitions(), txid(), pvc_vc()) -> ok.
+-spec prepare(partitions(), txn_id(), pvc_vc()) -> ok.
 prepare(Partitions, TxId, CommitVC) ->
     lists:foreach(fun({Node, WS}) ->
         riak_core_vnode_master:command(
@@ -196,7 +200,7 @@ prepare(Partitions, TxId, CommitVC) ->
     end, Partitions).
 
 %% @doc Send a decide message to all the given partitions
--spec decide([{index_node(), [key()]}], txid(), term()) -> ok.
+-spec decide([{index_node(), [key()]}], txn_id(), term()) -> ok.
 decide(Partitions, TxId, Outcome) ->
     lists:foreach(fun({Node, IndexKeySet}) ->
         riak_core_vnode_master:command(
@@ -358,12 +362,32 @@ internal_read_key(Key, MinVC, Storage) ->
             pvc_version_log:get_smaller(MinVC, PrevVersionLog)
     end.
 
+%% @doc Scan the RangeStorage for matching keys
+%%
+%%      We implemented the RangeStorage as an ordered_set,
+%%      so keys with the same common prefix will be grouped together
+%%      in the tree.
+%%
+%%      Hence, we can scan a range by repeatedly calling ets:next/2 starting
+%%      on the root (a key wich is just the common prefix).
+%%
+%%      ETS does not guarantee that the returned key actually exists in the table,
+%%      if it was removed concurrently to a scan. We actually never remove keys
+%%      from the table, so this does not affect us. Also, the keys are inserted
+%%      here only after a transaction has committed and made its updates visible
+%%      to others through the VLog, so the caller can make sure that whatever
+%%      is returned from this range can be found on primary storage
+%%
+%%      This function will scan the index until `Limit` keys are added to the range,
+%%      or we hit the end of the table, whatever happens first.
+%%
 -spec internal_read_range(key(), pvc_indices:range(), non_neg_integer(), cache_id()) -> [key()].
 internal_read_range(Root, Range, Limit, RangeStorage) ->
     case ets:lookup(RangeStorage, Root) of
         [] -> [];
         [{Root, _}] ->
             Next = ets:next(RangeStorage, Root),
+            %% Skip the root, we don't care about it
             internal_read_range(Next, Range, Limit, RangeStorage, [])
     end.
 
@@ -393,7 +417,7 @@ ready(Partition, Name) ->
         _ -> true
     end.
 
--spec prepare_internal(txid(), pvc_fsm:ws(), pvc_vc(), #state{}) -> {_, #state{}}.
+-spec prepare_internal(txn_id(), ws(), pvc_vc(), #state{}) -> {_, #state{}}.
 prepare_internal(TxId, WriteSet, PrepareVC, State = #state{partition=Partition,
                                                           last_committed_version_cache = CommittedCache,
                                                           partition_state = PartitionState,
@@ -416,7 +440,7 @@ prepare_internal(TxId, WriteSet, PrepareVC, State = #state{partition=Partition,
     VoteMsg = {vote, Partition, Vote},
     {VoteMsg, NewsTate}.
 
--spec are_keys_stale(partition_id(), pvc_fsm:ws(), pvc_vc(), cache_id()) -> boolean().
+-spec are_keys_stale(partition_id(), ws(), pvc_vc(), cache_id()) -> boolean().
 are_keys_stale(_, [], _, _) ->
     false;
 
@@ -490,7 +514,7 @@ process_queue_internal(State=#state{partition=Partition,
 %%
 %%      All the keys in the writeset are from this partition.
 %%
--spec vlog_apply_updates(partition_id(), pvc_fsm:ws(), pvc_vc(), cache_id()) -> ok.
+-spec vlog_apply_updates(partition_id(), ws(), pvc_vc(), cache_id()) -> ok.
 vlog_apply_updates(_Partition, [], _VC, _Storage) ->
     ok;
 
@@ -514,7 +538,7 @@ update_index_range(IndexKeySet, RangeStorage) ->
     ok.
 
 %% @doc Cache the last commit time of the keys in the writeset
--spec cache_last_committed_version(partition_id(), pvc_fsm:ws(), pvc_vc(), cache_id()) -> ok.
+-spec cache_last_committed_version(partition_id(), ws(), pvc_vc(), cache_id()) -> ok.
 cache_last_committed_version(Partition, WS, CommitVC, CommittedCache) ->
     CommitTime = pvc_vclock:get_time(Partition, CommitVC),
     Objects = [{Key, CommitTime} || {Key, _} <- WS],
