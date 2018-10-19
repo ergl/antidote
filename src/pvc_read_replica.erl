@@ -260,7 +260,7 @@ generate_replica_name(Node, Partition, Id) ->
 
 -spec random_replica(node(), partition_id()) -> binary().
 random_replica(Node, Partition) ->
-    generate_replica_name(Node, Partition, rand_compat:uniform(?NUM_REPLICAS)).
+    generate_replica_name(Node, Partition, rand:uniform(?NUM_REPLICAS)).
 
 -spec start_replicas(node(), partition_id(), non_neg_integer()) -> ok.
 start_replicas(_Node, _Partition, 0) ->

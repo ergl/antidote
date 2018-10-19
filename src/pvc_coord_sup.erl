@@ -33,11 +33,11 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 start_fsm(Args) ->
-    _ = rand_compat:seed(erlang:phash2([node()]),
-                         erlang:monotonic_time(),
-                         erlang:unique_integer()),
+    _ = rand:seed(exsplus, {erlang:phash2([node()]),
+                            erlang:monotonic_time(),
+                            erlang:unique_integer()}),
 
-    Random = rand_compat:uniform(?NUM_SUP),
+    Random = rand:uniform(?NUM_SUP),
     Module = generate_module_name(Random),
     supervisor:start_child(Module, Args).
 

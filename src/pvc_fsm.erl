@@ -88,8 +88,18 @@ start_link(From) ->
 %% Init
 
 init([From]) ->
-    Transaction = create_transaction(),
-    From ! {ok, Transaction#txn.id},
+    %% Seed random as we will probably have to choose a random read
+    _ = rand:seed(exsplus, {erlang:phash2([node()]),
+                            erlang:monotonic_time(),
+                            erlang:unique_integer()}),
+
+    TxId = #txn_id{server_pid=self()},
+    Transaction = #txn{id=TxId,
+                       has_read=sets:new(),
+                       vc_dep=pvc_vclock:new(),
+                       vc_aggr=pvc_vclock:new()},
+
+    From ! {ok, TxId},
     {ok, client_command, #state{from=From,
                                 transaction=Transaction}}.
 
@@ -162,17 +172,6 @@ decide_vote({vote, From, Vote}, State = #state{num_to_ack=NAck,
     end.
 
 %% internal
-
--spec create_transaction() -> txn().
-create_transaction() ->
-    _ = rand_compat:seed(erlang:phash2([node()]),
-                         erlang:monotonic_time(),
-                         erlang:unique_integer()),
-
-    #txn{id=#txn_id{server_pid=self()},
-         has_read=sets:new(),
-         vc_dep=pvc_vclock:new(),
-         vc_aggr=pvc_vclock:new()}.
 
 -spec update_transaction(partition_id(), pvc_vc(), pvc_vc(), txn()) -> txn().
 update_transaction(From, VCdep, Vcaggr, Tx = #txn{
