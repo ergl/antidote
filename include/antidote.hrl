@@ -102,7 +102,8 @@
     snapshot_time :: snapshot_time(),
 
     %% PVC-related commit metadata
-    pvc_metadata :: pvc_commit_payload()
+    %% Commit time of a transaction at the given partition
+    pvc_metadata :: pvc_time()
 }).
 
 %% PVC
@@ -111,6 +112,8 @@
 %% a partition's most recent vc during reads.
 -define(PVC_WAIT_MS, 1000).
 
+-type pvc_vc() :: pvc_vclock:vc().
+
 -record(pvc_decide_meta, {
     %% The cumulative outcome of the votes.
     %% Only keep one as we exit as soon as we receive a negative one.
@@ -118,29 +121,17 @@
     outcome :: true | {false, reason()},
     %% The current commit vectorclock.
     %% We don't care about its value if the outcome was false.
-    commit_vc :: vectorclock_partition:partition_vc() | undefined
+    commit_vc :: pvc_vc() | undefined
 }).
-
--type pvc_decide_meta() :: #pvc_decide_meta{}.
 
 -record(pvc_time, {
     %% VC representing the causal dependencies picked up during execution
-    vcdep :: vectorclock_partition:partition_vc(),
+    vcdep :: pvc_vc(),
     %% VC representing the minimum snapshot version that must be read
-    vcaggr :: vectorclock_partition:partition_vc()
+    vcaggr :: pvc_vc()
 }).
 
-%% Commit time of a transaction at the given partition
--type pvc_commit_payload() :: #pvc_time{} | undefined.
-
--record(pvc_tx_meta, {
-    %% VC metadata
-    time :: #pvc_time{},
-    %% Represents the partitions where the transaction has fixed a snapshot
-    hasread :: sets:set(partition_id())
-}).
-
--type pvc_metadata() :: #pvc_tx_meta{} | undefined.
+-type pvc_time() :: #pvc_time{} | undefined.
 
 -record(update_log_payload, {
     key :: key(),
@@ -155,7 +146,7 @@
     prepare_time :: non_neg_integer(),
 
     %% Tentative commit time for the transaction
-    pvc_prepare_clock :: vectorclock_partition:partition_vc()
+    pvc_prepare_clock :: pvc_vc()
                        | undefined
 }).
 
@@ -205,7 +196,12 @@
 -define(CLOCKSI_TIMEOUT, 1000).
 
 -record(transaction, {
-    pvc_meta :: pvc_metadata(),
+    %% VC representing the minimum snapshot version that must be read
+    pvc_vcaggr :: pvc_vc(),
+    %% VC representing the causal dependencies picked up during execution
+    pvc_vcdep :: pvc_vc(),
+    %% Represents the partitions where the transaction has fixed a snapshot
+    pvc_hasread :: sets:set(partition_id()),
     transactional_protocol :: transactional_protocol(),
     snapshot_time :: snapshot_time(),
     vec_snapshot_time :: snapshot_time(),

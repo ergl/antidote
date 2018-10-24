@@ -30,6 +30,68 @@
 
 -export([process_request/2]).
 
+sequential_read([], _) ->
+    ok;
+
+sequential_read([Key | Rest], Tx) ->
+    case pvc:read_single(Key, Tx) of
+        {ok, _} ->
+            sequential_read(Rest, Tx);
+        {error, _}=ReadError ->
+            ReadError
+    end.
+
+process_request('Ping', _) ->
+    {ok, TxId} = pvc:start_transaction(),
+    Commit = pvc:commit_transaction(TxId),
+    case Commit of
+        ?committed ->
+            ok;
+        {error, Reason} ->
+            {error, Reason}
+    end;
+
+process_request('Load', #{num_keys := N, bin_size := Size}) ->
+    case pvc:unsafe_load(N, Size) of
+        ?committed ->
+            ok;
+        {error, Reason} ->
+            {error, Reason}
+    end;
+
+process_request('ReadOnlyTx', #{keys := Keys}) ->
+    {ok, TxId} = pvc:start_transaction(),
+    case sequential_read(Keys, TxId) of
+        {error, _}=ReadError ->
+            ReadError;
+        ok ->
+            Commit = pvc:commit_transaction(TxId),
+            case Commit of
+                ?committed ->
+                    ok;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end;
+
+process_request('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
+    Updates = lists:map(fun(#{key := K, value := V}) -> {K, V} end, OpList),
+
+    {ok, TxId} = pvc:start_transaction(),
+    case sequential_read(Keys, TxId) of
+        {error, _}=ReadError ->
+            ReadError;
+        ok ->
+            ok = pvc:update_keys(Updates, TxId),
+            Commit = pvc:commit_transaction(TxId),
+            case Commit of
+                ?committed ->
+                    ok;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end;
+
 %% Used for rubis load
 process_request('PutRegion', #{region_name := Name}) ->
     put_region(Name);

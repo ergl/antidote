@@ -50,6 +50,9 @@ attach:
 rr:
 	./local-cluster.sh
 
+rrb:
+	./local-cluster.sh "microtest"
+
 rtest:
 	test/runtime_tests.escript
 

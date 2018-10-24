@@ -25,8 +25,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export([
-         get_clock_of_dc/2,
+-export([get_clock_of_dc/2,
          set_clock_of_dc/3,
          from_list/1,
          new/0,
@@ -38,6 +37,7 @@
          gt/2,
          lt/2,
          max/1,
+         max/2,
          min/1]).
 
 -export_type([vectorclock/0]).
@@ -65,6 +65,11 @@ from_list(List) ->
 max([]) -> new();
 max([V]) -> V;
 max([V1, V2|T]) -> max([merge(fun erlang:max/2, V1, V2)|T]).
+
+%% @doc Merge two vectors
+-spec max(vectorclock(), vectorclock()) -> vectorclock().
+max(Left, Right) ->
+    dict:merge(fun(_Key, V1, V2) -> erlang:max(V1, V2) end, Left, Right).
 
 -spec min([vectorclock()]) -> vectorclock().
 min([]) -> new();

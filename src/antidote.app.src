@@ -21,7 +21,8 @@
                   observer,
                   wx,
                   xprof,
-                  recon
+                  recon,
+                  ranch
                  ]},
   {mod, { antidote_app, []}},
   %% Options for environmental variables

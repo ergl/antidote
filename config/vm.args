@@ -41,8 +41,14 @@
 ## Riak Core configuration values coming from the command line.
 -riak_core handoff_port ${HANDOFF_PORT}
 
+-riak_core ring_creation_size 8
+
 ## Set Max heap size to 100 MB (on 64-bit, 1 word = 8 bytes)
 +hmax 12500000
 
 ## Don't kill the process, just report
 +hmaxk false
+
+## Pin to CPU cores, spread over hardware threads across NUMA nodes
+## If not supported, use the default unbound behavior
++stbt tnnps

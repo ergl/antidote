@@ -33,7 +33,7 @@
     write_sets :: dict:dict(txid(), list()),
     %% For the ready tx, put their ids with their commit VC
     %% and their index key list here
-    ready_tx :: dict:dict(txid(), {vectorclock(), list()}),
+    ready_tx :: dict:dict(txid(), {pvc_vc(), list()}),
     %% A set of txids that have been discarded
     discarded_tx :: sets:set(txid())
 }).
@@ -67,7 +67,7 @@ enqueue(TxId, WS, CQueue = #cqueue{q = Queue, write_sets = WSDict}) ->
     CQueue#cqueue{q = queue:in(TxId, Queue),
                   write_sets = dict:store(TxId, WS, WSDict)}.
 
--spec ready(txid(), list(), vectorclock(), cqueue()) -> cqueue().
+-spec ready(txid(), list(), pvc_vc(), cqueue()) -> cqueue().
 ready(TxId, IndexList, VC, CQueue = #cqueue{
     q = Queue,
     ready_tx = ReadyDict
@@ -93,7 +93,7 @@ remove(TxId, CQueue = #cqueue{
                           discarded_tx = sets:add_element(TxId, DiscardedSet)}
     end.
 
--spec dequeue_ready(cqueue()) -> {[{txid(), writeset(), vectorclock(), list()}], cqueue()}.
+-spec dequeue_ready(cqueue()) -> {[{txid(), writeset(), pvc_vc(), list()}], cqueue()}.
 dequeue_ready(#cqueue{q = Queue,
                   write_sets = WSDict,
                   ready_tx = ReadyDict,

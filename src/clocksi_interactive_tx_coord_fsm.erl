@@ -34,7 +34,6 @@
 -define(DC_META_UTIL, mock_partition_fsm).
 -define(DC_UTIL, mock_partition_fsm).
 -define(VECTORCLOCK, mock_partition_fsm).
--define(PARTITION_VC, mock_partition_fsm).
 -define(LOG_UTIL, mock_partition_fsm).
 -define(CLOCKSI_VNODE, mock_partition_fsm).
 -define(CLOCKSI_DOWNSTREAM, mock_partition_fsm).
@@ -43,7 +42,6 @@
 -define(DC_META_UTIL, dc_meta_data_utilities).
 -define(DC_UTIL, dc_utilities).
 -define(VECTORCLOCK, vectorclock).
--define(PARTITION_VC, vectorclock_partition).
 -define(LOG_UTIL, log_utilities).
 -define(CLOCKSI_VNODE, clocksi_vnode).
 -define(CLOCKSI_DOWNSTREAM, clocksi_downstream).
@@ -76,6 +74,7 @@
     execute_op/2,
     execute_op/3,
     receive_read_objects_result/2,
+    pvc_read_res/2,
     receive_logging_responses/2,
     finish_op/3,
     prepare/1,
@@ -290,20 +289,17 @@ create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol) ->
 -spec create_pvc_tx_record(atom(), transactional_protocol()) -> {tx(), txid()}.
 create_pvc_tx_record(Name, Protocol) ->
     Now = ?DC_UTIL:now_microsec(),
-    PVCTime = ?PARTITION_VC:new(),
     CompatibilityTime = ?VECTORCLOCK:new(),
 
-    TransactionId = #tx_id{local_start_time=Now, server_pid=Name},
-    PVCTimeMeta = #pvc_time{
-        vcdep=PVCTime,
-        vcaggr=PVCTime
-    },
-    PVCMeta = #pvc_tx_meta{
-        time=PVCTimeMeta,
-        hasread=sets:new()
-    },
+    TransactionId = #tx_id{server_pid=Name,
+                           local_start_time=Now},
+
     Transaction = #transaction{
-        pvc_meta=PVCMeta,
+        %% PVC-related state
+        pvc_vcaggr = pvc_vclock:new(),
+        pvc_vcdep = pvc_vclock:new(),
+        pvc_hasread = sets:new(),
+
         transactional_protocol=Protocol,
         snapshot_time=CompatibilityTime,
         vec_snapshot_time=CompatibilityTime,
@@ -556,6 +552,12 @@ execute_op({update, Args}, Sender, SD0) ->
 execute_op({OpType, Args}, Sender, State) ->
     execute_command(OpType, Args, Sender, State).
 
+%% @doc UNSAFE: Execute a blind write of size Size to NKeys
+execute_command(unsafe_load, {NKeys, Size}, Sender, State = #tx_coord_state{
+    transactional_protocol = pvc
+}) ->
+    pvc_unsafe_load(NKeys, Size, Sender, State);
+
 %% @doc Execute the commit protocol
 execute_command(prepare, Protocol, Sender, State0) ->
     State = State0#tx_coord_state{from=Sender, commit_protocol=Protocol},
@@ -585,11 +587,15 @@ execute_command(read, {Key, Type}, Sender, State = #tx_coord_state{
             }}
     end;
 
+%% @doc Read a single key, asynchronous (PVC only)
+execute_command(read_single, Key, Sender, State) ->
+    pvc_single_read(Key, State#tx_coord_state{from=Sender});
+
 %% @doc Read a batch of objects, asynchronous
-execute_command(read_objects, Objects, Sender, State = #tx_coord_state{
+execute_command(read_objects, Keys, Sender, State = #tx_coord_state{
     transactional_protocol=pvc
 }) ->
-    pvc_read(Objects, Sender, State);
+    pvc_read(Keys, Sender, State);
 
 execute_command(read_objects, Objects, Sender, State) ->
     clocksi_read(Objects, Sender, State);
@@ -630,6 +636,20 @@ execute_command(pvc_scan_range, {Root, Range, Limit}, Sender, State = #tx_coord_
     MergedKeys = lists:foldl(fun ordsets:add_element/2, LocalIndexSet, StoredIndexKeys),
     gen_fsm:reply(Sender, {ok, ordsets:to_list(MergedKeys)}),
     {next_state, execute_op, State}.
+
+pvc_unsafe_load(NKeys, Size, Sender, State) ->
+    Val = crypto:strong_rand_bytes(Size),
+    NewState = pvc_unsafe_load_update(NKeys, Val, State),
+    pvc_prepare(NewState#tx_coord_state{from=Sender}).
+
+pvc_unsafe_load_update(0, _, State) ->
+    State;
+
+pvc_unsafe_load_update(N, Val, S = #tx_coord_state{client_ops=Ops0,updated_partitions=P0}) ->
+    Key = integer_to_binary(N, 36),
+    Op = {Key, antidote_crdt_lwwreg, {assign, Val}},
+    {P, Ops} = pvc_perform_update(Op, P0, Ops0),
+    pvc_unsafe_load_update(N - 1, Val, S#tx_coord_state{client_ops=Ops,updated_partitions=P}).
 
 -spec pvc_add_to_index_dict(index_node(), key(), dict:dict()) -> dict:dict().
 pvc_add_to_index_dict(Part, Key, Dict) ->
@@ -672,34 +692,55 @@ pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
             end, ordsets:new(), S)
     end.
 
+pvc_single_read(Key, State = #tx_coord_state{
+    from = Sender,
+    client_ops = ClientOps,
+    transaction = Transaction
+}) ->
+    case pvc_key_was_updated(ClientOps, Key) of
+        false ->
+            HasRead = Transaction#transaction.pvc_hasread,
+            VCaggr = Transaction#transaction.pvc_vcaggr,
+            clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr),
+            {next_state, pvc_read_res, State};
+        Value ->
+            gen_fsm:reply(Sender, {ok, Value}),
+            {next_state, execute_op, State}
+    end.
+
+pvc_read_res({error, maxvc_bad_vc}, State) ->
+    abort(State#tx_coord_state{return_accumulator = [{pvc_msg, pvc_bad_vc}]});
+
+pvc_read_res({pvc_readreturn, From, _Key, Value, VCdep, VCaggr}, State = #tx_coord_state{transaction = Tx}) ->
+    gen_fsm:reply(State#tx_coord_state.from, {ok, Value}),
+    {next_state, execute_op, State#tx_coord_state{transaction = pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
+
 %% @doc Loop through all the keys, calling the appropriate partitions
-pvc_read(Objects, Sender, State = #tx_coord_state{
+pvc_read(Keys, Sender, State = #tx_coord_state{
     client_ops=ClientOps,
     transaction=Transaction
 }) ->
-
-    [FirstKey | Rest] = JustKeys = lists:map(fun(Obj) -> element(1, Obj) end, Objects),
+    [FirstKey | Rest] = Keys,
     ok = pvc_perform_read(FirstKey, Transaction, ClientOps),
     {next_state, receive_read_objects_result, State#tx_coord_state{from=Sender,
-                                                                   return_accumulator={JustKeys, Rest}}}.
+                                                                   return_accumulator={Keys, Rest}}}.
 
 -spec pvc_perform_read(key(), tx(), list()) -> ok.
 pvc_perform_read(Key, Transaction, ClientOps) ->
-    Type = antidote_crdt_lwwreg,
-
     %% If the key has already been updated in this transaction,
     %% return the last assigned value directly.
     %% This works because we restrict ourselves to lww-registers,
     %% so we don't need to depend on previous values.
     case pvc_key_was_updated(ClientOps, Key) of
         false ->
-            Partition = log_utilities:get_key_partition(Key),
             %% If the key has never been updated, request the most
             %% recent compatible version of the key to the holding
             %% partition.
             %%
             %% We will wait for the reply on the next state.
-            clocksi_vnode:async_read_data_item(Partition, Transaction, Key, Type);
+            HasRead = Transaction#transaction.pvc_hasread,
+            VCaggr = Transaction#transaction.pvc_vcaggr,
+            clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr);
         Value ->
             %% If updated, reply to ourselves with the last value.
             gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
@@ -919,9 +960,9 @@ receive_read_objects_result(Msg, State=#tx_coord_state{transactional_protocol=pv
             pvc_read_loop(Key, Value, Transaction, State);
 
         %% A message from the read_item server, must update the transaction
-        {pvc_readreturn, Key, Value, VCdep, VCaggr} ->
+        {pvc_readreturn, From, Key, Value, VCdep, VCaggr} ->
             %% Update Transaction state (read partitions, version vectors, etc)
-            UpdatedTransaction = pvc_update_transaction(Key, VCdep, VCaggr, Transaction),
+            UpdatedTransaction = pvc_update_transaction(From, VCdep, VCaggr, Transaction),
             %% Update the state and loop until all keys have been read
             pvc_read_loop(Key, Value, UpdatedTransaction, State)
     end.
@@ -950,27 +991,21 @@ pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOp
                                      return_accumulator={ReadValues, Rest}}}
     end.
 
--spec pvc_update_transaction(key(), vectorclock(), vectorclock(), tx()) -> tx().
-pvc_update_transaction(Key, VCdep, VCaggr, Transaction = #transaction{
-    pvc_meta=PVCMeta=#pvc_tx_meta{
-        hasread=HasRead,
-        time=PVCTime=#pvc_time{
-            vcdep=TVCdep,
-            vcaggr=TVCaggr
-        }
-    }
+-spec pvc_update_transaction(partition_id(), pvc_vc(), pvc_vc(), tx()) -> tx().
+pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
+    pvc_hasread = HasRead,
+    pvc_vcdep = TVCdep,
+    pvc_vcaggr = TVCaggr
 }) ->
 
-    {Partition, _Node} = log_utilities:get_key_partition(Key),
-    NewHasRead = sets:add_element(Partition, HasRead),
+    NewHasRead = sets:add_element(FromPartition, HasRead),
 
-    NewVCdep = vectorclock_partition:max([TVCdep, VCdep]),
-    NewVCaggr = vectorclock_partition:max([TVCaggr, VCaggr]),
+    NewVCdep = pvc_vclock:max(TVCdep, VCdep),
+    NewVCaggr = pvc_vclock:max(TVCaggr, VCaggr),
 
-    Transaction#transaction{pvc_meta=PVCMeta#pvc_tx_meta{
-        hasread=NewHasRead,
-        time=PVCTime#pvc_time{vcdep=NewVCdep, vcaggr=NewVCaggr}
-    }}.
+    Transaction#transaction{pvc_hasread=NewHasRead,
+                            pvc_vcdep = NewVCdep,
+                            pvc_vcaggr = NewVCaggr}.
 
 %% The following function is used to apply the updates that were performed by the running
 %% transaction, to the result returned by a read.
@@ -1047,10 +1082,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
                     ok = clocksi_vnode:prepare(Partitions, Transaction),
                     NumToAck = length(Partitions),
 
-                    InitialCommitVC = Transaction#transaction
-                        .pvc_meta#pvc_tx_meta
-                        .time#pvc_time
-                        .vcdep,
+                    InitialCommitVC = Transaction#transaction.pvc_vcdep,
 
                     VoteState = State#tx_coord_state{
                         num_to_ack = NumToAck,
@@ -1238,7 +1270,7 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
             end,
 
             %% Update the commit vc with the sequence number from the partition.
-            CommitVC = vectorclock_partition:set_partition_time(From, SeqNumber, PrevCommitVC),
+            CommitVC = pvc_vclock:set_time(From, SeqNumber, PrevCommitVC),
             NewState = State#tx_coord_state{return_accumulator = [{pvc, #pvc_decide_meta{
                 outcome = Outcome,
                 commit_vc = CommitVC
