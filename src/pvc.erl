@@ -22,12 +22,18 @@
 
 -include("antidote.hrl").
 
+%% PVC-Only API
+-export([start_transaction/0,
+         read_keys/2,
+         update_keys/2,
+         commit_transaction/1]).
+
 %% API
 -export([
     start_transaction/3,
     start_transaction/2,
-    commit_transaction/1,
     abort_transaction/1,
+    read_single/2,
     read_objects/2,
     read_objects/3,
     read_objects/4,
@@ -36,10 +42,33 @@
     update_objects/4
 ]).
 
-start_transaction(Clock, Properties) ->
-    start_transaction(Clock, Properties, false).
+%% Unsafe load API
+-export([
+    unsafe_load/2
+]).
 
-start_transaction(_Clock, _Properties, _KeepAlive) ->
+%% @doc UNSAFE: Blindly write a random binary blobs of size Size to N keys
+%%
+%% NOTE: Don't use outside of benchmarks, as this sidesteps the read-before
+%% write mechanism, and won't play well with concurrent transactions.
+%%
+%% The keys that are updated are integer_to_binary(1, 36) .. integer_to_binary(N, 36)
+unsafe_load(N, Size) ->
+    case pvc_istart_tx() of
+        {ok, #tx_id{server_pid = Pid}} ->
+            Res = gen_fsm:sync_send_event(Pid, {unsafe_load, {N, Size}}, ?OP_TIMEOUT),
+            case Res of
+                ok -> {ok, []};
+                _ -> Res
+            end;
+
+        Err ->
+            {error, Err}
+    end.
+
+%% PVC-Only API
+
+start_transaction() ->
     pvc_istart_tx().
 
 commit_transaction(TxId) ->
@@ -50,6 +79,45 @@ commit_transaction(TxId) ->
             {ok, []};
         Res -> Res
     end.
+
+read_single(Key, #tx_id{server_pid = Pid}) ->
+    gen_fsm:sync_send_event(Pid, {read_single, Key}, ?OP_TIMEOUT).
+
+read_keys([], _) ->
+    {ok, []};
+
+read_keys(Keys, #tx_id{server_pid = Pid}) when is_list(Keys) ->
+    gen_fsm:sync_send_event(Pid, {read_objects, Keys}, ?OP_TIMEOUT);
+
+read_keys(Key, TxId) ->
+    read_keys([Key], TxId).
+
+update_keys(UpdateOps, TxId = #tx_id{server_pid = Pid}) when is_list(UpdateOps) ->
+    CompatOps = lists:map(fun({K, V}) ->
+        {K, antidote_crdt_lwwreg, {assign, V}}
+    end, UpdateOps),
+    Resp = gen_fsm:sync_send_event(Pid, {update_objects, CompatOps}, ?OP_TIMEOUT),
+    case Resp of
+        ok ->
+            ok;
+
+        {aborted, TxId}=Abort ->
+            {error, Abort};
+
+        {error, _R}=Err ->
+            Err
+    end;
+
+update_keys(UpdateOp, TxId) ->
+    update_keys([UpdateOp], TxId).
+
+%% Antidote-Compatible API
+
+start_transaction(Clock, Properties) ->
+    start_transaction(Clock, Properties, false).
+
+start_transaction(_Clock, _Properties, _KeepAlive) ->
+    pvc_istart_tx().
 
 abort_transaction(TxId) ->
     cure:abort_transaction(TxId).

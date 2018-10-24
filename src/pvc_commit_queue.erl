@@ -31,8 +31,9 @@
     q :: queue:queue({txid(), list()}),
     %% Mapping between txids and their write sets
     write_sets :: dict:dict(txid(), list()),
-    %% For the ready tx, put their ids with their commit VC here
-    ready_tx :: dict:dict(txid(), vectorclock()),
+    %% For the ready tx, put their ids with their commit VC
+    %% and their index key list here
+    ready_tx :: dict:dict(txid(), {pvc_vc(), list()}),
     %% A set of txids that have been discarded
     discarded_tx :: sets:set(txid())
 }).
@@ -46,7 +47,7 @@
 -export([new/0,
          enqueue/3,
          dequeue_ready/1,
-         ready/3,
+         ready/4,
          remove/2,
          contains_disputed/2]).
 
@@ -66,8 +67,8 @@ enqueue(TxId, WS, CQueue = #cqueue{q = Queue, write_sets = WSDict}) ->
     CQueue#cqueue{q = queue:in(TxId, Queue),
                   write_sets = dict:store(TxId, WS, WSDict)}.
 
--spec ready(txid(), vectorclock(), cqueue()) -> cqueue().
-ready(TxId, VC, CQueue = #cqueue{
+-spec ready(txid(), list(), pvc_vc(), cqueue()) -> cqueue().
+ready(TxId, IndexList, VC, CQueue = #cqueue{
     q = Queue,
     ready_tx = ReadyDict
 }) ->
@@ -75,7 +76,7 @@ ready(TxId, VC, CQueue = #cqueue{
         false ->
             CQueue;
         true ->
-            CQueue#cqueue{ready_tx = dict:store(TxId, VC, ReadyDict)}
+            CQueue#cqueue{ready_tx = dict:store(TxId, {VC, IndexList}, ReadyDict)}
     end.
 
 -spec remove(txid(), cqueue()) -> cqueue().
@@ -92,7 +93,7 @@ remove(TxId, CQueue = #cqueue{
                           discarded_tx = sets:add_element(TxId, DiscardedSet)}
     end.
 
--spec dequeue_ready(cqueue()) -> {[{txid(), writeset(), vectorclock()}], cqueue()}.
+-spec dequeue_ready(cqueue()) -> {[{txid(), writeset(), pvc_vc(), list()}], cqueue()}.
 dequeue_ready(#cqueue{q = Queue,
                   write_sets = WSDict,
                   ready_tx = ReadyDict,
@@ -121,11 +122,11 @@ get_ready({{value, TxId}, Queue}, WSDict, ReadyDict, DiscardedSet, Acc) ->
                     NewWSDict = dict:erase(TxId, WSDict),
 
                     %% Get VC and remove it
-                    VC = dict:fetch(TxId, ReadyDict),
+                    {VC, IndexList} = dict:fetch(TxId, ReadyDict),
                     NewReadyDict = dict:erase(TxId, ReadyDict),
 
                     %% Append entry to the Acc
-                    NewAcc = [{TxId, WS, VC} | Acc],
+                    NewAcc = [{TxId, WS, VC, IndexList} | Acc],
                     get_ready(queue:out(Queue), NewWSDict, NewReadyDict, DiscardedSet, NewAcc)
             end
     end.
@@ -189,7 +190,7 @@ pvc_commit_queue_conflict_test() ->
     ?assertEqual(true, pvc_commit_queue:contains_disputed(TestWS, CQ1)),
 
     %% Intersect happens even after marking as ready
-    CQ2 = pvc_commit_queue:ready(id, ignore, CQ1),
+    CQ2 = pvc_commit_queue:ready(id, [], ignore, CQ1),
     ?assertEqual(true, pvc_commit_queue:contains_disputed(TestWS, CQ2)),
 
     CQ3 = pvc_commit_queue:enqueue(id2, TestWS1, CQ2),
@@ -219,18 +220,18 @@ pvc_commit_queue_ready_skip_test() ->
     CQ2 = pvc_commit_queue:enqueue(id1, [], CQ1),
     CQ3 = pvc_commit_queue:enqueue(id2, [], CQ2),
 
-    CQ4 = pvc_commit_queue:ready(id2, ignore, CQ3),
+    CQ4 = pvc_commit_queue:ready(id2, [], ignore, CQ3),
     CQ5 = pvc_commit_queue:remove(id1, CQ4),
 
     {Elts, CQ6} = pvc_commit_queue:dequeue_ready(CQ5),
     ?assertEqual([], Elts),
 
-    CQ7 = pvc_commit_queue:ready(id, ignore, CQ6),
+    CQ7 = pvc_commit_queue:ready(id, [], ignore, CQ6),
 
     %% Get ready skips removed entries from the queue
     {Elts1, CQ8} = pvc_commit_queue:dequeue_ready(CQ7),
     %% The entries are in the same order as we put them into the queue
-    ?assertMatch([{id, [], ignore}, {id2, [], ignore}], Elts1),
+    ?assertMatch([{id, [], ignore, []}, {id2, [], ignore, []}], Elts1),
 
     %% id1 is gone forever, queue stays the same
     CQ9 = pvc_commit_queue:remove(id1, CQ8),

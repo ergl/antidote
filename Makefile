@@ -27,8 +27,11 @@ auto:
 	$(REBAR) auto --name='antidote@127.0.0.1' --setcookie antidote --config config/sys-debug.config
 
 rel:
-	$(REBAR) release
+	$(REBAR) release -n antidote
 	./change_script.sh _build/default/rel/antidote/bin/antidote
+
+relgrid:
+	$(REBAR) release -n antidote
 
 stop:
 	./_build/default/rel/antidote/bin/env stop
@@ -44,9 +47,11 @@ ping:
 attach:
 	./_build/default/rel/antidote/bin/env attach
 
-rebuild: stop relclean rel run
+rr:
+	./local-cluster.sh
 
-restart: relclean rel run
+rrb:
+	./local-cluster.sh "microtest"
 
 rtest:
 	test/runtime_tests.escript

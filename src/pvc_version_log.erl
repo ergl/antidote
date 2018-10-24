@@ -21,72 +21,72 @@
 -module(pvc_version_log).
 
 -include("antidote.hrl").
+-include("pvc.hrl").
 
--type vlog() :: {partition_id(), type(), gb_sets:tree(integer(), {term(), vectorclock()})}.
+-define(bottom, {<<>>, pvc_vclock:new()}).
+
+-type versions() :: orddict:dict(integer(), {val(), pvc_vc()}).
+
+-record(vlog, {
+    %% The partition where this structure resides
+    at :: partition_id(),
+    %% The actual version list
+    %% The data is structured as an ordered dict where the value is a
+    %% snapshot, and the key, the time of that snapshot at this partition.
+    %%
+    %% This snapshot time is stored as a negative number, as the default
+    %% ordered dict implementation orders them in ascending order, and
+    %% we want them in descending order.
+    data :: versions()
+}).
+
+-type vlog() :: #vlog{}.
 
 %% API
--export([new/2,
+-export([new/1,
          insert/3,
-         get_smaller/2,
-         to_list/1]).
+         get_smaller/2]).
 
--spec new(partition_id(), type()) -> vlog().
-new(AtId, Type) ->
-    {AtId, Type, gb_trees:empty()}.
+-spec new(partition_id()) -> vlog().
+new(AtId) ->
+    #vlog{at=AtId, data=orddict:new()}.
 
-%% @doc The Version Log at the i-th partition (VLog_i) is only updated
-%% when if there is a new transaction committed at i. This means
-%% that the entries in VLog_i are strictly monotonic at their i-th
-%% entry. We can use this to store the entries in a tree, where the
-%% key is the i-th value of an entry.
-%%
-%% If this assumption doesn't hold, this will fail
-%%
--spec insert(vectorclock(), term(), vlog()) -> vlog().
-insert(VC, Value, {Id, Type, Tree}) ->
-    Key = entry_to_key(Id, VC),
-    {Id, Type, gb_trees:insert(Key, {Value, VC}, Tree)}.
+-spec insert(pvc_vc(), term(), vlog()) -> vlog().
+insert(VC, Value, V=#vlog{at=Id, data=Dict}) ->
+    Key = pvc_vclock:get_time(Id, VC),
+    V#vlog{data=maybe_gc(orddict:store(-Key, {Value, VC}, Dict))}.
 
--spec get_smaller(vectorclock(), vlog()) -> {term(), vectorclock()}.
-get_smaller(VC, {Id, Type, Tree}) ->
-    case gb_trees:is_empty(Tree) of
+maybe_gc(Data) ->
+    Size = orddict:size(Data),
+    case Size > ?VERSION_THRESHOLD of
+        false -> Data;
+        true -> lists:sublist(Data, ?MAX_VERSIONS)
+    end.
+
+-spec get_smaller(pvc_vc(), vlog()) -> {val(), pvc_vc()}.
+get_smaller(VC, #vlog{at=Id, data=[{MaxTime, MaxVersion} | _]=Data}) ->
+    case Data of
+        [] ->
+            ?bottom;
+
+        _ ->
+            LookupKey = pvc_vclock:get_time(Id, VC),
+            case LookupKey > abs(MaxTime) of
+                true ->
+                    MaxVersion;
+                false ->
+                    get_smaller_internal(-LookupKey, Data)
+            end
+    end.
+
+-spec get_smaller_internal(integer(), versions()) -> {val(), pvc_vc()}.
+get_smaller_internal(_, []) ->
+    ?bottom;
+
+get_smaller_internal(LookupKey, [{Time, Version} | Rest]) ->
+    case LookupKey =< Time of
         true ->
-            base_entry(Type);
+            Version;
         false ->
-            get_smaller(Type, VC, Id, Tree)
+            get_smaller_internal(LookupKey, Rest)
     end.
-
--spec get_smaller(type(), vectorclock(), partition_id(), gb_trees:tree()) -> {term(), vectorclock()}.
-get_smaller(Type, VC, Id, Tree) ->
-    LookupKey = entry_to_key(Id, VC),
-    Iter = gb_trees:iterator_from(LookupKey, Tree),
-    %% Will always return something, tree is not empty
-    %% iterator_from/2 always returns the first key greater than or equal to
-    %% Key is returned. In our case, that's either our snapshot or the previous
-    %% one, which is what we want.
-    %%
-    %% If the only snapshot present is something newer than the one we're
-    %% asking for, return the base snapshot
-    case gb_trees:next(Iter) of
-        none ->
-            base_entry(Type);
-        {_Key, Snapshot={_Value, _CT}, _} ->
-            Snapshot
-    end.
-
-to_list({_, _, Tree}) ->
-    gb_trees:to_list(Tree).
-
-
-%% Util
-
-%% @doc Tree key for the snapshot.
-%%
-%%      We order the tree from newest (left) to oldest (right)
-entry_to_key(Partition, VC) ->
-    0 - vectorclock_partition:get_partition_time(Partition, VC).
-
-base_entry(Type) ->
-    Value = Type:value(Type:new()),
-    CommitTime = vectorclock:new(),
-    {Value, CommitTime}.

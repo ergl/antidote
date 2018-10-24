@@ -93,6 +93,7 @@
     %% Store commits in memory for the CLog
     %% We should find a way to cleanup, otherwise
     %% this will keep growing with each committed tx
+    %% FIXME(borja): Hot memory point
     pvc_clog :: pvc_commit_log:clog()
 }).
 
@@ -212,7 +213,7 @@ get_all(IndexNode, LogId, Continuation, PrevOps) ->
                                         infinity).
 
 %% @doc Scan the CLog for the MaxVC
--spec pvc_get_max_vc(index_node(), [partition_id()], vectorclock()) -> {ok, vectorclock()} | {error, reason()}.
+-spec pvc_get_max_vc(index_node(), [partition_id()], pvc_vc()) -> pvc_vc().
 pvc_get_max_vc(IndexNode, ReadPartitions, VCAggr) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
@@ -595,7 +596,7 @@ handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State = #state{
     MaxVC = pvc_commit_log:get_smaller_from_dots(ReadPartitions, VCAggr, PVCLog),
 %%    T2 = erlang:timestamp(),
 %%    lager:info("PVC get_smaller_from_dots took ~p microseconds~n", [timer:now_diff(T2, T1)]),
-    {reply, {ok, MaxVC}, State};
+    {reply, MaxVC, State};
 
 handle_command(_Message, _Sender, State) ->
     {noreply, State}.

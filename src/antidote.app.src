@@ -10,6 +10,7 @@
                   riak_pb,
                   riak_api,
                   riak_core,
+                  rubis_proto,
                   antidote_crdt,
                   cuttlefish,
                   riak_dt,
@@ -18,7 +19,10 @@
                   rand_compat,
                   runtime_tools,
                   observer,
-                  wx
+                  wx,
+                  xprof,
+                  recon,
+                  ranch
                  ]},
   {mod, { antidote_app, []}},
   %% Options for environmental variables

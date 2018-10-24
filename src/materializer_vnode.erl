@@ -69,8 +69,10 @@
          handle_exit/3]).
 
 %% PVC-only functions
--export([pvc_read/5,
-         pvc_update/1]).
+-export([pvc_read/3,
+         pvc_update/1,
+         pvc_update_indices/1,
+         pvc_key_range/4]).
 
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
@@ -100,19 +102,19 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
 %%
 %%      Will also bypass the ops cache as we don't need it.
 %%
--spec pvc_read(pvc, key(), type(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
-pvc_read(pvc, Key, Type, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) ->
+-spec pvc_read(key(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
+pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) ->
     case ets:info(VLogCache) of
         undefined ->
             riak_core_vnode_master:sync_command(
                 {MatState#mat_state.partition, node()},
-                {pvc_read, Key, Type, SnapshotTime},
+                {pvc_read, Key, SnapshotTime},
                 materializer_vnode_master,
                 infinity
             );
 
         _ ->
-            pvc_internal_read(Key, Type, SnapshotTime, MatState)
+            pvc_internal_read(Key, SnapshotTime, MatState)
     end.
 
 -spec get_cache_name(non_neg_integer(), atom()) -> atom().
@@ -136,6 +138,28 @@ pvc_update(Payload = #clocksi_payload{key = Key}) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
         {pvc_update, Payload},
+        materializer_vnode_master
+    ).
+
+-spec pvc_update_indices(list()) -> ok.
+pvc_update_indices([]) ->
+    ok;
+
+pvc_update_indices([K| _] = Keys) ->
+    %% All these keys are in the same partition
+    IndexNode = log_utilities:get_key_partition(K),
+    riak_core_vnode_master:command(
+        IndexNode,
+        {pvc_index, Keys},
+        materializer_vnode_master
+    ).
+
+%% @doc Get the key range after Root with the given Prefix of size PrefixLen
+-spec pvc_key_range(index_node(), key(), pvc_indices:range(), non_neg_integer()) -> list().
+pvc_key_range(IndexNode, Root, Range, Limit) ->
+    riak_core_vnode_master:sync_command(
+        IndexNode,
+        {pvc_key_range, Root, Range, Limit},
         materializer_vnode_master
     ).
 
@@ -163,9 +187,18 @@ init([Partition]) ->
             true
     end,
 
-    PVCCache = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
+    %% For normal queries
+    PVC_VLog = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
         {ok, pvc} ->
             open_table(Partition, pvc_snapshot_cache);
+        _ ->
+            undefined
+    end,
+
+    %% For range queries
+    PVC_Index = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
+        {ok, pvc} ->
+            open_table(Partition, pvc_index_cache, [ordered_set, protected, named_table, ?TABLE_CONCURRENCY]);
         _ ->
             undefined
     end,
@@ -176,7 +209,8 @@ init([Partition]) ->
         partition = Partition,
         snapshot_cache = SnapshotCache,
 
-        pvc_vlog_cache = PVCCache
+        pvc_vlog_cache = PVC_VLog,
+        pvc_index_set = PVC_Index
     }}.
 
 -spec load_from_log_to_tables(partition_id(), #mat_state{}) -> ok | {error, reason()}.
@@ -207,14 +241,14 @@ load_ops(OpsDict, State) ->
         end, CommittedOps)
     end, true, OpsDict).
 
--spec open_table(partition_id(), 'ops_cache' | 'snapshot_cache') -> atom() | ets:tid().
+-spec open_table(partition_id(), atom()) -> atom() | ets:tid().
 open_table(Partition, Name) ->
+    open_table(Partition, Name, [set, protected, named_table, ?TABLE_CONCURRENCY]).
+
+open_table(Partition, Name, Options) ->
     case ets:info(get_cache_name(Partition, Name)) of
         undefined ->
-            ets:new(
-                get_cache_name(Partition, Name),
-                [set, protected, named_table, ?TABLE_CONCURRENCY]
-            );
+            ets:new(get_cache_name(Partition, Name), Options);
 
         _ ->
             %% Other vnode hasn't finished closing tables
@@ -226,7 +260,7 @@ open_table(Partition, Name) ->
                 _:_Reason->
                     ok
             end,
-            open_table(Partition, Name)
+            open_table(Partition, Name, Options)
     end.
 
 %% @doc The tables holding the updates and snapshots are shared with concurrent
@@ -281,8 +315,8 @@ handle_command({check_ready}, _Sender, State = #mat_state{partition=Partition, i
 handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
     {reply, read(Key, Type, SnapshotTime, Transaction, State), State};
 
-handle_command({pvc_read, Key, Type, SnapshotTime}, _Sender, State) ->
-    {reply, pvc_read(pvc, Key, Type, SnapshotTime, State), State};
+handle_command({pvc_read, Key, SnapshotTime}, _Sender, State) ->
+    {reply, pvc_internal_read(Key, SnapshotTime, State), State};
 
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
@@ -291,6 +325,17 @@ handle_command({update, Key, DownstreamOp}, _Sender, State) ->
 handle_command({pvc_update, Payload}, _Sender, State) ->
     ok = pvc_update_ops_bypass(Payload, State),
     {reply, ok, State};
+
+handle_command({pvc_index, Keys}, _Sender, State = #mat_state{pvc_index_set = PVC_Index}) ->
+    Ops = lists:map(fun(K) -> {K, nil} end, Keys),
+    true = ets:insert(PVC_Index, Ops),
+    {noreply, State};
+
+handle_command({pvc_key_range, Root, Range, Limit}, _Sender, State = #mat_state{
+    pvc_index_set = PVC_Index
+}) ->
+    FoundKeys = pvc_get_key_range(Root, Range, Limit, PVC_Index),
+    {reply, FoundKeys, State};
 
 handle_command({store_ss, Key, Snapshot, CommitTime}, _Sender, State) ->
     internal_store_ss(Key, Snapshot, CommitTime, false, State),
@@ -423,14 +468,13 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
     end.
 
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
--spec pvc_internal_read(key(), type(), snapshot_time(), #mat_state{}) -> {ok, term(), snapshot_time()}.
-pvc_internal_read(Key, Type=antidote_crdt_lwwreg, MinSnapshotTime, #mat_state{
+-spec pvc_internal_read(key(), snapshot_time(), #mat_state{}) -> {ok, term(), snapshot_time()}.
+pvc_internal_read(Key, MinSnapshotTime, #mat_state{
     pvc_vlog_cache = VLogCache
 }) ->
     {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
         [] ->
-            BaseValue = Type:value(Type:new()),
-            {BaseValue, vectorclock:new()};
+            {<<>>, pvc_vclock:new()};
 
         [{_, PrevVersionLog}] ->
             pvc_version_log:get_smaller(MinSnapshotTime, PrevVersionLog)
@@ -806,23 +850,64 @@ pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
                                           pvc_vlog_cache = VLogCache}) ->
 
     #clocksi_payload{key = Key,
-                     type = Type,
                      op_param = DownstreamOp,
                      snapshot_time = SnapshotTime} = Payload,
 
     VersionLog = case ets:lookup(VLogCache, Key) of
         [] ->
-            pvc_version_log:new(Partition, Type);
+            pvc_version_log:new(Partition);
 
         [{_, PrevVersionLog}] ->
             PrevVersionLog
     end,
 
-    %% TODO(borja): Implement GC in the future
     NextVersionLog = pvc_version_log:insert(SnapshotTime, DownstreamOp, VersionLog),
-%%    lager:info("VLog.apply(~p, ~p)", [Key, pvc_version_log:to_list(NextVersionLog)]),
     true = ets:insert(VLogCache, {Key, NextVersionLog}),
     ok.
+
+%% @doc Scan the PVC_Index for matching keys
+%%
+%%      We implemented the PVC_Index as an ordered_set, so keys with the same,
+%%      common prefix will be grouped together in the tree.
+%%      Hence, we can scan a range by repeatedly calling ets:next/2 starting
+%%      on the root (a key wich is just the common prefix).
+%%
+%%      ETS does not guarantee that the returned key actually exists in the table,
+%%      if it was removed concurrently to a scan. We actually never remove keys
+%%      from the table, so this does not affect us. Also, the keys are inserted
+%%      here only after a transaction has committed and made its updates visible
+%%      to others through the VLog, so the caller can make sure that whatever
+%%      is returned from this range can be found on primary storage
+%%
+%%      This function will scan the index until `Limit` keys are added to the range,
+%%      or we hit the end of the table, whatever happens first.
+%%
+-spec pvc_get_key_range(key(), pvc_indices:range(), non_neg_integer(), cache_id()) -> list().
+pvc_get_key_range(Root, Range, Limit, PVC_Index) ->
+    case ets:lookup(PVC_Index, Root) of
+        [] ->
+            [];
+
+        [{Root, _}] ->
+            Next = ets:next(PVC_Index, Root),
+            %% Skip the root, we don't care about it
+            pvc_get_key_range(Next, Range, Limit, PVC_Index, [])
+    end.
+
+pvc_get_key_range('$end_of_table', _Range, _Limit, _PVC_Index, Acc) ->
+    Acc;
+
+pvc_get_key_range(_, _Range, 0, _PVC_Index, Acc) ->
+    Acc;
+
+pvc_get_key_range(Key, Range, Limit, PVC_Index, Acc) ->
+    case pvc_indices:in_range(Key, Range) of
+        true ->
+            NextKey = ets:next(PVC_Index, Key),
+            pvc_get_key_range(NextKey, Range, Limit - 1, PVC_Index, [Key | Acc]);
+        false ->
+            Acc
+    end.
 
 %% @doc Insert an operation and start garbage collection triggered by writes.
 %% the mechanism is very simple; when there are more than OPS_THRESHOLD

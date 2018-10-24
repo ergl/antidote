@@ -25,6 +25,10 @@ if [ -z "$LOGREADER_PORT" ]; then
   export LOGREADER_PORT=8085
 fi
 
+if [ -z "$RUBIS_PB_PORT" ]; then
+  export RUBIS_PB_PORT=7878
+fi
+
 # Ring State directory.
 if [ -z "$RING_STATE_DIR" ]; then
   export RING_STATE_DIR="data/ring"
@@ -33,6 +37,10 @@ fi
 # Platform data directory.
 if [ -z "$PLATFORM_DATA_DIR" ]; then
   export PLATFORM_DATA_DIR="data"
+fi
+
+if [ -z "$INSTANCE_NAME" ]; then
+  export INSTANCE_NAME=antidote
 fi
 
 # If we're running in Mesos...
@@ -87,7 +95,7 @@ if [ -z "$IP" ]; then
 fi
 
 if [ -z "$NODE_NAME" ]; then
-  export NODE_NAME=antidote@${IP}
+  export NODE_NAME=${INSTANCE_NAME}@${IP}
 fi
 
 if [ -z "$COOKIE" ]; then
@@ -96,5 +104,5 @@ fi
 
 export RELX_REPLACE_OS_VARS=true
 
-RELNAME="`dirname \"$0\"`"/antidote
+RELNAME="`dirname \"$0\"`"/${INSTANCE_NAME}
 exec ${RELNAME} "$@"

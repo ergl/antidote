@@ -34,6 +34,10 @@
 start(_StartType, _StartArgs) ->
     case antidote_sup:start_link() of
         {ok, Pid} ->
+            %% RUBIS Layer
+            ok = riak_core:register([{vnode_module, rubis_keygen_vnode}]),
+            ok = riak_core_node_watcher:service_up(rubis_keygen, self()),
+
             ok = riak_core:register([{vnode_module, logging_vnode}]),
             ok = riak_core_node_watcher:service_up(logging, self()),
             %%ClockSI layer
@@ -67,6 +71,8 @@ start(_StartType, _StartArgs) ->
 
             {ok, Protocol} = application:get_env(antidote, txn_prot),
             ok = antidote_config:put(txn_prot, Protocol),
+
+            ok = rubis_pb_server:start_listeners(),
 
             case application:get_env(antidote, auto_start_read_servers) of
                 {ok, true} ->

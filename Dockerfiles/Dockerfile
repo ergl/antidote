@@ -10,7 +10,9 @@ ENV PLATFORM_DATA_DIR "data"
 ENV NODE_NAME "antidote@127.0.0.1"
 ENV SHORT_NAME "false"
 ENV ANTIDOTE_REPO "https://github.com/ergl/antidote.git"
-ENV ANTIDOTE_BRANCH "pvc"
+ENV ANTIDOTE_BRANCH "pvc-rubis"
+# RUBIS-dedicated pb port
+ENV RPB_PORT "7878"
 
 RUN set -xe \
   && apt-get update \
@@ -34,6 +36,9 @@ RUN chmod a+x /opt/antidote/start_and_attach.sh \
 EXPOSE 4368
 # Ports for Antidote
 EXPOSE 8085 8086 8087 8099
+
+# Rubis PB interface
+EXPOSE 7878
 
 # Antidote RPC
 EXPOSE 9100

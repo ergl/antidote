@@ -2,7 +2,7 @@
              [{description,"SyncFree reference platform"},
               {vsn,"1"},
               {registered,[]},
-              {applications,[kernel,stdlib,riak_pb,riak_api,riak_core,runtime_tools,observer,wx]},
+              {applications,[kernel,stdlib,riak_pb,riak_api,riak_core,runtime_tools,observer,wx,xprof]},
               {mod,{antidote_app,[]}},
               {env,[{txn_cert,true},
                     {txn_prot,clocksi},

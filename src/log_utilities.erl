@@ -91,11 +91,14 @@ remove_node_from_preflist(Preflist) ->
 convert_key(Key) ->
     case is_binary(Key) of
         true ->
-            KeyInt = (catch list_to_integer(binary_to_list(Key))),
+            PostKey = preprocess_bin_key(Key),
+            KeyInt = (catch list_to_integer(binary_to_list(PostKey))),
             case is_integer(KeyInt) of
-                true -> abs(KeyInt);
+                true ->
+                    abs(KeyInt);
+
                 false ->
-                    HashedKey = riak_core_util:chash_key({?BUCKET, Key}),
+                    HashedKey = riak_core_util:chash_key({?BUCKET, PostKey}),
                     abs(crypto:bytes_to_integer(HashedKey))
             end;
         false ->
@@ -107,6 +110,15 @@ convert_key(Key) ->
                     abs(crypto:bytes_to_integer(HashedKey))
             end
     end.
+
+-spec preprocess_bin_key(key()) -> key().
+-ifndef(microbench_partition).
+preprocess_bin_key(Key) when is_binary(Key) ->
+    rubis_utils:get_grouping(Key).
+-else.
+preprocess_bin_key(Key) when is_binary(Key) ->
+    Key.
+-endif.
 
 -spec log_record_version() -> non_neg_integer().
 log_record_version() -> ?LOG_RECORD_VERSION.
