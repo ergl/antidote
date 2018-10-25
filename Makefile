@@ -51,7 +51,7 @@ rr:
 	./local-cluster.sh
 
 rrb:
-	./local-cluster.sh "microtest"
+	./local-cluster.sh "rubisp"
 
 rtest:
 	test/runtime_tests.escript

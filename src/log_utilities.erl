@@ -25,6 +25,12 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
+%% Toggle to enable/disable rubis-aware partitioning
+-ifdef(rubis_partitioning).
+-define(wrap_bin_key(Key), rubis_utils:get_grouping(Key)).
+-else.
+-define(wrap_bin_key(Key), Key).
+-endif.
 
 -export([get_key_partition/1,
          get_preflist_from_key/1,
@@ -91,14 +97,14 @@ remove_node_from_preflist(Preflist) ->
 convert_key(Key) ->
     case is_binary(Key) of
         true ->
-            PostKey = preprocess_bin_key(Key),
-            KeyInt = (catch list_to_integer(binary_to_list(PostKey))),
+            BinKey = ?wrap_bin_key(Key),
+            KeyInt = (catch list_to_integer(binary_to_list(BinKey))),
             case is_integer(KeyInt) of
                 true ->
                     abs(KeyInt);
 
                 false ->
-                    HashedKey = riak_core_util:chash_key({?BUCKET, PostKey}),
+                    HashedKey = riak_core_util:chash_key({?BUCKET, BinKey}),
                     abs(crypto:bytes_to_integer(HashedKey))
             end;
         false ->
@@ -110,15 +116,6 @@ convert_key(Key) ->
                     abs(crypto:bytes_to_integer(HashedKey))
             end
     end.
-
--spec preprocess_bin_key(key()) -> key().
--ifndef(microbench_partition).
-preprocess_bin_key(Key) when is_binary(Key) ->
-    rubis_utils:get_grouping(Key).
--else.
-preprocess_bin_key(Key) when is_binary(Key) ->
-    Key.
--endif.
 
 -spec log_record_version() -> non_neg_integer().
 log_record_version() -> ?LOG_RECORD_VERSION.
