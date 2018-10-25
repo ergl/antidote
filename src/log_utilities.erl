@@ -98,14 +98,11 @@ convert_key(Key) ->
     case is_binary(Key) of
         true ->
             BinKey = ?wrap_bin_key(Key),
-            KeyInt = (catch list_to_integer(binary_to_list(BinKey))),
-            case is_integer(KeyInt) of
-                true ->
-                    abs(KeyInt);
-
-                false ->
-                    HashedKey = riak_core_util:chash_key({?BUCKET, BinKey}),
-                    abs(crypto:bytes_to_integer(HashedKey))
+            try
+                abs(binary_to_integer(BinKey))
+            catch _ ->
+                HashedKey = riak_core_util:chash_key({?BUCKET, BinKey}),
+                abs(crypto:bytes_to_integer(HashedKey))
             end;
         false ->
             case is_integer(Key) of
