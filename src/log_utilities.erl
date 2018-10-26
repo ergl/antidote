@@ -100,7 +100,7 @@ convert_key(Key) ->
             BinKey = ?wrap_bin_key(Key),
             try
                 abs(binary_to_integer(BinKey))
-            catch _ ->
+            catch _:_ ->
                 HashedKey = riak_core_util:chash_key({?BUCKET, BinKey}),
                 abs(crypto:bytes_to_integer(HashedKey))
             end;
