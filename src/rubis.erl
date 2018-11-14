@@ -51,6 +51,15 @@ process_request('Ping', _) ->
             {error, Reason}
     end;
 
+process_request('GetRing', _) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    CHash = riak_core_ring:chash(Ring),
+    Nodes = chash:nodes(CHash),
+    lists:map(fun({_, Node}) ->
+        [_, Ip] = binary:split(atom_to_binary(Node, latin1), <<"@">>),
+        Ip
+    end, Nodes);
+
 process_request('Load', #{num_keys := N, bin_size := Size}) ->
     case pvc:unsafe_load(N, Size) of
         ?committed ->
