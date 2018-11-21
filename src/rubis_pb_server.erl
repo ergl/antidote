@@ -22,9 +22,9 @@
 
 -export([start_listeners/0]).
 
-%% The number of acceptor processes
+%% The number of active listeners
 %% for the RUBIS Protocol Buffer server
--define(RUBIS_NSUP, 50).
+-define(RUBIS_NSUP, 100).
 -define(DEFAULT_RUBIS_PB_PORT, 7878).
 
 -spec start_listeners() -> ok.
