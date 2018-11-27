@@ -51,6 +51,9 @@ process_request('Ping', _) ->
             {error, Reason}
     end;
 
+process_request('NTPing', _) ->
+    os:timestamp();
+
 process_request('GetRing', _) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     CHash = riak_core_ring:chash(Ring),
