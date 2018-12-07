@@ -71,6 +71,22 @@ process_request('Load', #{num_keys := N, bin_size := Size}) ->
             {error, Reason}
     end;
 
+process_request('ReadReq', #{key := Key}) ->
+    Start = os:timestamp(),
+    {ok, TxId} = pvc:start_transaction(),
+    case pvc:read_single(Key, TxId) of
+        {error, _} ->
+            {error, <<>>, <<>>};
+        {ok, _} ->
+            Commit = pvc:commit_transaction(TxId),
+            case Commit of
+                ?committed ->
+                    {ok, Start, os:timestamp()};
+                {error, _} ->
+                    {error, <<>>, <<>>}
+            end
+    end;
+
 process_request('ReadOnlyTx', #{keys := Keys}) ->
     {ok, TxId} = pvc:start_transaction(),
     case sequential_read(Keys, TxId) of

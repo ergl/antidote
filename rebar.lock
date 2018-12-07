@@ -69,7 +69,7 @@
  {<<"riak_sysmon">>,{pkg,<<"riak_sysmon">>,<<"2.1.5">>},1},
  {<<"rubis_proto">>,
   {git,"https://github.com/ergl/rubis_proto.git",
-       {ref,"d5d7caf1e69758c600a19503f44e4b77a7a20784"}},
+       {ref,"05d270046a2536a23f824f9013960aed99506805"}},
   0},
  {<<"setup">>,{pkg,<<"setup">>,<<"1.7.0">>},2},
  {<<"webmachine">>,
