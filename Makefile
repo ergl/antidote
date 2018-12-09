@@ -26,7 +26,7 @@ shell:
 auto:
 	$(REBAR) auto --name='antidote@127.0.0.1' --setcookie antidote --config config/sys-debug.config
 
-rel:
+rel: compile
 	$(REBAR) release -n antidote
 	./change_script.sh _build/default/rel/antidote/bin/antidote
 
@@ -36,7 +36,7 @@ relgrid:
 stop:
 	./_build/default/rel/antidote/bin/env stop
 
-run:
+run: rel
 	./_build/default/rel/antidote/bin/env start
 	sleep 2
 	./_build/default/rel/antidote/bin/env ping
