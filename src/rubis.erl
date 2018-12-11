@@ -41,27 +41,45 @@ sequential_read([Key | Rest], Tx) ->
             ReadError
     end.
 
-process_request('Ping', _) ->
+process_request('ByteReq', #{tag := no_op}) ->
+    {no_op, os:timestamp()};
+
+process_request('ByteReq', #{tag := ping}) ->
+    Start = os:timestamp(),
     {ok, TxId} = pvc:start_transaction(),
     Commit = pvc:commit_transaction(TxId),
     case Commit of
         ?committed ->
-            ok;
+            {ping, {Start, os:timestamp()}};
         {error, Reason} ->
             {error, Reason}
     end;
 
-process_request('NTPing', _) ->
-    os:timestamp();
-
-process_request('GetRing', _) ->
+process_request('ByteReq', #{tag := ring}) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     CHash = riak_core_ring:chash(Ring),
     Nodes = chash:nodes(CHash),
-    lists:map(fun({_, Node}) ->
+    Ips = lists:foldl(fun({_, Node}, Acc) ->
         [_, Ip] = binary:split(atom_to_binary(Node, latin1), <<"@">>),
-        Ip
-    end, Nodes);
+        ordsets:add_element(binary_to_atom(Ip, latin1), Acc)
+    end, ordsets:new(), Nodes),
+    {ring, Ips};
+
+process_request('TimedRead', #{key := Key}) ->
+    Start = os:timestamp(),
+    {ok, TxId} = pvc:start_transaction(),
+    case pvc:read_single(Key, TxId) of
+        {error, ReadReason} ->
+            {error, ReadReason};
+        {ok, _} ->
+            Commit = pvc:commit_transaction(TxId),
+            case Commit of
+                ?committed ->
+                    {ok, {Start, os:timestamp()}};
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end;
 
 process_request('Load', #{num_keys := N, bin_size := Size}) ->
     case pvc:unsafe_load(N, Size) of
@@ -69,22 +87,6 @@ process_request('Load', #{num_keys := N, bin_size := Size}) ->
             ok;
         {error, Reason} ->
             {error, Reason}
-    end;
-
-process_request('ReadReq', #{key := Key}) ->
-    Start = os:timestamp(),
-    {ok, TxId} = pvc:start_transaction(),
-    case pvc:read_single(Key, TxId) of
-        {error, _} ->
-            {error, <<>>, <<>>};
-        {ok, _} ->
-            Commit = pvc:commit_transaction(TxId),
-            case Commit of
-                ?committed ->
-                    {ok, Start, os:timestamp()};
-                {error, _} ->
-                    {error, <<>>, <<>>}
-            end
     end;
 
 process_request('ReadOnlyTx', #{keys := Keys}) ->
