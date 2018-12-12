@@ -22,7 +22,8 @@
                   wx,
                   xprof,
                   recon,
-                  ranch
+                  ranch,
+                  observer_cli
                  ]},
   {mod, { antidote_app, []}},
   %% Options for environmental variables
