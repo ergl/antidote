@@ -46,11 +46,11 @@ process_request('ByteReq', #{tag := no_op}) ->
 
 process_request('ByteReq', #{tag := ping}) ->
     Start = os:timestamp(),
-    {ok, TxId} = pvc:start_transaction(),
-    Commit = pvc:commit_transaction(TxId),
+    {TookStart, {ok, TxId}} = timer:tc(pvc, start_transaction, []),
+    {TookCommit, Commit} = timer:tc(pvc, commit_transaction, [TxId]),
     case Commit of
         ?committed ->
-            {ping, {Start, os:timestamp()}};
+            {ping, {Start, TookStart, TookCommit, os:timestamp()}};
         {error, Reason} ->
             {error, Reason}
     end;
@@ -67,15 +67,16 @@ process_request('ByteReq', #{tag := ring}) ->
 
 process_request('TimedRead', #{key := Key}) ->
     Start = os:timestamp(),
-    {ok, TxId} = pvc:start_transaction(),
-    case pvc:read_single(Key, TxId) of
+    {TookStart, {ok, TxId}} = timer:tc(pvc, start_transaction, []),
+    {TookRead, ReadRes} = timer:tc(pvc, read_single, [Key, TxId]),
+    case ReadRes of
         {error, ReadReason} ->
             {error, ReadReason};
         {ok, _} ->
-            Commit = pvc:commit_transaction(TxId),
+            {TookCommit, Commit} = timer:tc(pvc, commit_transaction, [TxId]),
             case Commit of
                 ?committed ->
-                    {ok, {Start, os:timestamp()}};
+                    {ok, {Start, TookStart, TookRead, TookCommit, os:timestamp()}};
                 {error, Reason} ->
                     {error, Reason}
             end
