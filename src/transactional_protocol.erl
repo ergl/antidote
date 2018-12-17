@@ -78,7 +78,7 @@ update_objects(Clock, Properties, Updates, KeepAlive) ->
 
 -spec get_protocol_module() -> transactional_protocol().
 get_protocol_module() ->
-    {ok, TransactionalModule} = antidote_config:get(?TRANSACTION_CONFIG, clocksi),
+    {ok, TransactionalModule} = application:get_env(antidote, txn_prot),
     case TransactionalModule of
         gr -> cure;
         clocksi -> cure;
@@ -87,5 +87,5 @@ get_protocol_module() ->
 
 -spec get_protocol() -> clocksi | gr | pvc.
 get_protocol() ->
-    {ok, TransactionalModule} = antidote_config:get(?TRANSACTION_CONFIG, clocksi),
+    {ok, TransactionalModule} = application:get_env(antidote, txn_prot),
     TransactionalModule.
