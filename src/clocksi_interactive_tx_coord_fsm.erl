@@ -171,9 +171,8 @@ init([From, ClientClock, UpdateClock, StayAlive, Operations]) ->
     {ok, execute_op, State#tx_coord_state{operations = Operations, from = From}, 0}.
 
 init_state(StayAlive, FullCommit, IsStatic) ->
-    {ok, Protocol} = antidote_config:get(?TRANSACTION_CONFIG, clocksi),
     #tx_coord_state {
-        transactional_protocol = Protocol,
+        transactional_protocol = pvc,
         transaction = undefined,
         updated_partitions = [],
         client_ops = [],
@@ -344,14 +343,14 @@ perform_singleitem_read(Key, Type) ->
 ) -> {ok, {txid(), [], snapshot_time()}} | {error, term()}.
 
 perform_singleitem_update(Key, Type, Params) ->
-    {ok, TransactionalProtocol} = antidote_config:get(?TRANSACTION_CONFIG, cure),
+    {ok, Prot} = application:get_env(antidote, txn_prot),
     {Transaction, _TransactionId} = create_transaction_record(
         ignore,
         update_clock,
         false,
         undefined,
         true,
-        TransactionalProtocol
+        Prot
     ),
     Partition = ?LOG_UTIL:get_key_partition(Key),
     %% Execute pre_commit_hook if any

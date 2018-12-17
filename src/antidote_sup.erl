@@ -60,10 +60,6 @@ init(_Args) ->
                      {riak_core_vnode_master, start_link, [logging_vnode]},
                      permanent, 5000, worker, [riak_core_vnode_master]},
 
-    AntidoteConfig = {antidote_config,
-                      {antidote_config, start_link, []},
-                      permanent, 5000, worker, [antidote_config]},
-
     %% RUBIS Key Generator Oracle, one per partition
     RubisKeyGen = ?VNODE(rubis_keygen_vnode_master, rubis_keygen_vnode),
 
@@ -119,7 +115,6 @@ init(_Args) ->
     {ok,
      {{one_for_one, 5, 10},
       [LoggingMaster,
-       AntidoteConfig,
        RubisKeyGen,
        ClockSIMaster,
        ClockSIiTxCoordSup,

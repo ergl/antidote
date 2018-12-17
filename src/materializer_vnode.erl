@@ -188,7 +188,7 @@ init([Partition]) ->
     end,
 
     %% For normal queries
-    PVC_VLog = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
+    PVC_VLog = case application:get_env(antidote, txn_prot) of
         {ok, pvc} ->
             open_table(Partition, pvc_snapshot_cache);
         _ ->
@@ -196,7 +196,7 @@ init([Partition]) ->
     end,
 
     %% For range queries
-    PVC_Index = case antidote_config:get(?TRANSACTION_CONFIG, clocksi) of
+    PVC_Index = case application:get_env(antidote, txn_prot) of
         {ok, pvc} ->
             open_table(Partition, pvc_index_cache, [ordered_set, protected, named_table, ?TABLE_CONCURRENCY]);
         _ ->
