@@ -53,8 +53,8 @@
          reverse_and_filter_updates_per_key/2]).
 
 %% PVC-only exports
--export([decide/4,
-         pvc_process_cqueue/1,
+-export([pvc_decide/3,
+         pvc_schedule_queue/1,
          pvc_get_most_recent_vc/2]).
 
 %% health check export
@@ -128,9 +128,9 @@ pvc_get_most_recent_vc(Node, TableName) ->
         Value -> Value
     end.
 
--spec pvc_process_cqueue(index_node()) -> ok.
-pvc_process_cqueue(Node) ->
-    riak_core_vnode_master:command(Node, pvc_process_cqueue, ?CLOCKSI_MASTER).
+-spec pvc_schedule_queue(partition_id()) -> ok.
+pvc_schedule_queue(Partition) ->
+    riak_core_vnode_master:command({Partition, node()}, pvc_process_cqueue, ?CLOCKSI_MASTER).
 
 %% @doc Return active transactions in prepare state with their preparetime for a given key
 %% should be run from same physical node
@@ -192,7 +192,7 @@ send_min_prepared(Partition) ->
     dc_utilities:call_local_vnode(Partition, clocksi_vnode_master, {send_min_prepared}).
 
 %% @doc Sends a prepare request to a Node involved in a tx identified by TxId
-prepare(UpdatedPartitions, Tx = #transaction{transactional_protocol = pvc}) ->
+prepare(UpdatedPartitions, Tx = #transaction{transactional_protocol=pvc}) ->
     lists:foreach(fun({Node, WriteSet}) ->
         riak_core_vnode_master:command(
             Node,
@@ -212,14 +212,12 @@ prepare(ListofNodes, TxId) ->
         )
     end, ok, ListofNodes).
 
--spec decide(list(), tx(), vectorclock(), boolean()) -> ok.
-decide(OpsAndIndices, Tx, CommitVC, Outcome) ->
-    %% Sanity check
-    pvc = Tx#transaction.transactional_protocol,
+-spec pvc_decide(list(), txid(), term()) -> ok.
+pvc_decide(OpsAndIndices, TxId, Outcome) ->
     lists:foreach(fun({Node, WriteSet, IndexList}) ->
         riak_core_vnode_master:command(
             Node,
-            {pvc_decide, Tx, WriteSet, IndexList, CommitVC, Outcome},
+            {pvc_decide, TxId, WriteSet, IndexList, Outcome},
             {fsm, undefined, self()},
             ?CLOCKSI_MASTER
         )
@@ -414,26 +412,20 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
-handle_command({pvc_decide, Transaction, WriteSet, IndexList, CommitVC, Outcome}, _Sender, State = #state{
-    partition = Partition,
-    pvc_commitqueue = CQueue
-}) ->
+handle_command({pvc_decide, TxId, WriteSet, IndexList, Outcome}, _Sender, State = #state{partition = Partition,
+                                                                                         pvc_commitqueue = CQueue}) ->
 
-    TxnId = Transaction#transaction.txn_id,
     NewQueue = case Outcome of
-        {false, _} ->
-            %% If the outcome is false, append an abort record to the log
-            ok = pvc_append_abort(Partition, TxnId, WriteSet),
-            pvc_commit_queue:remove(TxnId, CQueue);
+        {error, _} ->
+            ok = pvc_append_abort(Partition, TxId, WriteSet),
+            pvc_commit_queue:remove(TxId, CQueue);
 
-        true ->
-            %% Append to CommitLog
-            ReadyQueue = pvc_commit_queue:ready(TxnId, IndexList, CommitVC, CQueue),
-            OwnNode = {Partition, node()},
-            ok = pvc_process_cqueue(OwnNode),
+       {ok, CommitVC} ->
+            ReadyQueue = pvc_commit_queue:ready(TxId, IndexList, CommitVC, CQueue),
+            ok = pvc_schedule_queue(Partition),
             ReadyQueue
     end,
-    {noreply, State#state{pvc_commitqueue = NewQueue}};
+    {noreply, State#state{pvc_commitqueue=NewQueue}};
 
 handle_command({pvc_abort, Transaction, WriteSet}, _Sender, State = #state{
     partition = Partition
@@ -641,50 +633,34 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
-pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
-    partition = Partition,
-    committed_tx = CommittedTransactions,
-
-    pvc_atomic_state = PVCState,
-    pvc_commitqueue = CommitQueue
-}) ->
-
-%%    lager:info("{~p} PVC ~p received prepare", [erlang:phash2(TxnId), Partition]),
+pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{partition=Partition,
+                                                                                 committed_tx=CommittedTransactions,
+                                                                                 pvc_atomic_state=PVCState,
+                                                                                 pvc_commitqueue=CommitQueue}) ->
 
     %% Check if any our writeset intersects with any of the prepared transactions
     WriteSetDisputed = pvc_commit_queue:contains_disputed(WriteSet, CommitQueue),
 
     PrepareVC = Transaction#transaction.pvc_vcdep,
-
-    %% Get the keys in the writeset
     PartitionKeys = [Key || {Key, _, _} <- WriteSet],
-    StaleTx = pvc_are_keys_stale(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
+    StaleTransaction = pvc_are_keys_stale(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
 
-    {Vote, Seq, NewState} = case WriteSetDisputed orelse StaleTx of
+    {Vote, NewState} = case WriteSetDisputed orelse StaleTransaction of
         true ->
             Reason = case WriteSetDisputed of
-                true ->
-                    pvc_conflict;
-                _ ->
-                    pvc_stale_vc
+                true -> pvc_conflict;
+                false -> pvc_stale_vc
             end,
-%%            lager:info("{~p} PVC writeset disputed [~p] or tx is too stale [~p]", [erlang:phash2(TxnId), WriteSetDisputed, StaleTx]),
-            {{false, Reason}, ignore, State};
+            {{error, Reason}, State};
 
         false ->
             SeqNumber = pvc_faa_lastprep(PVCState),
-
             ok = pvc_append_prepare(Partition, TxnId, WriteSet, PrepareVC),
-%%            lager:info("{~p} PVC prepare enqueue itself", [erlang:phash2(Transaction#transaction.txn_id)]),
             NewCommitQueue = pvc_commit_queue:enqueue(TxnId, WriteSet, CommitQueue),
-            {true, SeqNumber, State#state{pvc_commitqueue = NewCommitQueue}}
+            {{ok, SeqNumber}, State#state{pvc_commitqueue=NewCommitQueue}}
     end,
-%%    lager:info(
-%%        "{~p} PVC prepare ~p votes ~p with sequence number ~p",
-%%        [erlang:phash2(TxnId), Partition, Vote, Seq]
-%%    ),
-    Msg = {pvc_vote, Partition, Vote, Seq},
-    {Msg, NewState}.
+    VoteMsg = {vote, Partition, Vote},
+    {VoteMsg , NewState}.
 
 %% @doc Check if any of the keys in a transaction writeset are too stale with
 %%      respect to the most recent committed version.

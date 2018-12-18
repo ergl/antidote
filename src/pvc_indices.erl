@@ -41,12 +41,12 @@
 -spec u_index(binary(), binary(), binary(), txid()) -> ok.
 u_index(IndexName, IndexValue, RefKey, TxId) ->
     Key = make_u_index_key(IndexName, IndexValue),
-    pvc:update_keys({Key, RefKey}, TxId).
+    pvc:update(Key, RefKey, TxId).
 
 -spec read_u_index(binary(), binary(), txid()) -> {ok, list()} | {error, reason()}.
 read_u_index(IndexName, IndexValue, TxId) ->
     Key = make_u_index_key(IndexName, IndexValue),
-    pvc:read_keys(Key, TxId).
+    pvc:read(Key, TxId).
 
 -spec index(binary(), binary(), binary(), txid()) -> ok.
 index(IndexName, IndexValue, RefKey, TxId) ->
@@ -84,7 +84,7 @@ read_index(IndexName, TxId) ->
                 [] ->
                     {ok, []};
                 _ ->
-                    pvc:read_keys(Filtered, TxId)
+                    pvc:read_batch(Filtered, TxId)
             end
     end.
 
@@ -109,7 +109,7 @@ read_index(IndexName, IndexValue, TxId) ->
 
 %% @doc Return only non-empty results from a read
 safe_index_read(Keys, TxId) ->
-    case pvc:read_keys(Keys, TxId) of
+    case pvc:read_batch(Keys, TxId) of
         {error, Reason} ->
             {error, Reason};
         {ok, ReadValues} ->
@@ -129,7 +129,7 @@ in_range(Key, {Prefix, Len}) ->
 %% Util functions
 
 claimed_index(RootKey, TxId) ->
-    {ok, [RootVal]} = pvc:read_keys(RootKey, TxId),
+    {ok, [RootVal]} = pvc:read(RootKey, TxId),
     RootVal =:= ?CLAIMED.
 
 %% TODO(borja): Handle non-binary data
@@ -148,7 +148,7 @@ make_index_key(IndexName, IndexValue, RefKey) ->
     <<IndexName/binary, ?INDEX_SEP/binary, IndexValue/binary, ?INDEX_SEP/binary, RefKey/binary>>.
 
 update_indices(Updates, TxId = #tx_id{server_pid = Pid}) ->
-    ok = pvc:update_keys(Updates, TxId),
+    ok = pvc:update_batch(Updates, TxId),
     gen_fsm:sync_send_event(Pid, {pvc_index, Updates}, ?OP_TIMEOUT).
 
 %% @doc Read subkeys of the given root key from the ordered storage

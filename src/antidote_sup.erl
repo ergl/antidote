@@ -72,6 +72,8 @@ init(_Args) ->
                             permanent, 5000, supervisor,
                             [clockSI_interactive_tx_coord_sup]},
 
+    PVCCoordPool = ?CHILD(pvc_coord_pool, supervisor, []),
+
     ClockSIReadSup = {clocksi_readitem_sup,
                       {clocksi_readitem_sup, start_link, []},
                       permanent, 5000, supervisor,
@@ -118,6 +120,7 @@ init(_Args) ->
        RubisKeyGen,
        ClockSIMaster,
        ClockSIiTxCoordSup,
+       PVCCoordPool,
        ClockSIReadSup,
        MaterializerMaster,
        ZMQContextManager,

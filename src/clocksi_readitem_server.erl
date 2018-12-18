@@ -293,7 +293,7 @@ pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCa
 %%      If it is not, will sleep for 1000 ms and try again.
 %%
 -spec pvc_check_time(partition_id(), pvc_vc(), pvc_vc()) -> ready
-                                                                    | {not_ready, non_neg_integer()}.
+                                                          | {not_ready, non_neg_integer()}.
 
 pvc_check_time(Partition, MostRecentVC, VCaggr) ->
     MostRecentTime = pvc_vclock:get_time(Partition, MostRecentVC),
