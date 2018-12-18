@@ -19,8 +19,8 @@
 %% -------------------------------------------------------------------
 
 -module(pvc_fsm).
-
 -behavior(gen_fsm).
+-behavior(poolboy_worker).
 
 %% For type partition_id, index_node, key, val
 -include("antidote.hrl").
@@ -30,7 +30,11 @@
 -export([start_link/1]).
 
 %% states
--export([client_command/3,
+-export([wait_checkout/2,
+         wait_checkout/3,
+         wait_checkin/2,
+         wait_checkin/3,
+         client_command/3,
          read_result/2,
          read_batch_result/2,
          decide_vote/2]).
@@ -48,7 +52,7 @@
 
 -record(state, {
     %% Client PID
-    from :: pid(),
+    from = not_ready :: not_ready | pid(),
     %% Active Transaction Object
     transaction :: txn(),
     %% Read accumulator for batch reads
@@ -77,35 +81,52 @@
 
 -type fsm_state() :: #state{}.
 -type step(T) :: {next_state, T, fsm_state()}.
--type stop() :: {stop, normal, fsm_state()}.
+-type reset() :: {next_state, client_command, fsm_state()}.
 
 %% External API
 
 -spec start_link(pid()) -> {ok, pid()}.
-start_link(From) ->
-    gen_fsm:start_link(?MODULE, [From], []).
+start_link(Args) ->
+    gen_fsm:start_link(?MODULE, Args, []).
 
 %% Init
 
-init([From]) ->
+init([]) ->
     %% Seed random as we will probably have to choose a random read
     _ = rand:seed(exsplus, {erlang:phash2([node()]),
                             erlang:monotonic_time(),
                             erlang:unique_integer()}),
 
-    TxId = #txn_id{server_pid=self()},
-    Transaction = #txn{id=TxId,
-                       has_read=sets:new(),
-                       vc_dep=pvc_vclock:new(),
-                       vc_aggr=pvc_vclock:new()},
-
-    From ! {ok, TxId},
-    {ok, client_command, #state{from=From,
-                                transaction=Transaction}}.
+    {ok, wait_checkout, fresh_state(fresh_transaction())}.
 
 %% States
 
--spec client_command(term(), pid(), fsm_state()) -> step(_) | stop().
+%% @doc This message gets delivered by the pool when client performs check out
+-spec wait_checkout(term(), fsm_state()) -> step(_).
+wait_checkout(checkout, State) ->
+    {next_state, client_command, State};
+
+wait_checkout(_, State) ->
+    {next_state, wait_checkout, State}.
+
+%% @doc Loop over state until ready
+wait_checkout(_, From, State) ->
+    gen_fsm:reply(From, {error, wait_checkout}),
+    {next_state, wait_checkout, State}.
+
+%% @doc This message gets delivered by the pool when client performs check in
+wait_checkin(checkin, State) ->
+    {next_state, wait_checkout, State};
+
+wait_checkin(_, State) ->
+    {next_state, wait_checkin, State}.
+
+%% @doc Loop over state until ready
+wait_checkin(_, From, State) ->
+    gen_fsm:reply(From, {error, wait_checkin}),
+    {next_state, wait_checkin, State}.
+
+-spec client_command(term(), pid(), fsm_state()) -> step(_) | reset().
 client_command({unsafe_load, NKeys, Size}, Sender, State) ->
     unsafe_load_internal(NKeys, Size, State#state{from=Sender});
 
@@ -133,7 +154,7 @@ client_command(commit, Sender, State) ->
 client_command(_, _Sender, _State) ->
     erlang:error(undefined).
 
--spec read_result(term(), fsm_state()) -> step(_) | stop().
+-spec read_result(term(), fsm_state()) -> step(_) | reset().
 read_result({error, maxvc_bad_vc}, State) ->
     read_abort(State#state{abort_reason = pvc_bad_vc});
 
@@ -141,7 +162,7 @@ read_result({readreturn, From, _Key, Value, VCdep, Vcaggr}, State=#state{transac
     gen_fsm:reply(State#state.from, {ok, Value}),
     {next_state, client_command, State#state{transaction=update_transaction(From, VCdep, Vcaggr, Tx)}}.
 
--spec read_batch_result(term(), fsm_state()) -> step(read_batch_result | client_command) | stop().
+-spec read_batch_result(term(), fsm_state()) -> step(read_batch_result | client_command) | reset().
 read_batch_result({error, maxvc_bad_vc}, State) ->
     read_abort(State#state{abort_reason=pvc_bad_vc});
 
@@ -151,7 +172,7 @@ read_batch_result({key_was_updated, Key, Value}, State) ->
 read_batch_result({readreturn, From, Key, Value, VCdep, Vcaggr}, State=#state{transaction=Tx}) ->
     read_batch_loop(Key, Value, State#state{transaction=update_transaction(From, VCdep, Vcaggr, Tx)}).
 
--spec decide_vote({vote, partition_id(), term()}, fsm_state()) -> stop().
+-spec decide_vote({vote, partition_id(), term()}, fsm_state()) -> reset().
 decide_vote({vote, From, Vote}, State = #state{num_to_ack=NAck,
                                                ack_outcome=AccOutcome}) ->
 
@@ -188,7 +209,7 @@ update_transaction(From, VCdep, Vcaggr, Tx = #txn{
            vc_aggr=NewVCaggr,
            has_read=NewHasRead}.
 
--spec unsafe_load_internal(non_neg_integer(), non_neg_integer(), fsm_state()) -> stop().
+-spec unsafe_load_internal(non_neg_integer(), non_neg_integer(), fsm_state()) -> reset().
 unsafe_load_internal(NKeys, Size, State) ->
     Val = crypto:strong_rand_bytes(Size),
     NewState = unsafe_loop(NKeys, Val, State),
@@ -352,7 +373,7 @@ update_batch_internal(Updates, State=#state{from=Sender}) ->
 
     {next_state, client_command, NewState}.
 
--spec commit(fsm_state()) -> step(decide_vote) | stop().
+-spec commit(fsm_state()) -> step(decide_vote) | reset().
 commit(State=#state{from=From,
                     transaction=Transaction,
                     updated_partitions=Partitions}) ->
@@ -360,7 +381,7 @@ commit(State=#state{from=From,
     case Partitions of
         [] ->
             gen_fsm:reply(From, ok),
-            {stop, normal, State};
+            recycle_fsm();
 
         _ ->
             Ack = orddict:size(Partitions),
@@ -370,12 +391,12 @@ commit(State=#state{from=From,
             {next_state, decide_vote, State#state{num_to_ack=Ack, ack_outcome={ok, CommitVC}}}
     end.
 
--spec decide(fsm_state()) -> stop().
-decide(State=#state{from=Sender,
-                    ack_outcome=Outcome,
-                    transaction=Transaction,
-                    index_buffer=IndexBuffer,
-                    updated_partitions=UpdatedPartitions}) ->
+-spec decide(fsm_state()) -> reset().
+decide(#state{from=Sender,
+              ack_outcome=Outcome,
+              transaction=Transaction,
+              index_buffer=IndexBuffer,
+              updated_partitions=UpdatedPartitions}) ->
 
     OutcomeMsg = case Outcome of
         {ok, _} -> ok;
@@ -395,16 +416,36 @@ decide(State=#state{from=Sender,
         end
     end, UpdatedPartitions),
     ok = pvc_storage_vnode:decide(PartitionsWithIndex, TxId, Outcome),
-    {stop, normal, State}.
+    recycle_fsm().
 
--spec read_abort(fsm_state()) -> stop().
-read_abort(State=#state{from=From,
-                        abort_reason=Reason}) ->
-
+-spec read_abort(fsm_state()) -> reset().
+read_abort(#state{from=From, abort_reason=Reason}) ->
     gen_fsm:reply(From, {error, Reason}),
-    {stop, normal, State}.
+    recycle_fsm().
 
 %% Util functions
+
+recycle_fsm() ->
+    {next_state, wait_checkin, fresh_state(fresh_transaction())}.
+
+fresh_transaction() ->
+    TxId = #txn_id{server_pid=self()},
+    #txn{id=TxId,
+         has_read=sets:new(),
+         vc_dep=pvc_vclock:new(),
+         vc_aggr=pvc_vclock:new()}.
+
+fresh_state(Transaction) ->
+    #state{from=not_ready,
+           transaction=Transaction,
+           read_accumulator=[],
+           read_remaining=[],
+           writeset=orddict:new(),
+           updated_partitions=orddict:new(),
+           abort_reason=undefined,
+           num_to_ack=0,
+           ack_outcome=undefined,
+           index_buffer=orddict:new()}.
 
 %% @doc Util function to update the FSM state with a new client update
 -spec update_state(key(), val(), ws(), partition_id()) -> {ws(), partitions()}.

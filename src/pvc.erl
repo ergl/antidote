@@ -37,13 +37,9 @@
 
 %% New FSM API
 
--spec start_transaction() -> {ok, txn_id()} | {error, reason()}.
+-spec start_transaction() -> {ok, txn_id()}.
 start_transaction() ->
-    {ok, _} = pvc_coord_sup:start_fsm([self()]),
-    receive
-        {ok, TxId} -> {ok, TxId};
-        Err -> {error, Err}
-    end.
+    {ok, #txn_id{server_pid=pvc_coord_pool:take_pool_tx()}}.
 
 -spec read(key(), txn_id()) -> {ok, val()} | {error, reason()}.
 read(Key, #txn_id{server_pid=Pid}) ->
@@ -63,7 +59,9 @@ update(Key, Val, #txn_id{server_pid=Pid}) ->
 
 -spec commit_transaction(txn_id()) -> ok | {error, reason()}.
 commit_transaction(#txn_id{server_pid=Pid}) ->
-    gen_fsm:sync_send_event(Pid, commit, infinity).
+    CommitRes = gen_fsm:sync_send_event(Pid, commit, infinity),
+    ok = pvc_coord_pool:drop_pool_tx(Pid),
+    CommitRes.
 
 %% @doc UNSAFE: Blindly write a random binary blobs of size Size to N keys
 %%

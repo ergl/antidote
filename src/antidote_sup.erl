@@ -71,13 +71,12 @@ init(_Args) ->
                       {riak_core_vnode_master, start_link, [clocksi_vnode]},
                       permanent, 5000, worker, [riak_core_vnode_master]},
 
-    %% PVC protocol FSM supervisor, similar to ClockSIiTxCoordSup (see below)
-    PVCCoordinator = ?CHILD(pvc_coord_sup, supervisor, []),
-
     ClockSIiTxCoordSup =  { clocksi_interactive_tx_coord_sup,
                             {clocksi_interactive_tx_coord_sup, start_link, []},
                             permanent, 5000, supervisor,
                             [clockSI_interactive_tx_coord_sup]},
+    %% PVC pool supervisor
+    PVCCoordPool = ?CHILD(pvc_coord_pool, supervisor, []),
 
     %% PVC replica supervisor
     PVCStorage = ?VNODE(pvc_storage_vnode_master, pvc_storage_vnode),
@@ -132,7 +131,7 @@ init(_Args) ->
        PVCStorage,
        PVCReplicaSup,
        ClockSIMaster,
-       PVCCoordinator,
+       PVCCoordPool,
        ClockSIiTxCoordSup,
        ClockSIReadSup,
        MaterializerMaster,

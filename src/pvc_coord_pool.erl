@@ -18,39 +18,39 @@
 %%
 %% -------------------------------------------------------------------
 
--module(pvc_coord_sup).
-
--behavior(supervisor).
+-module(pvc_coord_pool).
+-behaviour(supervisor).
 
 -include("antidote.hrl").
 
--export([start_fsm/1,
-         start_link/0]).
+-export([take_pool_tx/0,
+         drop_pool_tx/1]).
 
--export([init/1]).
+-export([start_link/0,
+         init/1]).
+
+-define(POOL_NAME, coord_pool).
+-define(POOL_SIZE, 100).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_fsm(Args) ->
-    _ = rand:seed(exsplus, {erlang:phash2([node()]),
-                            erlang:monotonic_time(),
-                            erlang:unique_integer()}),
-
-    Random = rand:uniform(?NUM_SUP),
-    Module = generate_module_name(Random),
-    supervisor:start_child(Module, Args).
-
-generate_module_name(N) ->
-    list_to_atom(atom_to_list(?MODULE) ++ "-" ++ integer_to_list(N)).
-
-generate_supervisor_spec(N) ->
-    Module = generate_module_name(N),
-    {Module,
-        {pvc_coord_worker, start_link, [Module]},
-        permanent, 5000, supervisor, [pvc_coord_worker]}.
-
-%% @doc Starts the coordinator of a PVC transaction
 init([]) ->
-    Pool = [generate_supervisor_spec(N) || N <- lists:seq(1, ?NUM_SUP)],
-    {ok, {{one_for_one, 5, 10}, Pool}}.
+    PoolOptions = [
+        {name, {local, ?POOL_NAME}},
+        {worker_module, pvc_fsm},
+        {size, ?POOL_SIZE},
+        {max_overflow, 0}
+    ],
+    PoolSpec = poolboy:child_spec(?POOL_NAME, PoolOptions, []),
+    {ok, {{one_for_one, 5, 10}, [PoolSpec]}}.
+
+take_pool_tx() ->
+    Pid = poolboy:checkout(?POOL_NAME),
+    ok = gen_fsm:send_event(Pid, checkout),
+    Pid.
+
+drop_pool_tx(Pid) ->
+    ok = poolboy:checkin(?POOL_NAME, Pid),
+    ok = gen_fsm:send_event(Pid, checkin),
+    ok.
