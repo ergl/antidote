@@ -23,23 +23,10 @@
 -define(ru, rubis_utils).
 -define(default_group, <<"global_index">>).
 
--define(committed, {ok, []}).
-
 -type key() :: term().
 -type reason() :: atom().
 
 -export([process_request/2]).
-
-sequential_read([], _) ->
-    ok;
-
-sequential_read([Key | Rest], Tx) ->
-    case pvc:read_single(Key, Tx) of
-        {ok, _} ->
-            sequential_read(Rest, Tx);
-        {error, _}=ReadError ->
-            ReadError
-    end.
 
 process_request('ByteReq', #{tag := no_op}) ->
     {no_op, os:timestamp()};
@@ -49,10 +36,11 @@ process_request('ByteReq', #{tag := ping}) ->
     {TookStart, {ok, TxId}} = timer:tc(pvc, start_transaction, []),
     {TookCommit, Commit} = timer:tc(pvc, commit_transaction, [TxId]),
     case Commit of
-        ?committed ->
-            {ping, {Start, TookStart, TookCommit, os:timestamp()}};
         {error, Reason} ->
-            {error, Reason}
+            lager:info("Commit failed with ~p", [Reason]),
+            {error, Reason};
+        ok ->
+            {ping, {Start, TookStart, TookCommit, os:timestamp()}}
     end;
 
 process_request('ByteReq', #{tag := ring}) ->
@@ -68,59 +56,42 @@ process_request('ByteReq', #{tag := ring}) ->
 process_request('TimedRead', #{key := Key}) ->
     Start = os:timestamp(),
     {TookStart, {ok, TxId}} = timer:tc(pvc, start_transaction, []),
-    {TookRead, ReadRes} = timer:tc(pvc, read_single, [Key, TxId]),
+    {TookRead, ReadRes} = timer:tc(pvc, read, [Key, TxId]),
     case ReadRes of
         {error, ReadReason} ->
             {error, ReadReason};
         {ok, _} ->
             {TookCommit, Commit} = timer:tc(pvc, commit_transaction, [TxId]),
             case Commit of
-                ?committed ->
-                    {ok, {Start, TookStart, TookRead, TookCommit, os:timestamp()}};
                 {error, Reason} ->
-                    {error, Reason}
+                    {error, Reason};
+                ok ->
+                    {ok, {Start, TookStart, TookRead, TookCommit, os:timestamp()}}
             end
     end;
 
 process_request('Load', #{num_keys := N, bin_size := Size}) ->
-    case pvc:unsafe_load(N, Size) of
-        ?committed ->
-            ok;
-        {error, Reason} ->
-            {error, Reason}
-    end;
+    pvc:unsafe_load(N, Size);
 
 process_request('ReadOnlyTx', #{keys := Keys}) ->
     {ok, TxId} = pvc:start_transaction(),
-    case sequential_read(Keys, TxId) of
+    case pvc:read_batch(Keys, TxId) of
         {error, _}=ReadError ->
             ReadError;
-        ok ->
-            Commit = pvc:commit_transaction(TxId),
-            case Commit of
-                ?committed ->
-                    ok;
-                {error, Reason} ->
-                    {error, Reason}
-            end
+        {ok, _}->
+            pvc:commit_transaction(TxId)
     end;
 
 process_request('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
     Updates = lists:map(fun(#{key := K, value := V}) -> {K, V} end, OpList),
 
     {ok, TxId} = pvc:start_transaction(),
-    case sequential_read(Keys, TxId) of
+    case pvc:read_batch(Keys, TxId) of
         {error, _}=ReadError ->
             ReadError;
-        ok ->
-            ok = pvc:update_keys(Updates, TxId),
-            Commit = pvc:commit_transaction(TxId),
-            case Commit of
-                ?committed ->
-                    ok;
-                {error, Reason} ->
-                    {error, Reason}
-            end
+        {ok, _} ->
+            ok = pvc:update_batch(Updates, TxId),
+            pvc:commit_transaction(TxId)
     end;
 
 %% Used for rubis load
@@ -265,13 +236,13 @@ put_region(RegionName) ->
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(RegionKey, TxId),
-    ok = pvc:update_keys({RegionKey, RegionName}, TxId),
+    {ok, [<<>>]} = pvc:read(RegionKey, TxId),
+    ok = pvc:update(RegionKey, RegionName, TxId),
     ok = pvc_indices:index(NameIndex, RegionName, RegionKey, TxId),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, RegionKey};
         {error, Reason} ->
             {error, Reason}
@@ -297,13 +268,13 @@ put_category(CategoryName) ->
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(CategoryKey, TxId),
-    ok = pvc:update_keys({CategoryKey, CategoryName}, TxId),
+    {ok, [<<>>]} = pvc:read(CategoryKey, TxId),
+    ok = pvc:update(CategoryKey, CategoryName, TxId),
     ok = pvc_indices:index(NameIndex, CategoryName, CategoryKey, TxId),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, CategoryKey};
         {error, Reason} ->
             {error, Reason}
@@ -320,7 +291,7 @@ auth_user(Username, Password) ->
             {error, user_not_found};
 
         UserId ->
-            {ok, [{password, Pass}]} = pvc:read_keys(?ru:key_field(UserId, password), TxId),
+            {ok, [{password, Pass}]} = pvc:read(?ru:key_field(UserId, password), TxId),
             case Pass of
                 Password ->
                     {ok, UserId};
@@ -331,7 +302,7 @@ auth_user(Username, Password) ->
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             Result;
         {error, Reason} ->
             {error, Reason}
@@ -350,7 +321,7 @@ register_user(Username, Password, RegionId) ->
     Result = case Val of
         <<>> ->
             %% Users are grouped into their region name group
-            {ok, [RegionName]} = pvc:read_keys(RegionId, TxId),
+            {ok, [RegionName]} = pvc:read(RegionId, TxId),
             RegionPartition = log_utilities:get_key_partition(RegionName),
             SelfGrouping = RegionName,
 
@@ -370,7 +341,7 @@ register_user(Username, Password, RegionId) ->
                 {?ru:gen_key(SelfGrouping, users, NextUserId, regionId), {regionId, RegionId}}
             ],
 
-            ok = pvc:update_keys(UserObj, TxId),
+            ok = pvc:update_batch(UserObj, TxId),
             ok = pvc_indices:u_index(UsernameIndex, Username, UserKey, TxId),
             ok = pvc_indices:index(RegionIdIndex, RegionName, UserKey, TxId),
             {ok, UserKey};
@@ -382,7 +353,7 @@ register_user(Username, Password, RegionId) ->
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             Result;
         {error, Reason} ->
             {error, Reason}
@@ -394,13 +365,13 @@ browse_categories() ->
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, CategoryKeys} = pvc_indices:read_index(CategoryNameIndex, TxId),
-    case pvc:read_keys(CategoryKeys, TxId) of
+    case pvc:read_batch(CategoryKeys, TxId) of
         {error, _}=ReadError ->
             ReadError;
 
         {ok, Result} ->
             case pvc:commit_transaction(TxId) of
-                ?committed ->
+                ok ->
                     {ok, Result};
                 {error, Reason} ->
                     {error, Reason}
@@ -414,13 +385,13 @@ search_items_by_category(CategoryId) ->
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, ItemKeys} = pvc_indices:read_index(CategoryIndex, CategoryId, TxId),
-    case pvc:read_keys(ItemKeys, TxId) of
+    case pvc:read_batch(ItemKeys, TxId) of
         {error, _}=ReadError ->
             ReadError;
 
         {ok, Result} ->
             case pvc:commit_transaction(TxId) of
-                ?committed ->
+                ok ->
                     {ok, Result};
                 {error, Reason} ->
                     {error, Reason}
@@ -433,13 +404,13 @@ browse_regions() ->
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     {ok, RegionKeys} = pvc_indices:read_index(RegionNameIndex, TxId),
-    case pvc:read_keys(RegionKeys, TxId) of
+    case pvc:read_batch(RegionKeys, TxId) of
         {error, _}=ReadError ->
             ReadError;
 
         {ok, Result} ->
             case pvc:commit_transaction(TxId) of
-                ?committed ->
+                ok ->
                     {ok, Result};
                 {error, Reason} ->
                     {error, Reason}
@@ -452,7 +423,7 @@ search_items_by_region(CategoryId, RegionId) ->
     %% are part of the given region
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [RegionName]} = pvc:read_keys(RegionId, TxId),
+    {ok, [RegionName]} = pvc:read(RegionId, TxId),
     UserRegionIndex = ?ru:gen_index_name(RegionName, users_region),
     {ok, UsersInRegion} = pvc_indices:read_index(UserRegionIndex, TxId),
     MatchingItems = lists:flatmap(fun(UserKey) ->
@@ -460,7 +431,7 @@ search_items_by_region(CategoryId, RegionId) ->
         SellerIndex = ?ru:gen_index_name(SellerGroup, items_seller_id),
         {ok, SoldByUser} = pvc_indices:read_index(SellerIndex, UserKey, TxId),
         lists:filtermap(fun(ItemKey) ->
-            {ok, [{category, ItemCat}]} = pvc:read_keys(?ru:key_field(ItemKey, category), TxId),
+            {ok, [{category, ItemCat}]} = pvc:read(?ru:key_field(ItemKey, category), TxId),
             case ItemCat of
                 CategoryId ->
                     {true, ItemKey};
@@ -472,7 +443,7 @@ search_items_by_region(CategoryId, RegionId) ->
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, MatchingItems};
         {error, Reason} ->
             {error, Reason}
@@ -482,16 +453,16 @@ search_items_by_region(CategoryId, RegionId) ->
 view_item(ItemId) ->
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [{seller, SellerId} | ItemDetails]} = pvc:read_keys([?ru:key_field(ItemId, seller),
-                                                              ?ru:key_field(ItemId, name),
-                                                              ?ru:key_field(ItemId, category),
-                                                              ?ru:key_field(ItemId, description),
-                                                              ?ru:key_field(ItemId, num_bids),
-                                                              ?ru:key_field(ItemId, quantity)], TxId),
+    {ok, [{seller, SellerId} | ItemDetails]} = pvc:read_batch([?ru:key_field(ItemId, seller),
+                                                               ?ru:key_field(ItemId, name),
+                                                               ?ru:key_field(ItemId, category),
+                                                               ?ru:key_field(ItemId, description),
+                                                               ?ru:key_field(ItemId, num_bids),
+                                                               ?ru:key_field(ItemId, quantity)], TxId),
 
     {ok, [SellerUsername,
-          SellerRating]} = pvc:read_keys([?ru:key_field(SellerId, username),
-                                          ?ru:key_field(SellerId, rating)], TxId),
+          SellerRating]} = pvc:read_batch([?ru:key_field(SellerId, username),
+                                           ?ru:key_field(SellerId, rating)], TxId),
 
     ViewItem = {proplists:get_value(name, ItemDetails),
                 proplists:get_value(category, ItemDetails),
@@ -504,7 +475,7 @@ view_item(ItemId) ->
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, ViewItem};
         {error, Reason} ->
             {error, Reason}
@@ -517,17 +488,17 @@ view_user(UserId) ->
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
+    {ok, [{username, Username}]} = pvc:read(?ru:key_field(UserId, username), TxId),
     {ok, CommentsToUser} = pvc_indices:read_index(CommentIndex, UserId, TxId),
     CommentInfo = lists:map(fun(CommentId) ->
-        {ok, [{from, FromUserId}]} = pvc:read_keys(?ru:key_field(CommentId, from), TxId),
-        {ok, [{username, FromUsername}]} = pvc:read_keys(?ru:key_field(FromUserId, username), TxId),
+        {ok, [{from, FromUserId}]} = pvc:read(?ru:key_field(CommentId, from), TxId),
+        {ok, [{username, FromUsername}]} = pvc:read(?ru:key_field(FromUserId, username), TxId),
         {CommentId, FromUsername}
     end, CommentsToUser),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, {Username, CommentInfo}};
         {error, Reason} ->
             {error, Reason}
@@ -540,17 +511,17 @@ view_item_bid_hist(ItemId) ->
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [{name, ItemName}]} = pvc:read_keys(?ru:key_field(ItemId, name), TxId),
+    {ok, [{name, ItemName}]} = pvc:read(?ru:key_field(ItemId, name), TxId),
     {ok, BidsOnItem} = pvc_indices:read_index(OnItemIdIndex, ItemId, TxId),
     BidInfo = lists:map(fun(BidId) ->
-        {ok, [{bidder, UserId}]} = pvc:read_keys(?ru:key_field(BidId, bidder), TxId),
-        {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
+        {ok, [{bidder, UserId}]} = pvc:read(?ru:key_field(BidId, bidder), TxId),
+        {ok, [{username, Username}]} = pvc:read(?ru:key_field(UserId, username), TxId),
         {BidId, Username}
     end, BidsOnItem),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, {ItemName, BidInfo}};
         {error, Reason} ->
             {error, Reason}
@@ -580,19 +551,19 @@ store_buy_now(OnItemId, BuyerId, Quantity) ->
 
     %% Insert the buy_now object and update the related index
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(BuyNowKey, TxId),
-    ok = pvc:update_keys(BuyNowObj, TxId),
+    {ok, [<<>>]} = pvc:read(BuyNowKey, TxId),
+    ok = pvc:update_batch(BuyNowObj, TxId),
     ok = pvc_indices:index(BuyerIndex, BuyerId, BuyNowKey, TxId),
 
     %% Update the item quantity
     ItemQuantityKey = ?ru:key_field(OnItemId, quantity),
-    {ok, [{quantity, OldQty}]} = pvc:read_keys(ItemQuantityKey, TxId),
+    {ok, [{quantity, OldQty}]} = pvc:read(ItemQuantityKey, TxId),
     NewQty = case OldQty - Quantity of N when N < 0 -> 0; M -> M end,
-    ok = pvc:update_keys({ItemQuantityKey, {quantity, NewQty}}, TxId),
+    ok = pvc:update(ItemQuantityKey, {quantity, NewQty}, TxId),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, BuyNowKey};
         {error, Reason} ->
             {error, Reason}
@@ -625,25 +596,25 @@ store_bid(OnItemId, BidderId, Value) ->
 
     %% Insert the bid and update the related indices
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(BidKey, TxId),
+    {ok, [<<>>]} = pvc:read(BidKey, TxId),
     %% FIXME(borja): There might be a pvc_bad_vc abort here
-    {ok, _} = pvc:read_keys(BidderId, TxId),
-    ok = pvc:update_keys(BidObj, TxId),
+    {ok, _} = pvc:read(BidderId, TxId),
+    ok = pvc:update_batch(BidObj, TxId),
     ok = pvc_indices:index(OnItemIdIndex, OnItemId, BidKey, TxId),
     ok = pvc_indices:index(BidderIdIndex, BidderId, BidKey, TxId),
 
     %% Update the referenced item to track the number of bids
     NumBidKey = ?ru:key_field(OnItemId, num_bids),
     MaxBidKey = ?ru:key_field(OnItemId, max_bid),
-    {ok, [{num_bids, NBids}, {max_bid, OldMax}]} = pvc:read_keys([NumBidKey, MaxBidKey], TxId),
+    {ok, [{num_bids, NBids}, {max_bid, OldMax}]} = pvc:read_batch([NumBidKey, MaxBidKey], TxId),
     NewMax = max(OldMax, Value),
-    ok = pvc:update_keys([{NumBidKey, {num_bids, NBids + 1}},
-                          {MaxBidKey, {max_bid, NewMax}}], TxId),
+    ok = pvc:update_batch([{NumBidKey, {num_bids, NBids + 1}},
+                           {MaxBidKey, {max_bid, NewMax}}], TxId),
 
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, BidKey};
         {error, Reason} ->
             {error, Reason}
@@ -676,19 +647,19 @@ store_comment(OnItemId, FromId, ToId, Rating, Body) ->
 
     %% Insert the comment and update the related index
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(CommentKey, TxId),
-    ok = pvc:update_keys(CommentObj, TxId),
+    {ok, [<<>>]} = pvc:read(CommentKey, TxId),
+    ok = pvc:update_batch(CommentObj, TxId),
     ok = pvc_indices:index(ToIdIndex, ToId, CommentKey, TxId),
 
     %% Update the referenced user to update the rating
     RatingKey = ?ru:key_field(ToId, rating),
-    {ok, [{rating, OldRating}]} = pvc:read_keys(RatingKey, TxId),
+    {ok, [{rating, OldRating}]} = pvc:read(RatingKey, TxId),
     NewRating = OldRating + Rating,
-    ok = pvc:update_keys({RatingKey, {rating, NewRating}}, TxId),
+    ok = pvc:update(RatingKey, {rating, NewRating}, TxId),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, CommentKey};
         {error, Reason} ->
             {error, Reason}
@@ -723,14 +694,14 @@ store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(ItemKey, TxId),
-    ok = pvc:update_keys(ItemObj, TxId),
+    {ok, [<<>>]} = pvc:read(ItemKey, TxId),
+    ok = pvc:read_batch(ItemObj, TxId),
     ok = pvc_indices:index(CategoryIndex, CategoryId, ItemKey, TxId),
     ok = pvc_indices:index(SellerIndex, SellerId, ItemKey, TxId),
     Commit = pvc:commit_transaction(TxId),
 
     case Commit of
-        ?committed ->
+        ok ->
             {ok, ItemKey};
         {error, Reason} ->
             {error, Reason}
@@ -743,11 +714,11 @@ about_me(UserId) ->
 
     {ok, TxId} = pvc:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
+    {ok, [{username, Username}]} = pvc:read(?ru:key_field(UserId, username), TxId),
 
     %% Get all the items sold by the given UserId
     {ok, SoldItems} = pvc_indices:read_index(SellerIndex, UserId, TxId),
-    {ok, _ItemInfo} = pvc:read_keys(SoldItems, TxId),
+    {ok, _ItemInfo} = pvc:read_batch(SoldItems, TxId),
 
     UserDetails = case get_bought_items(UserId, TxId) of
         {error, _}=Err0 ->
@@ -775,7 +746,7 @@ about_me(UserId) ->
 
         ok ->
             case pvc:commit_transaction(TxId) of
-                ?committed ->
+                ok ->
                     {ok, Username};
 
                 {error, _}=CommitErr ->
@@ -793,16 +764,16 @@ get_bought_items(UserId, TxId) ->
     map_error(fun(BuyNowId) ->
         OnItemKey = ?ru:key_field(BuyNowId, on_item),
         QuantityKey = ?ru:key_field(BuyNowId, quantity),
-        case pvc:read_keys([OnItemKey, QuantityKey], TxId) of
+        case pvc:read_batch([OnItemKey, QuantityKey], TxId) of
             {error, _}=Err ->
                 throw(Err);
 
             {ok, [{on_item, OnItemId}, {quantity, Quantity}]} ->
                 {ok, [{seller, SellerId},
-                      {name, ItemName}]} = pvc:read_keys([?ru:key_field(OnItemId, seller),
-                                                          ?ru:key_field(OnItemId, name)], TxId),
+                      {name, ItemName}]} = pvc:read_batch([?ru:key_field(OnItemId, seller),
+                                                           ?ru:key_field(OnItemId, name)], TxId),
 
-                {ok, [{username, SellerUsername}]} = pvc:read_keys(?ru:key_field(SellerId, username), TxId),
+                {ok, [{username, SellerUsername}]} = pvc:read(?ru:key_field(SellerId, username), TxId),
                 {SellerUsername, ItemName, Quantity}
         end
     end, Bought).
@@ -814,13 +785,13 @@ get_bidded_items(UserId, TxId) ->
     BidderIndex = ?ru:gen_index_name(UserGroup, bids_bidder_id),
     {ok, PlacedBids} = pvc_indices:read_index(BidderIndex, UserId, TxId),
     map_error(fun(BidId) ->
-        case pvc:read_keys(?ru:key_field(BidId, on_item), TxId) of
+        case pvc:read(?ru:key_field(BidId, on_item), TxId) of
             {error, _}=Err ->
                 throw(Err);
 
             {ok, [{on_item, OnItemId}]} ->
-                {ok, [{seller, SellerId}]} = pvc:read_keys(?ru:key_field(OnItemId, seller), TxId),
-                {ok, [{username, SellerUsername}]} = pvc:read_keys(?ru:key_field(SellerId, username), TxId),
+                {ok, [{seller, SellerId}]} = pvc:read(?ru:key_field(OnItemId, seller), TxId),
+                {ok, [{username, SellerUsername}]} = pvc:read(?ru:key_field(SellerId, username), TxId),
                 {OnItemId, SellerUsername}
         end
     end, PlacedBids).
@@ -830,7 +801,7 @@ get_authored_comments(UserId, TxId) ->
     UserGroup = ?ru:get_grouping(UserId),
     CommentIndex = ?ru:gen_index_name(UserGroup, comments_to_id),
     {ok, CommentsToUser} = pvc_indices:read_index(CommentIndex, UserId, TxId),
-    pvc:read_keys(CommentsToUser, TxId).
+    pvc:read_batch(CommentsToUser, TxId).
 
 %% Util functions
 
