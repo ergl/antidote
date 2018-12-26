@@ -122,10 +122,11 @@ async_read_data_item(Node, Transaction, Key, Type) ->
 %% the clock to catch up.
 -spec pvc_get_most_recent_vc(index_node(), atom()) -> pvc_vc().
 pvc_get_most_recent_vc(Node, TableName) ->
-    case catch pvc_get_mrvc(TableName) of
-        {'EXIT', _} ->
-            riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER);
-        Value -> Value
+    try
+        pvc_get_mrvc(TableName)
+    catch _:_ ->
+        lager:info("MRVC miss at ~p", [Node]),
+        riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER)
     end.
 
 -spec pvc_schedule_queue(partition_id()) -> ok.
