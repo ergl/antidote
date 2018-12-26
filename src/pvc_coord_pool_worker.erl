@@ -65,7 +65,9 @@
     ack_outcome = undefined :: undefined | {ok, pvc_vc()} | {error, reason()},
     %% Mapping of partitions -> keys
     %% Used to buffer the list of keys that must be indexed
-    index_buffer = dict:new() :: dict:dict()
+    index_buffer = dict:new() :: dict:dict(),
+
+    tmp_read_map_stamps = #{}
 }).
 
 -spec start_link(pid()) -> {ok, pid()}.
@@ -203,8 +205,9 @@ read_internal(Key, State = #state{from=Sender,
         false ->
             HasRead = Transaction#transaction.pvc_hasread,
             VCaggr = Transaction#transaction.pvc_vcaggr,
-            clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr),
-            {next_state, read_result, State};
+            {Took, ok} = timer:tc(clocksi_readitem_server, pvc_async_read, [Key, HasRead, VCaggr]),
+            %% ok = clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr),
+            {next_state, read_result, State#state{tmp_read_map_stamps=#{pvc_async_read => Took}}};
         Value ->
             gen_fsm:reply(Sender, {ok, Value}),
             {next_state, client_command, State}
@@ -213,9 +216,10 @@ read_internal(Key, State = #state{from=Sender,
 read_result({error, maxvc_bad_vc}, State) ->
     abort(State#state{abort_reason=pvc_bad_vc});
 
-read_result({pvc_readreturn, From, _Key, Value, VCdep, VCaggr}, State=#state{transaction=Tx}) ->
-    gen_fsm:reply(State#state.from, {ok, Value}),
-    {next_state, client_command, State#state{transaction=pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
+read_result({pvc_readreturn, From, {InfoMap, _Key}, Value, VCdep, VCaggr}, State=#state{transaction=Tx}) ->
+    gen_fsm:reply(State#state.from, {ok, Value, maps:merge(InfoMap, State#state.tmp_read_map_stamps)}),
+    {next_state, client_command, State#state{tmp_read_map_stamps=#{},
+                                             transaction=pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
 
 %% @doc Loop through all the keys, calling the appropriate partitions
 read_batch_internal([Key | Rest]=Keys, State = #state{client_ops=ClientOps,
@@ -478,7 +482,8 @@ fresh_state(Transaction) ->
            abort_reason = undefined,
            num_to_ack = 0,
            ack_outcome = undefined,
-           index_buffer = dict:new()}.
+           index_buffer = dict:new(),
+           tmp_read_map_stamps = #{}}.
 
 %% @doc Replaces the first occurrence of a key
 %%

@@ -50,6 +50,9 @@
 %% PVC only
 -export([pvc_async_read/3]).
 
+%% TODO(borja): Remove
+-export([pvc_find_maxvc/4]).
+
 %% Spawn
 -record(state, {
     self :: atom(),
@@ -243,7 +246,7 @@ handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
 handle_cast({pvc_fresh_read, Coordinator, IndexNode, Key, HasRead, VCaggr}, State) ->
     ok = pvc_fresh_read_internal(Coordinator,
                                  IndexNode,
-                                 Key,
+                                 {#{mrvc_retries => 0}, Key},
                                  HasRead,
                                  VCaggr,
                                  State),
@@ -251,7 +254,7 @@ handle_cast({pvc_fresh_read, Coordinator, IndexNode, Key, HasRead, VCaggr}, Stat
 
 handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
     #state{partition = SelfPartition, mat_state = MatState} = State,
-    ok = pvc_vlog_read_internal(Coordinator, SelfPartition, Key, VCaggr, MatState),
+    ok = pvc_vlog_read_internal(Coordinator, SelfPartition, {#{}, Key}, VCaggr, MatState),
     {noreply, State}.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
@@ -261,12 +264,14 @@ handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
 %%      vector clock time of that snapshot.
 %%
 -spec pvc_vlog_read_internal(term(), partition_id(), key(), pvc_vc(), #mat_state{}) -> ok.
-pvc_vlog_read_internal(Coordinator, Partition, Key, MaxVC, MatState) ->
-    case materializer_vnode:pvc_read(Key, MaxVC, MatState) of
+pvc_vlog_read_internal(Coordinator, Partition, {InfoMap, Key}, MaxVC, MatState) ->
+    {Took, Res} = timer:tc(materializer_vnode, pvc_read, [Key, MaxVC, MatState]),
+    %% case materializer_vnode:pvc_read(Key, MaxVC, MatState) of
+    case Res of
         {error, Reason} ->
             gen_fsm:send_event(Coordinator, {error, Reason});
         {ok, Value, CommitVC} ->
-            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, Key, Value, CommitVC, MaxVC})
+            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, {InfoMap#{mat_read => Took}, Key}, Value, CommitVC, MaxVC})
     end.
 
 %% @doc Wait until this PVC partition is ready to perform a read.
@@ -278,16 +283,18 @@ pvc_vlog_read_internal(Coordinator, Partition, Key, MaxVC, MatState) ->
 %%      Once this happens, perform the read at this partition.
 %%
 -spec pvc_fresh_read_internal(term(), index_node(), key(), sets:set(), pvc_vc(), #state{}) -> ok.
-pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCaggr, State = #state{
+pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, {InfoMap, Key}, HasRead, VCaggr, State = #state{
     pvc_atomic_cache = AtomicCache
 }) ->
-    MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache),
+    {Took, MostRecentVC} = timer:tc(clocksi_vnode, pvc_get_most_recent_vc, [IndexNode, AtomicCache]),
+    %% MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache),
     case pvc_check_time(Partition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
-            erlang:send_after(WaitTime, self(), {pvc_wait_scan, Coordinator, IndexNode, Key, HasRead, VCaggr}),
+            InfoMap1 = maps:update_with(mrvc_retries, fun(V) -> V + 1 end, InfoMap),
+            erlang:send_after(WaitTime, self(), {pvc_wait_scan, Coordinator, IndexNode, {InfoMap1, Key}, HasRead, VCaggr}),
             ok;
         ready ->
-            pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, State)
+            pvc_scan_and_read(Coordinator, IndexNode, {InfoMap#{get_mrvc => Took}, Key}, HasRead, VCaggr, State)
     end.
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
@@ -320,18 +327,19 @@ pvc_check_time(Partition, MostRecentVC, VCaggr) ->
     #state{}
 ) -> ok.
 
-pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, #state{
+pvc_scan_and_read(Coordinator, IndexNode, {InfoMap, Key}, HasRead, VCaggr, #state{
     pvc_atomic_cache = AtomicCache,
     partition = SelfPartition,
     mat_state = MatState
 }) ->
-    MaxVCRes = pvc_find_maxvc(IndexNode, HasRead, VCaggr, AtomicCache),
+    {Took, MaxVCRes} = timer:tc(?MODULE, pvc_find_maxvc, [IndexNode, HasRead, VCaggr, AtomicCache]),
+    %% MaxVCRes = pvc_find_maxvc(IndexNode, HasRead, VCaggr, AtomicCache),
     case MaxVCRes of
         {error, Reason} ->
             gen_fsm:send_event(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
-            pvc_vlog_read_internal(Coordinator, SelfPartition, Key, MaxVC, MatState)
+            pvc_vlog_read_internal(Coordinator, SelfPartition, {InfoMap#{find_maxvc => Took}, Key}, MaxVC, MatState)
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
