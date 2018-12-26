@@ -121,10 +121,10 @@ pvc_async_read(Key, HasRead, VCaggr) ->
     Target = {global, generate_random_server_name(Node, Partition)},
     case sets:is_element(Partition, HasRead) of
         false ->
-            gen_server:cast(Target, {pvc_fresh_read, self(), IndexNode, Key, HasRead, VCaggr});
+            gen_server:cast(Target, {pvc_fresh_read, self(), IndexNode, {#{replica_diff => os:timestamp()}, Key}, HasRead, VCaggr});
         true ->
             %% If partition has been read, read directly from VLog
-            gen_server:cast(Target, {pvc_vlog_read, self(), Key, VCaggr})
+            gen_server:cast(Target, {pvc_vlog_read, self(), {#{replica_diff => os:timestamp()}, Key}, VCaggr})
     end.
 
 -spec start_read_servers(index_node()) -> boolean().
@@ -243,18 +243,22 @@ handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
     {noreply, SD0};
 
-handle_cast({pvc_fresh_read, Coordinator, IndexNode, Key, HasRead, VCaggr}, State) ->
+handle_cast({pvc_fresh_read, Coordinator, IndexNode, {InfoMap, Key}, HasRead, VCaggr}, State) ->
+    Rcv = os:timestamp(),
+    InfoMap1 = maps:update_with(replica_diff, fun(T) -> timer:now_diff(Rcv, T) end, InfoMap),
     ok = pvc_fresh_read_internal(Coordinator,
                                  IndexNode,
-                                 {#{mrvc_retries => 0}, Key},
+                                 {InfoMap1, Key},
                                  HasRead,
                                  VCaggr,
                                  State),
     {noreply, State};
 
-handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
+handle_cast({pvc_vlog_read, Coordinator, {InfoMap, Key}, VCaggr}, State) ->
+    Rcv = os:timestamp(),
+    InfoMap1 = maps:update_with(replica_diff, fun(T) -> timer:now_diff(Rcv, T) end, InfoMap),
     #state{partition = SelfPartition, mat_state = MatState} = State,
-    ok = pvc_vlog_read_internal(Coordinator, SelfPartition, {#{}, Key}, VCaggr, MatState),
+    ok = pvc_vlog_read_internal(Coordinator, SelfPartition, {InfoMap1, Key}, VCaggr, MatState),
     {noreply, State}.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
@@ -271,7 +275,7 @@ pvc_vlog_read_internal(Coordinator, Partition, {InfoMap, Key}, MaxVC, MatState) 
         {error, Reason} ->
             gen_fsm:send_event(Coordinator, {error, Reason});
         {ok, Value, CommitVC} ->
-            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, {InfoMap#{mat_read => Took}, Key}, Value, CommitVC, MaxVC})
+            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, {InfoMap#{mat_read => Took, fsm_diff => os:timestamp()}, Key}, Value, CommitVC, MaxVC})
     end.
 
 %% @doc Wait until this PVC partition is ready to perform a read.
@@ -290,8 +294,7 @@ pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, {InfoMap, Key}, H
     %% MostRecentVC = clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache),
     case pvc_check_time(Partition, MostRecentVC, VCaggr) of
         {not_ready, WaitTime} ->
-            InfoMap1 = maps:update_with(mrvc_retries, fun(V) -> V + 1 end, InfoMap),
-            erlang:send_after(WaitTime, self(), {pvc_wait_scan, Coordinator, IndexNode, {InfoMap1, Key}, HasRead, VCaggr}),
+            erlang:send_after(WaitTime, self(), {pvc_wait_scan, Coordinator, IndexNode, {InfoMap, Key}, HasRead, VCaggr}),
             ok;
         ready ->
             pvc_scan_and_read(Coordinator, IndexNode, {InfoMap#{get_mrvc => Took}, Key}, HasRead, VCaggr, State)
