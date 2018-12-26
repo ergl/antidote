@@ -60,13 +60,13 @@ process_request('TimedRead', #{key := Key}) ->
     case ReadRes of
         {error, ReadReason} ->
             {error, ReadReason};
-        {ok, _} ->
+        {ok, _, InfoMap} ->
             {TookCommit, Commit} = timer:tc(pvc, commit_transaction, [TxId]),
             case Commit of
                 {error, Reason} ->
                     {error, Reason};
                 ok ->
-                    {ok, {Start, TookStart, TookRead, TookCommit, os:timestamp()}}
+                    {ok, {Start, TookStart, InfoMap#{read => TookRead}, TookCommit, os:timestamp()}}
             end
     end;
 
