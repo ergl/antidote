@@ -115,12 +115,14 @@ async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
 pvc_async_read(Key, HasRead, VCaggr) ->
     %% If not read, go through wait process
     {Partition, Node}=IndexNode = log_utilities:get_key_partition(Key),
-    To = {global, generate_random_server_name(Node, Partition)},
-    Msg = case sets:is_element(Partition, HasRead) of
-        true -> {pvc_vlog_read, self(), Key, VCaggr};
-        false -> {pvc_fresh_read, self(), IndexNode, Key, HasRead, VCaggr}
-    end,
-    gen_server:cast(To, Msg).
+    Target = {global, generate_random_server_name(Node, Partition)},
+    case sets:is_element(Partition, HasRead) of
+        false ->
+            gen_server:cast(Target, {pvc_fresh_read, self(), IndexNode, Key, HasRead, VCaggr});
+        true ->
+            %% If partition has been read, read directly from VLog
+            gen_server:cast(Target, {pvc_vlog_read, self(), Key, VCaggr})
+    end.
 
 -spec start_read_servers(index_node()) -> boolean().
 start_read_servers(IndexNode) ->
