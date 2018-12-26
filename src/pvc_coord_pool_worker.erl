@@ -217,7 +217,9 @@ read_result({error, maxvc_bad_vc}, State) ->
     abort(State#state{abort_reason=pvc_bad_vc});
 
 read_result({pvc_readreturn, From, {InfoMap, _Key}, Value, VCdep, VCaggr}, State=#state{transaction=Tx}) ->
-    gen_fsm:reply(State#state.from, {ok, Value, maps:merge(InfoMap, State#state.tmp_read_map_stamps)}),
+    Rcv = os:timestamp(),
+    InfoMap1 = maps:update_with(fsm_diff, fun(T) -> timer:now_diff(Rcv, T) end, InfoMap),
+    gen_fsm:reply(State#state.from, {ok, Value, maps:merge(InfoMap1, State#state.tmp_read_map_stamps)}),
     {next_state, client_command, State#state{tmp_read_map_stamps=#{},
                                              transaction=pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
 
