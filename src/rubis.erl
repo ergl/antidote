@@ -47,10 +47,10 @@ process_request('ByteReq', #{tag := ring}) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     CHash = riak_core_ring:chash(Ring),
     Nodes = chash:nodes(CHash),
-    Ips = lists:foldl(fun({_, Node}, Acc) ->
+    Ips = lists:map(fun({_, Node}) ->
         [_, Ip] = binary:split(atom_to_binary(Node, latin1), <<"@">>),
-        ordsets:add_element(binary_to_atom(Ip, latin1), Acc)
-    end, ordsets:new(), Nodes),
+        binary_to_atom(Ip, latin1)
+    end, Nodes),
     {ring, Ips};
 
 process_request('TimedRead', #{key := Key}) ->
