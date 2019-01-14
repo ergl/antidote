@@ -11,6 +11,10 @@ main(NodesListString) ->
         error ->
             usage();
 
+        {ok, [_SingleNode]} ->
+            io:format("Single-node cluster, nothing to join"),
+            halt();
+
         {ok, Nodes} ->
             io:format("Starting clustering of nodes ~p~n", [Nodes]),
             lists:foreach(fun(N) -> erlang:set_cookie(N, antidote) end, Nodes),
@@ -19,7 +23,6 @@ main(NodesListString) ->
 
             rpc:multicall(Nodes, inter_dc_manager, start_bg_processes, [stable], infinity),
             io:format("Successfully joined nodes ~p~n", [Nodes])
-
     end.
 
 -spec parse_node_list(list(string())) -> {ok, [node()]} | error.
@@ -46,29 +49,19 @@ usage() ->
 %% @doc Build clusters out of the given node list
 -spec join_cluster(list(atom())) -> ok.
 join_cluster([MainNode | OtherNodes] = Nodes) ->
-    %% Ensure nodes have non-overlapping rings according to the master node,
-    %% also, each node should own its entire ring
-    true = lists:all(fun(Node) ->
-        case owners_according_to(Node, MainNode) of
-            {ok, [Node]} ->
-                true;
-            _ ->
-                false
-        end
-    end, Nodes),
-
-    ok = case OtherNodes of
-        [] ->
-            %% no other nodes, nothing to join/plan/commit
-            ok;
-
-        _ ->
-            %% Do a plan/commit staged join, instead of sequential joins
-            ok = lists:foreach(fun(N) -> request_join(N, MainNode) end, OtherNodes),
-            ok = wait_plan_ready(MainNode),
-            ok = commit_plan(MainNode),
-            ok = try_cluster_ready(Nodes)
+    ok = case check_nodes_own_their_ring(Nodes) of
+         ok ->
+             ok;
+        {error, FaultyNode, Reason} ->
+            io:fwrite(standard_error, "Bad node ~s on ownership check with reason ~p", [FaultyNode, Reason]),
+            halt(1)
     end,
+
+    %% Do a plan/commit staged join, instead of sequential joins
+    ok = lists:foreach(fun(N) -> request_join(N, MainNode) end, OtherNodes),
+    ok = wait_plan_ready(MainNode),
+    ok = commit_plan(MainNode),
+    ok = try_cluster_ready(Nodes),
 
     ok = wait_until_nodes_ready(Nodes),
 
@@ -78,10 +71,34 @@ join_cluster([MainNode | OtherNodes] = Nodes) ->
     ok = wait_until_ring_converged(Nodes),
     ok = wait_until_master_ready(MainNode).
 
+%% @doc Ensure that all nodes are the sole owner of their rings
+-spec check_nodes_own_their_ring(list(atom())) -> ok | {error, atom()}.
+check_nodes_own_their_ring([]) -> ok;
+check_nodes_own_their_ring([H | T]) ->
+    case sorted_ring_owners(H) of
+        {ok, [H]} ->
+            check_nodes_own_their_ring(T);
+        Reason ->
+            {error, H, Reason}
+    end.
+
 %% @doc Retrieve a list of ring-owning physical nodes according to the MainNode
 %%
 %%      A node is ring-owning if a partition is stored on it
 %%
+-spec sorted_ring_owners(node()) -> {ok, list(node())} | {badrpc, term()}.
+sorted_ring_owners(Node) ->
+    case rpc:call(Node, riak_core_ring_manager, get_raw_ring, []) of
+        {ok, Ring} ->
+            Owners = [Owner || {_Idx, Owner} <- rpc:call(Node, riak_core_ring, all_owners, [Ring])],
+            SortedOwners = lists:usort(Owners),
+            io:format("Owners at ~p: ~p~n", [Node, SortedOwners]),
+            {ok, SortedOwners};
+
+        {badrpc, _}=BadRpc ->
+            BadRpc
+    end.
+
 -spec owners_according_to(node(), node()) -> {ok, list(node())} | {badrpc, term()}.
 owners_according_to(Node, MainNode) ->
     case rpc:call(Node, riak_core_ring_manager, get_raw_ring, []) of
@@ -95,12 +112,12 @@ owners_according_to(Node, MainNode) ->
             BadRpc
     end.
 
-%% @doc Make `Node` request joining with `PNode`
+%% @doc Make `Node` request joining with `MasterNode`
 -spec request_join(node(), node()) -> ok.
-request_join(Node, PNode) ->
+request_join(Node, MasterNode) ->
     timer:sleep(5000),
-    R = rpc:call(Node, riak_core, staged_join, [PNode]),
-    io:format("[join request] ~p to (~p): ~p~n", [Node, PNode, R]),
+    R = rpc:call(Node, riak_core, staged_join, [MasterNode]),
+    io:format("[join request] ~p to ~p: (result ~p)~n", [Node, MasterNode, R]),
     ok.
 
 -spec wait_plan_ready(node()) -> ok.
@@ -150,6 +167,7 @@ wait_until_no_pending_changes([MainNode | _] = Nodes) when is_list(Nodes) ->
     NoPendingHandoffs = fun() ->
         rpc:multicall(Nodes, riak_core_vnode_manager, force_handoffs, []),
         {Rings, BadNodes} = rpc:multicall(Nodes, riak_core_ring_manager, get_raw_ring, []),
+        io:format("Check no pending handoffs (badnodes: ~p)...~n", [BadNodes]),
         case BadNodes of
             [] ->
                 lists:all(fun({ok, Ring}) ->
@@ -159,7 +177,8 @@ wait_until_no_pending_changes([MainNode | _] = Nodes) when is_list(Nodes) ->
             _ ->
                 false
         end
-                        end,
+    end,
+
     wait_until(NoPendingHandoffs);
 
 wait_until_no_pending_changes(Node) ->
@@ -260,11 +279,11 @@ wait_until_nodes_ready([MainNode | _] = Nodes) ->
 
 %% @doc Wait until all nodes agree about all ownership views
 -spec wait_until_nodes_agree_about_ownership([node()]) -> boolean().
-wait_until_nodes_agree_about_ownership([MainNode | _] = Nodes) ->
+wait_until_nodes_agree_about_ownership(Nodes) ->
     SortedNodes = lists:usort(Nodes),
     true = lists:all(fun(Node) ->
         Res = wait_until(fun() ->
-            case owners_according_to(Node, MainNode) of
+            case sorted_ring_owners(Node) of
                 {ok, SortedNodes} ->
                     true;
                 _ ->
