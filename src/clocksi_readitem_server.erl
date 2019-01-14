@@ -162,9 +162,10 @@ start_read_servers_internal(Node, Partition, Num) ->
         {error, {already_started, _}} ->
             start_read_servers_internal(Node, Partition, Num-1);
         Err ->
-            lager:debug("Unable to start clocksi read server for ~w, will retry", [Err]),
+            Name = generate_server_name(Node, Partition, Num),
+            lager:debug("Unable to start clocksi read server for ~p, (reason ~p) will retry", [Name, Err]),
             try
-                gen_server:call({global, generate_server_name(Node, Partition, Num)}, {go_down})
+                gen_server:call({global, Name}, go_down)
             catch
                 _:_Reason->
                     ok
@@ -177,7 +178,7 @@ stop_read_servers_internal(_Node, _Partition, 0) ->
     ok;
 stop_read_servers_internal(Node, Partition, Num) ->
     try
-    gen_server:call({global, generate_server_name(Node, Partition, Num)}, {go_down})
+        gen_server:call({global, generate_server_name(Node, Partition, Num)}, go_down)
     catch
         _:_Reason->
            ok
@@ -233,7 +234,7 @@ handle_call({perform_read, Key, Type, Transaction}, Coordinator, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
     {noreply, SD0};
 
-handle_call({go_down}, _Sender, SD0) ->
+handle_call(go_down, _Sender, SD0) ->
     {stop, shutdown, ok, SD0}.
 
 handle_cast({perform_read_cast, Coordinator, Key, Type, Transaction}, SD0) ->
