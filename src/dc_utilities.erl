@@ -147,7 +147,9 @@ bcast_vnode_sync(VMaster, Request) ->
 -spec bcast_my_vnode_sync(atom(), any()) -> any().
 bcast_my_vnode_sync(VMaster, Request) ->
     %% TODO: a parallel map function would be nice here
-    lists:map(fun(P) -> {P, call_vnode_sync(P, VMaster, Request)} end, get_my_partitions()).
+    [begin
+         {P, riak_core_vnode_master:sync_command(IndexNode, Request, VMaster)}
+     end || {P,_} = IndexNode <- get_all_partitions_nodes()].
 
 %% Sends the same (asynchronous) command to all vnodes of a given type.
 -spec bcast_vnode(atom(), any()) -> any().
