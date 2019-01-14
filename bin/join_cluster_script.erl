@@ -165,6 +165,7 @@ commit_plan(Node) ->
 -spec wait_until_no_pending_changes([node()]) -> ok | fail.
 wait_until_no_pending_changes([MainNode | _] = Nodes) when is_list(Nodes) ->
     NoPendingHandoffs = fun() ->
+        io:format("Check no pending handoffs..."),
         rpc:multicall(Nodes, riak_core_vnode_manager, force_handoffs, []),
         {Rings, BadNodes} = rpc:multicall(Nodes, riak_core_ring_manager, get_raw_ring, []),
         io:format("Check no pending handoffs (badnodes: ~p)...~n", [BadNodes]),
