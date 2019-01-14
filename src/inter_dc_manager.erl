@@ -128,7 +128,7 @@ start_bg_processes(MetaDataName) ->
                            ok
                        end, Responses),
     lager:info("Starting read servers"),
-    Responses2 = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, {check_servers_ready}),
+    Responses2 = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, check_servers_ready),
     %% Be sure they all started ok, crash otherwise
     ok = lists:foreach(fun({_, true}) ->
                            ok
@@ -176,7 +176,7 @@ check_node_restart() ->
                                    ok
                                end, Responses),
             lager:info("Starting read servers"),
-            Responses2 = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, {check_servers_ready}),
+            Responses2 = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, check_servers_ready),
             %% Be sure they all started ok, crash otherwise
             ok = lists:foreach(fun({_, true}) ->
                                    ok

@@ -321,8 +321,6 @@ check_registered_global(Name) ->
             ok
     end.
 
-
-
 -spec now_microsec() -> non_neg_integer().
 now_microsec() ->
   erlang:system_time(micro_seconds). % TODO 19 this is not correct, since it is not monotonic (Question: must it be unique as well?)

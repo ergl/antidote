@@ -36,7 +36,6 @@
          handle_cast/2,
          code_change/3,
          handle_event/3,
-         check_servers_ready/0,
          handle_info/2,
          handle_sync_event/4,
          terminate/2]).
@@ -95,15 +94,15 @@ stop_read_servers(Partition, Count) ->
     stop_read_servers_internal(Addr, Partition, Count).
 
 -spec read_data_item(index_node(), key(), type(), tx()) -> {error, term()} | {ok, snapshot()}.
-read_data_item({Partition, Node}, Key, Type, Transaction) ->
+read_data_item({Partition, Node}=IdxNode, Key, Type, Transaction) ->
     try
         gen_server:call({global, generate_random_server_name(Node, Partition)},
                         {perform_read, Key, Type, Transaction}, infinity)
     catch
         _:Reason ->
             lager:debug("Exception caught: ~p, starting read server to fix", [Reason]),
-            check_server_ready([{Partition, Node}]),
-            read_data_item({Partition, Node}, Key, Type, Transaction)
+            check_server_ready(IdxNode),
+            read_data_item(IdxNode, Key, Type, Transaction)
     end.
 
 -spec async_read_data_item(index_node(), key(), type(), tx(), term()) -> ok.
@@ -125,32 +124,15 @@ pvc_async_read(Key, HasRead, VCaggr) ->
     end,
     gen_server:cast(To, Msg).
 
-%% @doc This checks all partitions in the system to see if all read
-%%      servers have been started up.
-%%      Returns true if they have been, false otherwise.
--spec check_servers_ready() -> boolean().
-check_servers_ready() ->
-    PartitionList = dc_utilities:get_all_partitions_nodes(),
-    check_server_ready(PartitionList).
-
--spec check_server_ready([index_node()]) -> boolean().
-check_server_ready([]) ->
-    true;
-check_server_ready([{Partition, Node}|Rest]) ->
+-spec check_server_ready(index_node()) -> boolean().
+check_server_ready(IndexNode) ->
     try
-        Result = riak_core_vnode_master:sync_command({Partition, Node},
-                                                     {check_servers_ready},
-                                                     ?CLOCKSI_MASTER,
-                                                     infinity),
-        case Result of
-            false ->
-                false;
-            true ->
-                check_server_ready(Rest)
-        end
-    catch
-        _:_Reason ->
-            false
+        riak_core_vnode_master:sync_command(IndexNode,
+                                            check_servers_ready,
+                                            ?CLOCKSI_MASTER,
+                                            infinity)
+    catch _:_Reason ->
+        false
     end.
 
 -spec check_partition_ready(node(), partition_id(), non_neg_integer()) -> boolean().
