@@ -44,6 +44,7 @@
     is_empty/1,
     delete/1,
     check_tables_ready/0,
+    check_servers_ready/0,
     handle_handoff_command/3,
     handoff_starting/2,
     handoff_cancelled/1,
@@ -334,6 +335,20 @@ check_table_ready([{Partition, Node} | Rest]) ->
             false
     end.
 
+check_servers_ready() ->
+    check_servers_ready(dc_utilities:get_all_partitions_nodes()).
+
+check_servers_ready([]) ->
+    true;
+
+check_servers_ready([IndexNode | Rest]) ->
+    try
+        riak_core_vnode_master:sync_command(IndexNode, check_servers_ready, ?CLOCKSI_MASTER, infinity),
+        check_servers_ready(Rest)
+    catch _:_Reason ->
+        false
+    end.
+
 -spec open_table(partition_id(), atom()) -> atom() | ets:tid().
 open_table(Partition, Name) ->
     open_table(Partition, Name, [set, protected, named_table, ?TABLE_CONCURRENCY]).
@@ -380,10 +395,13 @@ handle_command({send_min_prepared}, _Sender,
     dc_utilities:call_local_vnode(Partition, logging_vnode_master, {send_min_prepared, Time}),
     {noreply, State};
 
-handle_command(check_servers_ready, _Sender, SD0 = #state{partition = Partition, read_servers = Serv}) ->
+handle_command(start_read_servers, _Sender, SD0 = #state{partition = Partition, read_servers = Serv}) ->
     loop_until_started(Partition, Serv),
-    Node = node(),
-    Result = clocksi_readitem_server:check_partition_ready(Node, Partition, ?READ_CONCURRENCY),
+    Result = clocksi_readitem_server:check_partition_ready(node(), Partition, ?READ_CONCURRENCY),
+    {reply, Result, SD0};
+
+handle_command(check_servers_ready, _Sender, SD0 = #state{partition = Partition}) ->
+    Result = clocksi_readitem_server:check_partition_ready(node(), Partition, ?READ_CONCURRENCY),
     {reply, Result, SD0};
 
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->

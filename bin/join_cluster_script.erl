@@ -336,12 +336,12 @@ check_ready(Node) ->
     io:format("[master ready] Checking ~p~n", [Node]),
 
     VNodeReady = rpc:call(Node, clocksi_vnode, check_tables_ready, []),
-    ReadItemReady = rpc:call(Node, clocksi_readitem_server, check_servers_ready, []),
+    ReadServersReady = rpc:call(Node, clocksi_vnode, check_servers_ready, []),
     MaterializerReady = rpc:call(Node, materializer_vnode, check_tables_ready, []),
     StableMetadataReady = rpc:call(Node, stable_meta_data_server, check_tables_ready, []),
 
     NodeReady = VNodeReady
-        andalso ReadItemReady
+        andalso ReadServersReady
         andalso MaterializerReady
         andalso StableMetadataReady,
 

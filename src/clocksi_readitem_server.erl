@@ -101,7 +101,7 @@ read_data_item({Partition, Node}=IdxNode, Key, Type, Transaction) ->
     catch
         _:Reason ->
             lager:debug("Exception caught: ~p, starting read server to fix", [Reason]),
-            check_server_ready(IdxNode),
+            start_read_servers(IdxNode),
             read_data_item(IdxNode, Key, Type, Transaction)
     end.
 
@@ -124,11 +124,11 @@ pvc_async_read(Key, HasRead, VCaggr) ->
     end,
     gen_server:cast(To, Msg).
 
--spec check_server_ready(index_node()) -> boolean().
-check_server_ready(IndexNode) ->
+-spec start_read_servers(index_node()) -> boolean().
+start_read_servers(IndexNode) ->
     try
         riak_core_vnode_master:sync_command(IndexNode,
-                                            check_servers_ready,
+                                            start_read_servers,
                                             ?CLOCKSI_MASTER,
                                             infinity)
     catch _:_Reason ->
@@ -138,6 +138,7 @@ check_server_ready(IndexNode) ->
 -spec check_partition_ready(node(), partition_id(), non_neg_integer()) -> boolean().
 check_partition_ready(_Node, _Partition, 0) ->
     true;
+
 check_partition_ready(Node, Partition, Num) ->
     case global:whereis_name(generate_server_name(Node, Partition, Num)) of
         undefined ->
@@ -145,8 +146,6 @@ check_partition_ready(Node, Partition, Num) ->
         _Res ->
             check_partition_ready(Node, Partition, Num-1)
     end.
-
-
 
 %%%===================================================================
 %%% Internal
