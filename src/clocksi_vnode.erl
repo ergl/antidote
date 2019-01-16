@@ -371,12 +371,6 @@ open_table(Partition, Name, Options) ->
             open_table(Partition, Name, Options)
     end.
 
-loop_until_started(_Partition, 0) ->
-    0;
-loop_until_started(Partition, Num) ->
-    Ret = clocksi_readitem_server:start_read_servers(Partition, Num),
-    loop_until_started(Partition, Ret).
-
 handle_command({hello}, _Sender, State) ->
   {reply, ok, State};
 
@@ -395,13 +389,13 @@ handle_command({send_min_prepared}, _Sender,
     dc_utilities:call_local_vnode(Partition, logging_vnode_master, {send_min_prepared, Time}),
     {noreply, State};
 
-handle_command(start_read_servers, _Sender, SD0 = #state{partition = Partition, read_servers = Serv}) ->
-    loop_until_started(Partition, Serv),
-    Result = clocksi_readitem_server:check_partition_ready(node(), Partition, ?READ_CONCURRENCY),
+handle_command(start_read_servers, _From, SD0=#state{partition=Partition, read_servers=Serv}) ->
+    ok = clocksi_readitem_server:start_read_servers(Partition, Serv),
+    Result = clocksi_readitem_server:check_partition_ready(node(), Partition, Serv),
     {reply, Result, SD0};
 
-handle_command(check_servers_ready, _Sender, SD0 = #state{partition = Partition}) ->
-    Result = clocksi_readitem_server:check_partition_ready(node(), Partition, ?READ_CONCURRENCY),
+handle_command(check_servers_ready, _Sender, SD0 = #state{partition=Partition, read_servers=Serv}) ->
+    Result = clocksi_readitem_server:check_partition_ready(node(), Partition, Serv),
     {reply, Result, SD0};
 
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
@@ -556,14 +550,14 @@ handle_coverage(_Req, _KeySpaces, _Sender, State) ->
 handle_exit(_Pid, _Reason, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{partition = Partition} = _State) ->
+terminate(_Reason, #state{partition=Partition, read_servers=Serv}) ->
     try
         ets:delete(get_cache_name(Partition, prepared))
     catch
         _:Reason ->
             lager:error("Error closing table ~p", [Reason])
     end,
-    clocksi_readitem_server:stop_read_servers(Partition, ?READ_CONCURRENCY),
+    ok = clocksi_readitem_server:stop_read_servers(Partition, Serv),
     ok.
 
 %%%===================================================================

@@ -83,15 +83,13 @@ start_link(Partition, Id) ->
     Addr = node(),
     gen_server:start_link({global, generate_server_name(Addr, Partition, Id)}, ?MODULE, [Partition, Id], []).
 
--spec start_read_servers(partition_id(), non_neg_integer()) -> 0.
+-spec start_read_servers(partition_id(), non_neg_integer()) -> ok.
 start_read_servers(Partition, Count) ->
-    Addr = node(),
-    start_read_servers_internal(Addr, Partition, Count).
+    start_read_servers_internal(node(), Partition, Count).
 
 -spec stop_read_servers(partition_id(), non_neg_integer()) -> ok.
 stop_read_servers(Partition, Count) ->
-    Addr = node(),
-    stop_read_servers_internal(Addr, Partition, Count).
+    stop_read_servers_internal(node(), Partition, Count).
 
 -spec read_data_item(index_node(), key(), type(), tx()) -> {error, term()} | {ok, snapshot()}.
 read_data_item({Partition, Node}=IdxNode, Key, Type, Transaction) ->
@@ -141,25 +139,24 @@ check_partition_ready(_Node, _Partition, 0) ->
 
 check_partition_ready(Node, Partition, Num) ->
     case global:whereis_name(generate_server_name(Node, Partition, Num)) of
-        undefined ->
-            false;
-        _Res ->
-            check_partition_ready(Node, Partition, Num-1)
+        undefined -> false;
+        _ -> check_partition_ready(Node, Partition, Num - 1)
     end.
 
 %%%===================================================================
 %%% Internal
 %%%===================================================================
 
--spec start_read_servers_internal(node(), partition_id(), non_neg_integer()) -> non_neg_integer().
+-spec start_read_servers_internal(node(), partition_id(), non_neg_integer()) -> ok.
 start_read_servers_internal(_Node, _Partition, 0) ->
-    0;
+    ok;
+
 start_read_servers_internal(Node, Partition, Num) ->
     case clocksi_readitem_sup:start_fsm(Partition, Num) of
         {ok, _Id} ->
-            start_read_servers_internal(Node, Partition, Num-1);
+            start_read_servers_internal(Node, Partition, Num - 1);
         {error, {already_started, _}} ->
-            start_read_servers_internal(Node, Partition, Num-1);
+            start_read_servers_internal(Node, Partition, Num - 1);
         Err ->
             Name = generate_server_name(Node, Partition, Num),
             lager:debug("Unable to start clocksi read server for ~p, (reason ~p) will retry", [Name, Err]),
@@ -175,6 +172,7 @@ start_read_servers_internal(Node, Partition, Num) ->
 -spec stop_read_servers_internal(node(), partition_id(), non_neg_integer()) -> ok.
 stop_read_servers_internal(_Node, _Partition, 0) ->
     ok;
+
 stop_read_servers_internal(Node, Partition, Num) ->
     try
         gen_server:call({global, generate_server_name(Node, Partition, Num)}, go_down)
