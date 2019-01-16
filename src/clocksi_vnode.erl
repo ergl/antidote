@@ -23,59 +23,60 @@
 -include("antidote.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+%% riak core callbacks
 -export([start_vnode/1,
-    read_data_item/5,
-    async_read_data_item/4,
-    get_cache_name/2,
-    send_min_prepared/1,
-    get_active_txns_key/3,
-    get_active_txns/2,
-    prepare/2,
-    decide/4,
-    commit/3,
-    single_commit/2,
-    single_commit_sync/2,
-    abort/2,
-    now_microsec/1,
-    reverse_and_filter_updates_per_key/2,
-    init/1,
-    terminate/2,
-    handle_command/3,
-    is_empty/1,
-    delete/1,
-    check_tables_ready/0,
-    check_servers_ready/0,
-    handle_handoff_command/3,
-    handoff_starting/2,
-    handoff_cancelled/1,
-    handoff_finished/2,
-    handle_handoff_data/2,
-    encode_handoff_item/2,
-    handle_coverage/4,
-    handle_exit/3]).
+         init/1,
+         handle_command/3,
+         handle_coverage/4,
+         handle_exit/3,
+         handoff_starting/2,
+         handoff_cancelled/1,
+         handoff_finished/2,
+         handle_handoff_command/3,
+         handle_handoff_data/2,
+         encode_handoff_item/2,
+         is_empty/1,
+         terminate/2,
+         delete/1]).
 
--export([pvc_process_cqueue/1,
+%% clocksi exports
+-export([read_data_item/5,
+         async_read_data_item/4,
+         prepare/2,
+         abort/2,
+         commit/3,
+         send_min_prepared/1,
+         get_active_txns_key/3,
+         get_active_txns/2,
+         single_commit/2,
+         single_commit_sync/2,
+         reverse_and_filter_updates_per_key/2]).
+
+%% PVC-only exports
+-export([decide/4,
+         pvc_process_cqueue/1,
          pvc_get_most_recent_vc/2]).
+
+%% health check export
+-export([check_tables_ready/0,
+         check_servers_ready/0]).
+
+%% util exports
+-export([get_cache_name/2,
+         now_microsec/1]).
 
 -ignore_xref([start_vnode/1]).
 
-%%---------------------------------------------------------------------
-%% @doc Data Type: state
-%%      where:
-%%          partition: the partition that the vnode is responsible for.
-%%          prepared_tx: the prepared txn for each key. Note that for
-%%              each key, there can be at most one prepared txn in any
-%%              time.
-%%          committed_tx: the transaction id of the last committed
-%%              transaction for each key.
-%%          downstream_set: a list of the downstream operations that the
-%%              transactions generate.
-%%          write_set: a list of the write sets that the transactions
-%%              generate.
-%%----------------------------------------------------------------------
 -record(state, {
+    %% the partition that the vnode is responsible for.
     partition :: partition_id(),
+    %% the prepared txn for each key. Note that for each key,
+    %% there can be at most one prepared txn in any time
+    %% key -> tx_id
     prepared_tx :: cache_id(),
+    %% key -> tx_id
+    %% the transaction id of the last committed
+    %% transaction for each key.
     committed_tx :: cache_id(),
     read_servers :: non_neg_integer(),
     prepared_dict :: orddict:orddict(),
@@ -389,11 +390,13 @@ handle_command({send_min_prepared}, _Sender,
     dc_utilities:call_local_vnode(Partition, logging_vnode_master, {send_min_prepared, Time}),
     {noreply, State};
 
+%% @doc Called by inter_dc_manager to start the read servers
 handle_command(start_read_servers, _From, SD0=#state{partition=Partition, read_servers=Serv}) ->
     ok = clocksi_readitem_server:start_read_servers(Partition, Serv),
     Result = clocksi_readitem_server:check_partition_ready(node(), Partition, Serv),
     {reply, Result, SD0};
 
+%% @doc Check read servers health
 handle_command(check_servers_ready, _Sender, SD0 = #state{partition=Partition, read_servers=Serv}) ->
     Result = clocksi_readitem_server:check_partition_ready(node(), Partition, Serv),
     {reply, Result, SD0};

@@ -15,13 +15,12 @@ main(NodesListString) ->
             io:format("Single-node cluster, nothing to join"),
             halt();
 
-        {ok, Nodes} ->
+        {ok, [MainNode | _] = Nodes} ->
             io:format("Starting clustering of nodes ~p~n", [Nodes]),
             lists:foreach(fun(N) -> erlang:set_cookie(N, antidote) end, Nodes),
-
             ok = join_cluster(Nodes),
-
             rpc:multicall(Nodes, inter_dc_manager, start_bg_processes, [stable], infinity),
+            ok = wait_until_master_ready(MainNode),
             io:format("Successfully joined nodes ~p~n", [Nodes])
     end.
 
@@ -68,8 +67,7 @@ join_cluster([MainNode | OtherNodes] = Nodes) ->
     %% Ensure each node owns a portion of the ring
     ok = wait_until_nodes_agree_about_ownership(Nodes),
     ok = wait_until_no_pending_changes(Nodes),
-    ok = wait_until_ring_converged(Nodes),
-    ok = wait_until_master_ready(MainNode).
+    ok = wait_until_ring_converged(Nodes).
 
 %% @doc Ensure that all nodes are the sole owner of their rings
 -spec check_nodes_own_their_ring(list(atom())) -> ok | {error, atom()}.

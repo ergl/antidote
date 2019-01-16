@@ -102,37 +102,40 @@ connect_nodes([Node|Rest], DCID, LogReaders, Publishers, Desc, Retries) ->
 %% This should not be called untilt the local dc's ring is merged
 -spec start_bg_processes(atom()) -> ok.
 start_bg_processes(MetaDataName) ->
-    %% Start the meta-data senders
     Nodes = dc_utilities:get_my_dc_nodes(),
+
     %% Ensure vnodes are running and meta_data
     ok = dc_utilities:ensure_all_vnodes_running_master(inter_dc_log_sender_vnode_master),
     ok = dc_utilities:ensure_all_vnodes_running_master(clocksi_vnode_master),
     ok = dc_utilities:ensure_all_vnodes_running_master(logging_vnode_master),
     ok = dc_utilities:ensure_all_vnodes_running_master(materializer_vnode_master),
+
+    %% Check DC health
     lists:foreach(fun(Node) ->
-                      true = wait_init:wait_ready(Node),
-                      ok = rpc:call(Node, dc_utilities, check_registered, [meta_data_sender_sup]),
-                      ok = rpc:call(Node, dc_utilities, check_registered, [meta_data_manager_sup]),
-                      ok = rpc:call(Node, dc_utilities, check_registered_global, [stable_meta_data_server:generate_server_name(Node)]),
-                      ok = rpc:call(Node, meta_data_sender, start, [MetaDataName])
-                  end, Nodes),
+        true = wait_init:wait_ready(Node),
+        ok = rpc:call(Node, dc_utilities, check_registered, [meta_data_sender_sup]),
+        ok = rpc:call(Node, dc_utilities, check_registered, [meta_data_manager_sup]),
+        ok = rpc:call(Node, dc_utilities, check_registered_global, [stable_meta_data_server:generate_server_name(Node)]),
+        %% Start the meta-data senders
+        ok = rpc:call(Node, meta_data_sender, start, [MetaDataName])
+    end, Nodes),
+
     %% Load the internal meta-data
     _MyDCId = dc_meta_data_utilities:reset_my_dc_id(),
     ok = dc_meta_data_utilities:load_partition_meta_data(),
     ok = dc_meta_data_utilities:store_meta_data_name(MetaDataName),
+
     %% Start the timers sending the heartbeats
+    %% Be sure they all started ok, crash otherwise
     lager:info("Starting heartbeat sender timers"),
-    Responses = dc_utilities:bcast_vnode_sync(logging_vnode_master, {start_timer, undefined}),
+    TimerReply = dc_utilities:bcast_vnode_sync(logging_vnode_master, {start_timer, undefined}),
+    ok = lists:foreach(fun({_, ok}) -> ok end, TimerReply),
+
+    %% Start the read servers for the node
     %% Be sure they all started ok, crash otherwise
-    ok = lists:foreach(fun({_, ok}) ->
-                           ok
-                       end, Responses),
     lager:info("Starting read servers"),
-    Responses2 = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers),
-    %% Be sure they all started ok, crash otherwise
-    ok = lists:foreach(fun({_, true}) ->
-                           ok
-                       end, Responses2),
+    ServerReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers),
+    ok = lists:foreach(fun({_, true}) -> ok end, ServerReply),
     ok.
 
 %% This should be called once the DC is up and running successfully
