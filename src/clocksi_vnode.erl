@@ -343,11 +343,14 @@ check_servers_ready([]) ->
     true;
 
 check_servers_ready([IndexNode | Rest]) ->
-    try
-        riak_core_vnode_master:sync_command(IndexNode, check_servers_ready, ?CLOCKSI_MASTER, infinity),
-        check_servers_ready(Rest)
+    Ready = try
+        riak_core_vnode_master:sync_command(IndexNode, check_servers_ready, ?CLOCKSI_MASTER, infinity)
     catch _:_Reason ->
         false
+    end,
+    case Ready of
+        true -> check_servers_ready(Rest);
+        false -> false
     end.
 
 -spec open_table(partition_id(), atom()) -> atom() | ets:tid().
