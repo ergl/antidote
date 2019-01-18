@@ -335,6 +335,7 @@ pvc_scan_and_read(Coordinator, IndexNode, {InfoMap, Key}, HasRead, VCaggr, #stat
     partition = SelfPartition,
     mat_state = MatState
 }) ->
+    %% TODO(borja): We exported pvc_find_maxvc to time this, un-export once we remove timing
     {Took, MaxVCRes} = timer:tc(?MODULE, pvc_find_maxvc, [IndexNode, HasRead, VCaggr, AtomicCache]),
     %% MaxVCRes = pvc_find_maxvc(IndexNode, HasRead, VCaggr, AtomicCache),
     case MaxVCRes of
