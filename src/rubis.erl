@@ -70,6 +70,15 @@ process_request('TimedRead', #{key := Key}) ->
             end
     end;
 
+process_request('RemoteRead', #{key := Key, has_read := HasRead, vc_aggr := VCaggr}) ->
+    ok = clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr, bang),
+    receive
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Payload} ->
+            {ok, Payload}
+    end;
+
 process_request('Load', #{num_keys := N, bin_size := Size}) ->
     pvc:unsafe_load(N, Size);
 

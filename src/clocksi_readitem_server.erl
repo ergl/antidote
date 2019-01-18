@@ -48,7 +48,8 @@
          stop_read_servers/2]).
 
 %% PVC only
--export([pvc_async_read/3]).
+-export([pvc_async_read/3,
+         pvc_async_read/4]).
 
 %% TODO(borja): Remove
 -export([pvc_find_maxvc/4]).
@@ -116,15 +117,27 @@ async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
 %% @doc PVC-only asynchronous read
 -spec pvc_async_read(key(), sets:set(), pvc_vc()) -> ok.
 pvc_async_read(Key, HasRead, VCaggr) ->
+    pvc_async_read(Key, HasRead, VCaggr, fsm).
+
+-spec pvc_async_read(key(), sets:set(), pvc_vc(), fsm | bang) -> ok.
+pvc_async_read(Key, HasRead, VCaggr, Mode) ->
+    %% How should we deliver the message back
+    %% fsm -> using gen_fsm
+    %% bang -> using normal !
+    Coordinator = case Mode of
+        fsm -> {coord, self()};
+        bang -> {bang, self()}
+    end,
+
     %% If not read, go through wait process
     {Partition, Node}=IndexNode = log_utilities:get_key_partition(Key),
     Target = {global, generate_random_server_name(Node, Partition)},
     case sets:is_element(Partition, HasRead) of
         false ->
-            gen_server:cast(Target, {pvc_fresh_read, self(), IndexNode, {#{replica_diff => os:timestamp()}, Key}, HasRead, VCaggr});
+            gen_server:cast(Target, {pvc_fresh_read, Coordinator, IndexNode, {#{replica_diff => os:timestamp()}, Key}, HasRead, VCaggr});
         true ->
             %% If partition has been read, read directly from VLog
-            gen_server:cast(Target, {pvc_vlog_read, self(), {#{replica_diff => os:timestamp()}, Key}, VCaggr})
+            gen_server:cast(Target, {pvc_vlog_read, Coordinator, {#{replica_diff => os:timestamp()}, Key}, VCaggr})
     end.
 
 -spec start_read_servers(index_node()) -> boolean().
@@ -273,9 +286,11 @@ pvc_vlog_read_internal(Coordinator, Partition, {InfoMap, Key}, MaxVC, MatState) 
     %% case materializer_vnode:pvc_read(Key, MaxVC, MatState) of
     case Res of
         {error, Reason} ->
-            gen_fsm:send_event(Coordinator, {error, Reason});
+            pvc_reply(Coordinator, {error, Reason});
         {ok, Value, CommitVC} ->
-            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, {InfoMap#{mat_read => Took, fsm_diff => os:timestamp()}, Key}, Value, CommitVC, MaxVC})
+            ReplyMsg = {pvc_readreturn, Partition, {InfoMap#{mat_read => Took, fsm_diff => os:timestamp()}, Key}, Value, CommitVC, MaxVC},
+            FallBack = {ok, {Partition, Value, CommitVC, MaxVC}},
+            pvc_reply(Coordinator, ReplyMsg, FallBack)
     end.
 
 %% @doc Wait until this PVC partition is ready to perform a read.
@@ -340,7 +355,7 @@ pvc_scan_and_read(Coordinator, IndexNode, {InfoMap, Key}, HasRead, VCaggr, #stat
     %% MaxVCRes = pvc_find_maxvc(IndexNode, HasRead, VCaggr, AtomicCache),
     case MaxVCRes of
         {error, Reason} ->
-            gen_fsm:send_event(Coordinator, {error, Reason});
+            pvc_reply(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
             pvc_vlog_read_internal(Coordinator, SelfPartition, {InfoMap#{find_maxvc => Took}, Key}, MaxVC, MatState)
@@ -480,3 +495,19 @@ reply_to_coordinator({fsm, Sender}, Msg, _FallbackMsg) ->
 reply_to_coordinator(Coordinator, _Msg, FallbackMsg) ->
     gen_server:reply(Coordinator, FallbackMsg),
     ok.
+
+%% @doc Send a message back to the transaction coordinator.
+%%
+%%      Allows to specify a simple message if the coordinator is a simple
+%%      process instead of the full-fsm coordinator.
+%%
+-spec pvc_reply(pid() | {bang, pid()}, term()) -> ok.
+pvc_reply(Coordinator, Msg) ->
+    pvc_reply(Coordinator, Msg, Msg).
+
+pvc_reply({bang, Coordinator}, _Msg, FallBack) when is_pid(Coordinator) ->
+    Coordinator ! FallBack,
+    ok;
+
+pvc_reply({coord, Coordinator}, Msg, _FallBack) when is_pid(Coordinator) ->
+    gen_fsm:send_event(Coordinator, Msg).
