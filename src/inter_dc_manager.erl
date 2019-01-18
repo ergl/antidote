@@ -136,6 +136,8 @@ start_bg_processes(MetaDataName) ->
     lager:info("Starting read servers"),
     ServerReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers),
     ok = lists:foreach(fun({_, true}) -> ok end, ServerReply),
+    lager:info("Starting supervisor pool"),
+    {ok, _Pid} = pvc_coord_pool_sup:start_pool(),
     ok.
 
 %% This should be called once the DC is up and running successfully
