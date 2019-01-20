@@ -70,8 +70,9 @@ process_request('TimedRead', #{key := Key}) ->
             end
     end;
 
-process_request('RemoteRead', #{key := Key, has_read := HasRead, vc_aggr := VCaggr}) ->
-    ok = clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr, bang),
+process_request('RemoteRead', #{partition := Partition, key := Key, has_read := HasRead, vc_aggr := VCaggr}) ->
+    %% Pass the index node directly, avoid recalculating partition
+    ok = clocksi_readitem_server:pvc_async_read({Partition, node()}, Key, HasRead, VCaggr, bang),
     receive
         {error, Reason} ->
             {error, Reason};

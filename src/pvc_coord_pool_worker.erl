@@ -67,11 +67,7 @@
     %% Used to buffer the list of keys that must be indexed
     index_buffer = dict:new() :: dict:dict(),
 
-    tmp_read_map_stamps = #{},
-    %% Which mechanism to use for remote reads
-    %% global -> use default clocksi_readitem_server
-    %% {tcp, ...} -> use protocol buffers
-    remote_sockets :: orddict:orddict(node(), gen_tcp:socket())
+    tmp_read_map_stamps = #{}
 }).
 
 -spec start_link(pid()) -> {ok, pid()}.
@@ -209,7 +205,7 @@ read_internal(Key, State = #state{from=Sender,
         false ->
             HasRead = Transaction#transaction.pvc_hasread,
             VCaggr = Transaction#transaction.pvc_vcaggr,
-            ok = perform_remote_read(Key, HasRead, VCaggr, State),
+            ok = perform_remote_read(Key, HasRead, VCaggr),
             {next_state, read_result, State};
         Value ->
             gen_fsm:reply(Sender, {ok, Value}),
@@ -217,26 +213,17 @@ read_internal(Key, State = #state{from=Sender,
     end.
 
 %% TODO(borja): Clean up this mess
-perform_remote_read(Key, HasRead, VCaggr, #state{remote_sockets=Sockets}) ->
-    {_, Node} = log_utilities:get_key_partition(Key),
+perform_remote_read(Key, HasRead, VCaggr) ->
+    {_, Node}=IndexNode = log_utilities:get_key_partition(Key),
     case Node =:= node() of
         %% Key is local
         true ->
-            {_Took, ok} = timer:tc(clocksi_readitem_server, pvc_async_read, [Key, HasRead, VCaggr]),
+            {_Took, ok} = timer:tc(clocksi_readitem_server, pvc_async_read, [IndexNode, Key, HasRead, VCaggr, fsm]),
             %% ok = clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr),
             ok;
         %% Key is remote
         false ->
-            {ok, Socket} = orddict:find(Node, Sockets),
-            Msg = rpb_simple_driver:remote_read(Key, HasRead, VCaggr),
-            ok = gen_tcp:send(Socket, Msg),
-            {ok, BinReply} = gen_tcp:recv(Socket, 0),
-            case rubis_proto:decode_serv_reply(BinReply) of
-                {error, Reason} ->
-                    gen_fsm:send_event(self(), {error, Reason});
-                {ok, {Partition, Value, CommitVC, MaxVC}} ->
-                    gen_fsm:send_event(self(), {pvc_readreturn, Partition, {#{}, Key}, Value, CommitVC, MaxVC})
-            end
+            ok = pvc_remote_reader:async_remote_read(IndexNode, Key, HasRead, VCaggr)
     end.
 
 read_result({error, maxvc_bad_vc}, State) ->
@@ -408,7 +395,7 @@ prepare_internal(State=#state{from=From,
     case UpdatedPartitions of
         [] ->
             gen_fsm:reply(From, ok),
-            recycle_fsm(State);
+            recycle_fsm();
 
         _ ->
             Ack = length(UpdatedPartitions),
@@ -443,7 +430,7 @@ pvc_decide(#state{from=From,
                   ack_outcome=Outcome,
                   transaction=#transaction{txn_id=TxId},
                   updated_partitions=UpdatedPartitions,
-                  index_buffer=ToIndexDict} = State) ->
+                  index_buffer=ToIndexDict}) ->
 
     Reply = case Outcome of
         {ok, _} -> ok;
@@ -462,11 +449,11 @@ pvc_decide(#state{from=From,
     end, UpdatedPartitions),
 
     ok = clocksi_vnode:pvc_decide(OpsAndIndices, TxId, Outcome),
-    recycle_fsm(State).
+    recycle_fsm().
 
-read_abort(#state{from=From, abort_reason=Reason} = State) ->
+read_abort(#state{from=From, abort_reason=Reason}) ->
     gen_fsm:reply(From, {error, Reason}),
-    recycle_fsm(State).
+    recycle_fsm().
 
 abort(CoordState = #state{from=From,
                           transaction=Transaction,
@@ -489,8 +476,8 @@ terminate(_Reason, _SN, _SD) -> ok.
 %%% Internal Functions
 %%%===================================================================
 
-recycle_fsm(State) ->
-    {next_state, wait_checkin, fresh_state(fresh_transaction(), State)}.
+recycle_fsm() ->
+    {next_state, wait_checkin, fresh_state(fresh_transaction())}.
 
 fresh_transaction() ->
     TransactionId = #tx_id{server_pid=self()},
@@ -511,42 +498,7 @@ fresh_state(Transaction) ->
            num_to_ack = 0,
            ack_outcome = undefined,
            index_buffer = dict:new(),
-           tmp_read_map_stamps = #{},
-           remote_sockets = open_remote_sockets()}.
-
-fresh_state(Transaction, #state{remote_sockets=RemoteSockets}) ->
-    #state{from = not_ready,
-        transaction = Transaction,
-        read_accumulator = [],
-        read_remaining = [],
-        updated_partitions = [],
-        client_ops = [],
-        abort_reason = undefined,
-        num_to_ack = 0,
-        ack_outcome = undefined,
-        index_buffer = dict:new(),
-        tmp_read_map_stamps = #{},
-        remote_sockets = RemoteSockets}.
-
--spec open_remote_sockets() -> orddict:orddict(node(), gen_tcp:socket()).
-open_remote_sockets() ->
-    SelfNode = node(),
-    RemotePort = 7878,
-    Options = [binary, {active, false}, {packet, 2}, {nodelay, true}],
-
-    AllNodes = dc_utilities:get_my_dc_nodes(),
-    lists:foldl(fun(Node, Acc) ->
-        case Node of
-            SelfNode ->
-                Acc;
-            _ ->
-                [_, BinIp] = binary:split(atom_to_binary(Node, latin1), <<"@">>),
-                IP = binary_to_atom(BinIp, latin1),
-                {ok, Sock} = gen_tcp:connect(IP, RemotePort, Options),
-                orddict:store(Node, Sock, Acc)
-        end
-    end, orddict:new(), AllNodes).
-
+           tmp_read_map_stamps = #{}}.
 
 %% @doc Replaces the first occurrence of a key
 %%

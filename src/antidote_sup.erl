@@ -72,6 +72,7 @@ init(_Args) ->
                             permanent, 5000, supervisor,
                             [clockSI_interactive_tx_coord_sup]},
 
+    PVCRemoteReaderSup = ?CHILD(pvc_remote_reader_sup, supervisor, []),
     PVCCoordPoolSup = ?CHILD(pvc_coord_pool_sup, supervisor, []),
 
     ClockSIReadSup = {clocksi_readitem_sup,
@@ -120,6 +121,7 @@ init(_Args) ->
        RubisKeyGen,
        ClockSIMaster,
        ClockSIiTxCoordSup,
+       PVCRemoteReaderSup,
        PVCCoordPoolSup,
        ClockSIReadSup,
        MaterializerMaster,

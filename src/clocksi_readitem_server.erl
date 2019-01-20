@@ -49,7 +49,7 @@
 
 %% PVC only
 -export([pvc_async_read/3,
-         pvc_async_read/4]).
+         pvc_async_read/5]).
 
 %% TODO(borja): Remove
 -export([pvc_find_maxvc/4]).
@@ -117,10 +117,11 @@ async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
 %% @doc PVC-only asynchronous read
 -spec pvc_async_read(key(), sets:set(), pvc_vc()) -> ok.
 pvc_async_read(Key, HasRead, VCaggr) ->
-    pvc_async_read(Key, HasRead, VCaggr, fsm).
+    IndexNode = log_utilities:get_key_partition(Key),
+    pvc_async_read(IndexNode, Key, HasRead, VCaggr, fsm).
 
--spec pvc_async_read(key(), sets:set(), pvc_vc(), fsm | bang) -> ok.
-pvc_async_read(Key, HasRead, VCaggr, Mode) ->
+-spec pvc_async_read(index_node(), key(), sets:set(), pvc_vc(), fsm | bang) -> ok.
+pvc_async_read({Partition, Node}=IndexNode, Key, HasRead, VCaggr, Mode) ->
     %% How should we deliver the message back
     %% fsm -> using gen_fsm
     %% bang -> using normal !
@@ -129,11 +130,10 @@ pvc_async_read(Key, HasRead, VCaggr, Mode) ->
         bang -> {bang, self()}
     end,
 
-    %% If not read, go through wait process
-    {Partition, Node}=IndexNode = log_utilities:get_key_partition(Key),
     Target = {global, generate_random_server_name(Node, Partition)},
     case sets:is_element(Partition, HasRead) of
         false ->
+            %% If not read, go through wait process
             gen_server:cast(Target, {pvc_fresh_read, Coordinator, IndexNode, {#{replica_diff => os:timestamp()}, Key}, HasRead, VCaggr});
         true ->
             %% If partition has been read, read directly from VLog
@@ -289,7 +289,7 @@ pvc_vlog_read_internal(Coordinator, Partition, {InfoMap, Key}, MaxVC, MatState) 
             pvc_reply(Coordinator, {error, Reason});
         {ok, Value, CommitVC} ->
             ReplyMsg = {pvc_readreturn, Partition, {InfoMap#{mat_read => Took, fsm_diff => os:timestamp()}, Key}, Value, CommitVC, MaxVC},
-            FallBack = {ok, {Partition, Value, CommitVC, MaxVC}},
+            FallBack = {ok, {Value, CommitVC, MaxVC}},
             pvc_reply(Coordinator, ReplyMsg, FallBack)
     end.
 
