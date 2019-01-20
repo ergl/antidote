@@ -11,3 +11,8 @@
 %% Amount of Transaction metadata kept
 -define(VERSION_THRESHOLD, 500).
 -define(MAX_VERSIONS, 100).
+
+%% Size of active listener pool for the protocol buffer server
+-define(RUBIS_PB_POOL, 100).
+%% Port number for protocol buffer sever
+-define(RUBIS_PB_PORT, 7878).

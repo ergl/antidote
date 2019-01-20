@@ -20,18 +20,15 @@
 
 -module(rubis_pb_server).
 
--export([start_listeners/0]).
+-include("pvc.hrl").
 
-%% The number of active listeners
-%% for the RUBIS Protocol Buffer server
--define(RUBIS_NSUP, 100).
--define(DEFAULT_RUBIS_PB_PORT, 7878).
+-export([start_listeners/0]).
 
 -spec start_listeners() -> ok.
 start_listeners() ->
-    RubisPbPort = application:get_env(antidote, rubis_pb_port, ?DEFAULT_RUBIS_PB_PORT),
+    RubisPbPort = application:get_env(antidote, rubis_pb_port, ?RUBIS_PB_PORT),
     {ok, _} = ranch:start_listener(tcp_rubis,
-                                   ?RUBIS_NSUP,
+                                   ?RUBIS_PB_POOL,
                                    ranch_tcp,
                                    [{port, RubisPbPort}, {max_connections, infinity}],
                                    rubis_pb_worker,
