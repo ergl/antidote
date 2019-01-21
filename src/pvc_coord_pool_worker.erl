@@ -42,6 +42,9 @@
          terminate/3,
          code_change/4]).
 
+%% TODO(borja): Unexport, just for timer:tc/3
+-export([perform_remote_read/3]).
+
 -record(state, {
     %% Client PID
     from = not_ready :: not_ready | pid(),
@@ -205,8 +208,9 @@ read_internal(Key, State = #state{from=Sender,
         false ->
             HasRead = Transaction#transaction.pvc_hasread,
             VCaggr = Transaction#transaction.pvc_vcaggr,
-            ok = perform_remote_read(Key, HasRead, VCaggr),
-            {next_state, read_result, State};
+            {Took, ok} = timer:tc(?MODULE, perform_remote_read, [Key, HasRead, VCaggr]),
+            %% ok = perform_remote_read(Key, HasRead, VCaggr),
+            {next_state, read_result, State#state{tmp_read_map_stamps = #{pvc_async_read => Took}}};
         Value ->
             gen_fsm:reply(Sender, {ok, Value}),
             {next_state, client_command, State}
@@ -218,9 +222,7 @@ perform_remote_read(Key, HasRead, VCaggr) ->
     case Node =:= node() of
         %% Key is local
         true ->
-            {_Took, ok} = timer:tc(clocksi_readitem_server, pvc_async_read, [IndexNode, Key, HasRead, VCaggr, fsm]),
-            %% ok = clocksi_readitem_server:pvc_async_read(Key, HasRead, VCaggr),
-            ok;
+            ok = clocksi_readitem_server:pvc_async_read(IndexNode, Key, HasRead, VCaggr, fsm);
         %% Key is remote
         false ->
             ok = pvc_remote_reader:async_remote_read(IndexNode, Key, HasRead, VCaggr)

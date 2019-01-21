@@ -62,7 +62,7 @@ random_name() ->
 
 -spec async_remote_read(index_node(), key(), sets:set(), pvc_vc()) -> ok.
 async_remote_read(IndexNode, Key, HasRead, VCaggr) ->
-    gen_server:cast(random_name(), {read_from, IndexNode, self(), Key, HasRead, VCaggr}).
+    gen_server:cast(random_name(), {read_from, IndexNode, self(), {#{remote_read_server => os:timestamp()}, Key}, HasRead, VCaggr}).
 
 init([]) ->
     Self = node(),
@@ -89,16 +89,21 @@ handle_call(Msg, From, State) ->
     lager:info("Unrecognized msg ~p from ~p", [Msg, From]),
     {noreply, State}.
 
-handle_cast({read_from, {Partition, Node}, From, Key, HasRead, VCaggr}, State=#state{sockets=Socks}) ->
+handle_cast({read_from, {Partition, Node}, From, {InfoMap, Key}, HasRead, VCaggr}, State=#state{sockets=Socks}) ->
+    Rcv = os:timestamp(),
     {ok, Socket} = orddict:find(Node, Socks),
     Msg = rpb_simple_driver:remote_read(Partition, Key, HasRead, VCaggr),
+    SendSock = os:timestamp(),
     ok = gen_tcp:send(Socket, Msg),
     {ok, BinReply} = gen_tcp:recv(Socket, 0),
+    RcvSock = os:timestamp(),
     case rubis_proto:decode_serv_reply(BinReply) of
         {error, Reason} ->
             gen_fsm:send_event(From, {error, Reason});
         {ok, {Value, CommitVC, MaxVC}} ->
-            gen_fsm:send_event(From, {pvc_readreturn, Partition, {#{fsm_diff => os:timestamp()}, Key}, Value, CommitVC, MaxVC})
+            InfoMap1 = maps:update_with(remote_read_server, fun(T) -> timer:now_diff(Rcv, T) end, InfoMap),
+            InfoMap2 = InfoMap1#{remote_read_socket => timer:now_diff(RcvSock, SendSock), fsm_diff => os:timestamp()},
+            gen_fsm:send_event(From, {pvc_readreturn, Partition, {InfoMap2, Key}, Value, CommitVC, MaxVC})
     end,
     {noreply, State};
 
