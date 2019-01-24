@@ -13,7 +13,7 @@
 -define(MAX_VERSIONS, 100).
 
 %% Amount of remote reader server processes
--define(NUM_READERS, 100).
+-define(NUM_READERS, 750).
 
 %% Size of active listener pool for the protocol buffer server
 -define(RUBIS_PB_POOL, 100).
