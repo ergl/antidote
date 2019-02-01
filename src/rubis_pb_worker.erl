@@ -57,7 +57,6 @@ handle_cast(E, S) ->
 handle_info({tcp, Socket, Data}, State = #state{socket=Socket, transport=Transport}) ->
     {HandlerMod, Type, Msg} = rubis_proto:decode_client_req(Data),
     Result = rubis:process_request(Type, Msg),
-%%    lager:info("Processed pb request ~p with result ~p", [Type, Result]),
     Reply = rubis_proto:encode_serv_reply(HandlerMod, Type, Result),
     Transport:send(Socket, Reply),
     Transport:setopts(Socket, [{active, once}]),
