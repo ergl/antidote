@@ -19,9 +19,15 @@ main(NodesListString) ->
             io:format("Starting clustering of nodes ~p~n", [Nodes]),
             lists:foreach(fun(N) -> erlang:set_cookie(N, antidote) end, Nodes),
             ok = join_cluster(Nodes),
-            rpc:multicall(Nodes, inter_dc_manager, start_bg_processes, [stable], infinity),
-            ok = wait_until_master_ready(MainNode),
-            io:format("Successfully joined nodes ~p~n", [Nodes])
+            {_, BadNodes} = rpc:multicall(Nodes, inter_dc_manager, start_bg_processes, [stable], infinity),
+            case BadNodes of
+                [] ->
+                    ok = wait_until_master_ready(MainNode),
+                    io:format("Successfully joined nodes ~p~n", [Nodes]);
+                _ ->
+                    io:fwrite(standard_error, "start_bg_processes failed on ~p, aborting~n", [BadNodes]),
+                    halt(1)
+            end
     end.
 
 -spec parse_node_list(list(string())) -> {ok, [node()]} | error.
@@ -91,19 +97,6 @@ sorted_ring_owners(Node) ->
             Owners = [Owner || {_Idx, Owner} <- rpc:call(Node, riak_core_ring, all_owners, [Ring])],
             SortedOwners = lists:usort(Owners),
             io:format("Owners at ~p: ~p~n", [Node, SortedOwners]),
-            {ok, SortedOwners};
-
-        {badrpc, _}=BadRpc ->
-            BadRpc
-    end.
-
--spec owners_according_to(node(), node()) -> {ok, list(node())} | {badrpc, term()}.
-owners_according_to(Node, MainNode) ->
-    case rpc:call(Node, riak_core_ring_manager, get_raw_ring, []) of
-        {ok, Ring} ->
-            Owners = [Owner || {_Idx, Owner} <- rpc:call(MainNode, riak_core_ring, all_owners, [Ring])],
-            SortedOwners = lists:usort(Owners),
-            io:format("Owners at ~p: ~p (according to ~p)~n", [Node, SortedOwners, MainNode]),
             {ok, SortedOwners};
 
         {badrpc, _}=BadRpc ->
