@@ -55,9 +55,10 @@ handle_cast(E, S) ->
     {noreply, S}.
 
 handle_info({tcp, Socket, Data}, State = #state{socket=Socket, transport=Transport}) ->
-    {HandlerMod, Type, Msg} = rubis_proto:decode_client_req(Data),
+    {HandlerMod, Type, Msg} = pvc_proto:decode_client_req(Data),
+    %% TODO(borja): Not all process will need to reply (e.g. decide)
     Result = rubis:process_request(Type, Msg),
-    Reply = rubis_proto:encode_serv_reply(HandlerMod, Type, Result),
+    Reply = pvc_proto:encode_serv_reply(HandlerMod, Type, Result),
     Transport:send(Socket, Reply),
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};

@@ -10,7 +10,7 @@
                   riak_pb,
                   riak_api,
                   riak_core,
-                  rubis_proto,
+                  pvc_proto,
                   antidote_crdt,
                   cuttlefish,
                   riak_dt,

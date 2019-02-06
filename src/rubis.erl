@@ -51,7 +51,7 @@ process_request('Ping', _) ->
             {error, Reason}
     end;
 
-process_request('Load', #{num_keys := _Ignore, bin_size := Size}) ->
+process_request('Load', #{bin_size := Size}) ->
     NewLastPrep = 1,
     Val = crypto:strong_rand_bytes(Size),
 
