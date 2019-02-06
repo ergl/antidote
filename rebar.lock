@@ -48,7 +48,7 @@
   1},
  {<<"pvc_proto">>,
   {git,"https://github.com/ergl/pvc_proto.git",
-       {ref,"fb93303b40f771119cd9815bf77cd2e5f0a61a49"}},
+       {ref,"fa705ef6baa04f9097ba34987672d73d4a56a2a2"}},
   0},
  {<<"ranch">>,{pkg,<<"ranch">>,<<"1.5.0">>},0},
  {<<"rand_compat">>,
