@@ -18,7 +18,7 @@
 %%%%
 %%%% -------------------------------------------------------------------
 
--module(rubis).
+-module(coord_pb_req_handler).
 
 -define(ru, rubis_utils).
 -define(default_group, <<"global_index">>).
@@ -41,7 +41,20 @@ sequential_read([Key | Rest], Tx) ->
             ReadError
     end.
 
-process_request('Ping', _) ->
+%% @doc Process a PB command
+%%
+%%      The first argument is the atom name of the command, and the second
+%%      the argument map coming from pvc_proto. To reply `Term` to the client,
+%%      return `{reply, Term}`. Return `noreply` to avoid returning anything
+%%      back to the client.
+%%
+%% FIXME(borja): Ugly, needs knowledge of PB message names and map layout
+-spec process_request(atom(), #{}) -> {reply, term()} | noreply.
+process_request(Name, Args) ->
+    %% FIXME(borja): Temporary hack to reply, modify later
+    {reply, process_request_internal(Name, Args)}.
+
+process_request_internal('Ping', _) ->
     {ok, TxId} = pvc:start_transaction(),
     Commit = pvc:commit_transaction(TxId),
     case Commit of
@@ -51,7 +64,7 @@ process_request('Ping', _) ->
             {error, Reason}
     end;
 
-process_request('Load', #{bin_size := Size}) ->
+process_request_internal('Load', #{bin_size := Size}) ->
     NewLastPrep = 1,
     Val = crypto:strong_rand_bytes(Size),
 
@@ -73,7 +86,7 @@ process_request('Load', #{bin_size := Size}) ->
     ok = lists:foreach(fun({_, ok}) -> ok end, ForceStateReply),
     ok;
 
-process_request('ReadOnlyTx', #{keys := Keys}) ->
+process_request_internal('ReadOnlyTx', #{keys := Keys}) ->
     {ok, TxId} = pvc:start_transaction(),
     case sequential_read(Keys, TxId) of
         {error, _}=ReadError ->
@@ -88,7 +101,7 @@ process_request('ReadOnlyTx', #{keys := Keys}) ->
             end
     end;
 
-process_request('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
+process_request_internal('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
     Updates = lists:map(fun(#{key := K, value := V}) -> {K, V} end, OpList),
 
     {ok, TxId} = pvc:start_transaction(),
@@ -107,27 +120,27 @@ process_request('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
     end;
 
 %% Used for rubis load
-process_request('PutRegion', #{region_name := Name}) ->
+process_request_internal('PutRegion', #{region_name := Name}) ->
     put_region(Name);
 
 %% Used for rubis load
-process_request('PutCategory', #{category_name := Name}) ->
+process_request_internal('PutCategory', #{category_name := Name}) ->
     put_category(Name);
 
 %% Benchmark only
-process_request('AuthUser', #{username := Username,
-                              password := Password}) ->
+process_request_internal('AuthUser', #{username := Username,
+                                       password := Password}) ->
     auth_user(Username, Password);
 
 %% Used for rubis load and benchmark
-process_request('RegisterUser', #{username := Username,
-                                  password := Password,
-                                  region_id := RegionId}) ->
+process_request_internal('RegisterUser', #{username := Username,
+                                           password := Password,
+                                           region_id := RegionId}) ->
 
     register_user(Username, Password, RegionId);
 
 %% Benchmark only
-process_request('BrowseCategories', _) ->
+process_request_internal('BrowseCategories', _) ->
     case browse_categories() of
         {error, Reason} ->
             {error, Reason};
@@ -136,7 +149,7 @@ process_request('BrowseCategories', _) ->
     end;
 
 %% Benchmark only
-process_request('BrowseRegions', _) ->
+process_request_internal('BrowseRegions', _) ->
     case browse_regions() of
         {error, Reason} ->
             {error, Reason};
@@ -145,7 +158,7 @@ process_request('BrowseRegions', _) ->
     end;
 
 %% Benchmark only
-process_request('SearchByCategory', #{category_id := CategoryId}) ->
+process_request_internal('SearchByCategory', #{category_id := CategoryId}) ->
     case search_items_by_category(CategoryId) of
         {error, Reason} ->
             {error, Reason};
@@ -154,7 +167,9 @@ process_request('SearchByCategory', #{category_id := CategoryId}) ->
     end;
 
 %% Benchmark only
-process_request('SearchByRegion', #{region_id := RegionId, category_id := CategoryId}) ->
+process_request_internal('SearchByRegion', #{region_id := RegionId,
+                                             category_id := CategoryId}) ->
+
     case search_items_by_region(CategoryId, RegionId) of
         {error, Reason} ->
             {error, Reason};
@@ -163,7 +178,7 @@ process_request('SearchByRegion', #{region_id := RegionId, category_id := Catego
     end;
 
 %% Benchmark only
-process_request('ViewItem', #{item_id := ItemId}) ->
+process_request_internal('ViewItem', #{item_id := ItemId}) ->
     case view_item(ItemId) of
         {error, Reason} ->
             {error, Reason};
@@ -172,7 +187,7 @@ process_request('ViewItem', #{item_id := ItemId}) ->
     end;
 
 %% Benchmark only
-process_request('ViewUser', #{user_id := UserId}) ->
+process_request_internal('ViewUser', #{user_id := UserId}) ->
     case view_user(UserId) of
         {error, Reason} ->
             {error, Reason};
@@ -181,7 +196,7 @@ process_request('ViewUser', #{user_id := UserId}) ->
     end;
 
 %% Benchmark only
-process_request('ViewItemBidHist', #{item_id := ItemId}) ->
+process_request_internal('ViewItemBidHist', #{item_id := ItemId}) ->
     case view_item_bid_hist(ItemId) of
         {error, Reason} ->
             {error, Reason};
@@ -190,38 +205,38 @@ process_request('ViewItemBidHist', #{item_id := ItemId}) ->
     end;
 
 %% Benchmark only
-process_request('StoreBuyNow', #{on_item_id := ItemId,
-                                 buyer_id := BuyerId,
-                                 quantity := Quantity}) ->
+process_request_internal('StoreBuyNow', #{on_item_id := ItemId,
+                                          buyer_id := BuyerId,
+                                          quantity := Quantity}) ->
     store_buy_now(ItemId, BuyerId, Quantity);
 
 %% Used for rubis load and benchmark
-process_request('StoreBid', #{on_item_id := ItemId,
+process_request_internal('StoreBid', #{on_item_id := ItemId,
                               bidder_id := BidderId,
                               value := Value}) ->
 
     store_bid(ItemId, BidderId, Value);
 
 %% Used for rubis load and benchmark
-process_request('StoreComment', #{on_item_id := ItemId,
-                                  from_id := Fromid,
-                                  to_id := ToId,
-                                  rating := Rating,
-                                  body := Body}) ->
+process_request_internal('StoreComment', #{on_item_id := ItemId,
+                                           from_id := Fromid,
+                                           to_id := ToId,
+                                           rating := Rating,
+                                           body := Body}) ->
 
     store_comment(ItemId, Fromid, ToId, Rating, Body);
 
 %% Used for rubis load and benchmark
-process_request('StoreItem', #{item_name := Name,
-                               description := Desc,
-                               quantity := Q,
-                               category_id := CategoryId,
-                               seller_id := UserId}) ->
+process_request_internal('StoreItem', #{item_name := Name,
+                                        description := Desc,
+                                        quantity := Q,
+                                        category_id := CategoryId,
+                                        seller_id := UserId}) ->
 
     store_item(Name, Desc, Q, CategoryId, UserId);
 
 %% Benchmark only
-process_request('AboutMe', #{user_id := UserId}) ->
+process_request_internal('AboutMe', #{user_id := UserId}) ->
     case about_me(UserId) of
         {error, Reason} ->
             {error, Reason};
