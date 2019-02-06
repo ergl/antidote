@@ -54,6 +54,10 @@ process_request(Name, Args) ->
     %% FIXME(borja): Temporary hack to reply, modify later
     {reply, process_request_internal(Name, Args)}.
 
+process_request_internal('ConnectRequest', _) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    {ok, riak_core_ring:chash(Ring)};
+
 process_request_internal('Ping', _) ->
     {ok, TxId} = pvc:start_transaction(),
     Commit = pvc:commit_transaction(TxId),
