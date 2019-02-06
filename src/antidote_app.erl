@@ -69,7 +69,7 @@ start(_StartType, _StartArgs) ->
                   ok
             end,
 
-            ok = rubis_pb_server:start_listeners(),
+            ok = coord_pb_server:start_listeners(),
 
             case application:get_env(antidote, auto_start_read_servers) of
                 {ok, true} ->

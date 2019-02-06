@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 
--module(rubis_pb_worker).
+-module(coord_pb_server_worker).
 
 -behaviour(gen_server).
 -behavior(ranch_protocol).

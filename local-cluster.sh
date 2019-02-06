@@ -28,7 +28,7 @@ an-run() {
             PB_PORT=8${i}87 \
             PUBSUB_PORT=8${i}86 \
             LOGREADER_PORT=8${i}85 \
-            RUBIS_PB_PORT=7${i}78 \
+            COORD_PB_PORT=7${i}78 \
             INSTANCE_NAME=antidote${i} \
             ./_build/default/rel/antidote${i}/bin/env start
 

@@ -25,8 +25,8 @@ if [ -z "$LOGREADER_PORT" ]; then
   export LOGREADER_PORT=8085
 fi
 
-if [ -z "$RUBIS_PB_PORT" ]; then
-  export RUBIS_PB_PORT=7878
+if [ -z "$COORD_PB_PORT" ]; then
+  export COORD_PB_PORT=7878
 fi
 
 # Ring State directory.
