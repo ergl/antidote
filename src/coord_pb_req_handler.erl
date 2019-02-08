@@ -58,6 +58,20 @@ process_request_internal('ConnectRequest', _) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     {ok, riak_core_ring:chash(Ring)};
 
+process_request_internal('ReadRequest', #{partition := Partition,
+                                          key := Key,
+                                          vc_aggr := VC,
+                                          has_read := HasRead}) ->
+
+    ok = clocksi_readitem_server:pvc_async_read({Partition, node()}, Key, HasRead, VC, bang),
+    receive
+        {error, Reason} ->
+            {error, Reason};
+
+        {ok, Value, CommitVC, MaxVC} ->
+            {ok, Value, CommitVC, MaxVC}
+    end;
+
 process_request_internal('Ping', _) ->
     {ok, TxId} = pvc:start_transaction(),
     Commit = pvc:commit_transaction(TxId),
