@@ -819,7 +819,7 @@ pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
 
 %% @doc Update the materializer cache with the newest snapshots (VLog)
 -spec pvc_vlog_apply(txid(), list(), pvc_vc(), list()) -> ok | error.
-pvc_vlog_apply(TxnId, [{FirstKey,_,_}|_]=WriteSet, CommitVC, IndexList) ->
+pvc_vlog_apply(TxnId, [{FirstKey ,_, _}|_]=WriteSet, CommitVC, IndexList) ->
     %% All the keys in the WS are in the same partition
     {TargetPartition, _} = log_utilities:get_key_partition(FirstKey),
     DCId = dc_meta_data_utilities:get_my_dc_id(),

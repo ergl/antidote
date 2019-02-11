@@ -644,11 +644,11 @@ pvc_unsafe_load(NKeys, Size, Sender, State) ->
 pvc_unsafe_load_update(0, _, State) ->
     State;
 
-pvc_unsafe_load_update(N, Val, S = #tx_coord_state{client_ops=Ops0,updated_partitions=P0}) ->
+pvc_unsafe_load_update(N, Val, S = #tx_coord_state{client_ops=Ops0, updated_partitions=P0}) ->
     Key = integer_to_binary(N, 36),
     Op = {Key, antidote_crdt_lwwreg, {assign, Val}},
     {P, Ops} = pvc_perform_update(Op, P0, Ops0),
-    pvc_unsafe_load_update(N - 1, Val, S#tx_coord_state{client_ops=Ops,updated_partitions=P}).
+    pvc_unsafe_load_update(N - 1, Val, S#tx_coord_state{client_ops=Ops, updated_partitions=P}).
 
 -spec pvc_add_to_index_dict(index_node(), key(), dict:dict()) -> dict:dict().
 pvc_add_to_index_dict(Part, Key, Dict) ->

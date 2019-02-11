@@ -22,9 +22,9 @@
 
 -include("pvc.hrl").
 
--define(KEY_GUARD(G,T,I), is_binary(G) andalso is_atom(T) andalso is_integer(I)).
--define(KEY_GUARD(G,T,I,F), is_binary(G) andalso is_atom(T) andalso is_integer(I) andalso is_atom(F)).
--define(INDEX_GUARD(G,N), is_binary(G) andalso is_atom(N)).
+-define(KEY_GUARD(G, T, I), is_binary(G) andalso is_atom(T) andalso is_integer(I)).
+-define(KEY_GUARD(G, T, I, F), is_binary(G) andalso is_atom(T) andalso is_integer(I) andalso is_atom(F)).
+-define(INDEX_GUARD(G, N), is_binary(G) andalso is_atom(N)).
 
 %% API
 -export([get_grouping/1,
