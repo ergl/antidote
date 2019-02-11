@@ -297,7 +297,7 @@ create_pvc_tx_record(Name, Protocol) ->
         %% PVC-related state
         pvc_vcaggr = pvc_vclock:new(),
         pvc_vcdep = pvc_vclock:new(),
-        pvc_hasread = sets:new(),
+        pvc_hasread = ordsets:new(),
 
         transactional_protocol=Protocol,
         snapshot_time=CompatibilityTime,
@@ -997,14 +997,14 @@ pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
     pvc_vcaggr = TVCaggr
 }) ->
 
-    NewHasRead = sets:add_element(FromPartition, HasRead),
+    NewHasRead = ordsets:add_element(FromPartition, HasRead),
 
     NewVCdep = pvc_vclock:max(TVCdep, VCdep),
     NewVCaggr = pvc_vclock:max(TVCaggr, VCaggr),
 
     Transaction#transaction{pvc_hasread=NewHasRead,
-                            pvc_vcdep = NewVCdep,
-                            pvc_vcaggr = NewVCaggr}.
+                            pvc_vcdep=NewVCdep,
+                            pvc_vcaggr=NewVCaggr}.
 
 %% The following function is used to apply the updates that were performed by the running
 %% transaction, to the result returned by a read.

@@ -197,11 +197,12 @@
 
 -record(transaction, {
     %% VC representing the minimum snapshot version that must be read
-    pvc_vcaggr :: pvc_vc(),
+    pvc_vcaggr = pvc_vclock:new() :: pvc_vc(),
     %% VC representing the causal dependencies picked up during execution
-    pvc_vcdep :: pvc_vc(),
+    pvc_vcdep = pvc_vclock:new()  :: pvc_vc(),
     %% Represents the partitions where the transaction has fixed a snapshot
-    pvc_hasread :: sets:set(partition_id()),
+    pvc_hasread = ordsets:new() :: ordsets:ordset(partition_id()),
+
     transactional_protocol :: transactional_protocol(),
     snapshot_time :: snapshot_time(),
     vec_snapshot_time :: snapshot_time(),
