@@ -428,7 +428,7 @@ handle_command(check_servers_ready, _Sender, SD0 = #state{partition=Partition, r
     {reply, Result, SD0};
 
 handle_command(pvc_refresh_replicas, _Sender, State = #state{partition=Partition, read_servers = Serv}) ->
-    Result = clocksi_readitem_server:pvc_refresh_default(Partition, Serv),
+    Result = pvc_read_replica:refresh_default(Partition, Serv),
     {reply, Result, State};
 
 handle_command({pvc_unsafe_set_clock, Seq, MRVC}, _Sender, State = #state{partition=Partition, pvc_atomic_state=PVCState}) ->

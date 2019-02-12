@@ -70,6 +70,7 @@
 
 %% PVC-only functions
 -export([pvc_read/3,
+         pvc_read_replica/4,
          pvc_update/1,
          pvc_update_indices/1,
          pvc_key_range/4,
@@ -105,7 +106,8 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
 %%      Will also bypass the ops cache as we don't need it.
 %%
 -spec pvc_read(key(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
-pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) ->
+pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache=VLogCache,
+                                                  pvc_default_value=BottomValue}) ->
     case ets:info(VLogCache) of
         undefined ->
             %% TODO(borja): When is this triggered?
@@ -119,7 +121,17 @@ pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) -
             );
 
         _ ->
-            pvc_internal_read(Key, SnapshotTime, MatState)
+            pvc_internal_read(Key, SnapshotTime, VLogCache, BottomValue)
+    end.
+
+-spec pvc_read_replica(key(), snapshot_time(), cache_id(), tuple()) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
+pvc_read_replica(Key, SnapshotTime, VLogCache, Default) ->
+    case ets:info(VLogCache) of
+        undefined ->
+            lager:error("Materializer partition miss with ~p", [Key]),
+            {error, partition_moved};
+        _ ->
+            pvc_internal_read(Key, SnapshotTime, VLogCache, Default)
     end.
 
 -spec get_cache_name(non_neg_integer(), atom()) -> atom().
@@ -338,8 +350,8 @@ handle_command(pvc_get_default, _Sender, State = #mat_state{pvc_default_value = 
 handle_command({pvc_set_default, Value}, _Sender, State) ->
     {reply, ok, State#mat_state{pvc_default_value = Value}};
 
-handle_command({pvc_read, Key, SnapshotTime}, _Sender, State) ->
-    {reply, pvc_internal_read(Key, SnapshotTime, State), State};
+handle_command({pvc_read, Key, SnapshotTime}, _Sender, State=#mat_state{pvc_vlog_cache=VLog, pvc_default_value=Default}) ->
+    {reply, pvc_internal_read(Key, SnapshotTime, VLog, Default), State};
 
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
@@ -491,11 +503,8 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
     end.
 
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
--spec pvc_internal_read(key(), snapshot_time(), #mat_state{}) -> {ok, term(), snapshot_time()}.
-pvc_internal_read(Key, MinSnapshotTime, #mat_state{
-    pvc_vlog_cache = VLogCache,
-    pvc_default_value = Default
-}) ->
+-spec pvc_internal_read(key(), snapshot_time(), cache_id(), term()) -> {ok, term(), snapshot_time()}.
+pvc_internal_read(Key, MinSnapshotTime, VLogCache, Default) ->
     {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
         [] ->
             Default;
