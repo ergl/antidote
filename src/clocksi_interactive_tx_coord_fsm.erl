@@ -664,7 +664,7 @@ pvc_add_to_index_dict(Part, Key, Dict) ->
 %% @doc Return the locally updated keys belonging to Partition that match
 %%      the given prefix, skipping the root key
 -spec pvc_get_local_matching_keys(
-    partition_id(),
+    index_node(),
     key(),
     pvc_indices:range(),
     dict:dict()

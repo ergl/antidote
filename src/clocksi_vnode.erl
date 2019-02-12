@@ -55,7 +55,8 @@
 %% PVC-only exports
 -export([decide/4,
          pvc_process_cqueue/1,
-         pvc_get_most_recent_vc/2]).
+         pvc_get_most_recent_vc/2,
+         check_pvc_replicas_ready/0]).
 
 %% health check export
 -export([check_tables_ready/0,
@@ -356,6 +357,25 @@ check_servers_ready([IndexNode | Rest]) ->
         false -> false
     end.
 
+check_pvc_replicas_ready() ->
+    check_pvc_replicas_ready(dc_utilities:get_all_partitions_nodes()).
+
+check_pvc_replicas_ready([]) ->
+    true;
+
+check_pvc_replicas_ready([IndexNode | Rest]) ->
+    Ready = try
+        riak_core_vnode_master:sync_command(IndexNode, check_pvc_replicas_ready, ?CLOCKSI_MASTER, infinity)
+    catch _:_Reason ->
+        false
+    end,
+    case Ready of
+        true ->
+            check_pvc_replicas_ready(Rest);
+        false ->
+            false
+    end.
+
 -spec open_table(partition_id(), atom()) -> atom() | ets:tid().
 open_table(Partition, Name) ->
     open_table(Partition, Name, [set, protected, named_table, ?TABLE_CONCURRENCY]).
@@ -415,6 +435,17 @@ handle_command({pvc_unsafe_set_clock, Seq, MRVC}, _Sender, State = #state{partit
     true = ets:insert(PVCState, [{seq_number, Seq}, {mrvc, MRVC}]),
     ok = logging_vnode:pvc_insert_to_commit_log(Partition, MRVC),
     {reply, ok, State#state{pvc_key_hit_miss_default=Seq}};
+
+%% @doc Start PVC-only read replicas
+handle_command(start_pvc_servers, _From, SD0=#state{partition=Partition, read_servers=Num}) ->
+    ok = pvc_read_replica:start_replicas(Partition, Num),
+    Result = pvc_read_replica:replica_ready(Partition, Num),
+    {reply, Result, SD0};
+
+%% @doc Check that PVC-only read replicas are up
+handle_command(check_pvc_replicas_ready, _Sender, SD0=#state{partition=Partition, read_servers=Num}) ->
+    Result = pvc_read_replica:replica_ready(Partition, Num),
+    {reply, Result, SD0};
 
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);

@@ -136,6 +136,11 @@ start_bg_processes(MetaDataName) ->
     lager:info("Starting read servers"),
     ServerReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers),
     ok = lists:foreach(fun({_, true}) -> ok end, ServerReply),
+
+    lager:info("Starting pvc read replicas"),
+    PVCReplicaResp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, start_pvc_servers),
+    ok = lists:foreach(fun({_, true}) -> ok end, PVCReplicaResp),
+
     ok.
 
 %% This should be called once the DC is up and running successfully
@@ -171,25 +176,29 @@ check_node_restart() ->
             ok = dc_utilities:check_registered(inter_dc_query),
             {ok, MetaDataName} = dc_meta_data_utilities:get_meta_data_name(),
             ok = meta_data_sender:start(MetaDataName),
+
             %% Start the timers sending the heartbeats
             lager:info("Starting heartbeat sender timers"),
             Responses = dc_utilities:bcast_my_vnode_sync(logging_vnode_master, {start_timer, undefined}),
             %% Be sure they all started ok, crash otherwise
-            ok = lists:foreach(fun({_, ok}) ->
-                                   ok
-                               end, Responses),
+            ok = lists:foreach(fun({_, ok}) -> ok end, Responses),
+
             lager:info("Starting read servers"),
             Responses2 = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, start_read_servers),
             %% Be sure they all started ok, crash otherwise
-            ok = lists:foreach(fun({_, true}) ->
-                                   ok
-                               end, Responses2),
+            ok = lists:foreach(fun({_, true}) -> ok end, Responses2),
+
+            lager:info("Starting pvc read replicas"),
+            PVCReplicaResp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, start_pvc_servers),
+            ok = lists:foreach(fun({_, true}) -> ok end, PVCReplicaResp),
+
             %% Reconnect this node to other DCs
             OtherDCs = dc_meta_data_utilities:get_dc_descriptors(),
             Responses3 = reconnect_dcs_after_restart(OtherDCs, MyNode),
             %% Ensure all connections were successful, crash otherwise
             Responses3 = [X = ok || X <- Responses3],
             true;
+
         false ->
             false
     end.
