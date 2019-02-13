@@ -64,7 +64,7 @@ process_request_internal('ReadRequest', #{partition := Partition,
                                           has_read := HasRead}) ->
 
     %% Force read to be local, client already determined the correct node
-    ok = clocksi_readitem_server:pvc_async_read({Partition, node()}, Key, HasRead, VC, bang),
+    ok = pvc_read_replica:async_read(self(), Partition, Key, HasRead, VC),
     receive
         {error, Reason} ->
             {error, Reason};
