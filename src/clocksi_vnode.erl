@@ -54,6 +54,7 @@
 
 %% PVC-only exports
 -export([decide/4,
+         pvc_prepare/5,
          pvc_process_cqueue/1,
          pvc_get_most_recent_vc/2,
          check_pvc_replicas_ready/0]).
@@ -214,6 +215,15 @@ prepare(ListofNodes, TxId) ->
             ?CLOCKSI_MASTER
         )
     end, ok, ListofNodes).
+
+-spec pvc_prepare(pid(), partition_id(), term(), term(), non_neg_integer()) -> ok.
+pvc_prepare(ReplyTo, Partition, TxId, Writeset, Version) ->
+    %% Will return like ReplyTo ! Msg
+    riak_core_vnode_master:command(
+        {Partition, node()},
+        {pvc_prepare_v2, ReplyTo, TxId, Writeset, Version},
+        ?CLOCKSI_MASTER
+    ).
 
 -spec decide(list(), tx(), vectorclock(), boolean()) -> ok.
 decide(OpsAndIndices, Tx, CommitVC, Outcome) ->
@@ -457,6 +467,11 @@ handle_command({pvc_prepare, Transaction, WriteSet}, _Sender, State) ->
     {VoteMsg, NewState} = pvc_prepare(Transaction, WriteSet, State),
     {reply, VoteMsg, NewState};
 
+handle_command({pvc_prepare_v2, ReplyTo, TxId, Writeset, Version}, _Sender, State) ->
+    lager:info("{prepare_v2, ~p, ~p, ~p, ~p}", [ReplyTo, TxId, Writeset, Version]),
+    NewState = pvc_prepare_v2(ReplyTo, TxId, Writeset, Version, State),
+    {noreply, NewState};
+
 handle_command({pvc_decide, Transaction, WriteSet, IndexList, CommitVC, Outcome}, _Sender, State = #state{
     partition = Partition,
     pvc_commitqueue = CQueue
@@ -684,6 +699,32 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
+pvc_prepare_v2(ReplyTo, TxId, Writeset, Version, State = #state{
+    pvc_commitqueue = CommitQueue,
+    pvc_atomic_state = PartitionState,
+    pvc_key_hit_miss_default = DefaultLastVersion,
+    committed_tx = VLogLastCache
+}) ->
+    Disputed = pvc_commit_queue:contains_disputed(Writeset, CommitQueue),
+    lager:info("~p disputed = ~p", [TxId, Disputed]),
+    StaleTx = pvc_are_keys_stale(pvc_writeset:to_list(Writeset), Version, VLogLastCache, DefaultLastVersion),
+    lager:info("~p stale = ~p", [TxId, StaleTx]),
+    case Disputed orelse StaleTx of
+        true ->
+            Reason = case Disputed of
+                true -> pvc_conflict;
+                false -> pvc_stale_vc
+            end,
+            ReplyTo ! {error, Reason},
+            State;
+        false ->
+            SeqNumber = pvc_faa_lastprep(PartitionState),
+            NewCommitQueue = pvc_commit_queue:enqueue(TxId, Writeset, CommitQueue),
+            ReplyTo ! {ok, SeqNumber},
+            State#state{pvc_commitqueue=NewCommitQueue}
+    end.
+
+%% @deprecated
 pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state{
     partition = Partition,
     committed_tx = CommittedTransactions,
@@ -733,6 +774,25 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 %% @doc Check if any of the keys in a transaction writeset are too stale with
 %%      respect to the most recent committed version.
 %%
+-spec pvc_are_keys_stale(list(key()), pvc_vc(), cache_id(), non_neg_integer()) -> boolean().
+pvc_are_keys_stale([], _, _, _) ->
+    false;
+
+pvc_are_keys_stale([{Key, _} | Rest], Version, VLogLastCache, DefaultTime) ->
+    Stale = case ets:lookup(VLogLastCache, Key) of
+        [] ->
+            DefaultTime > Version;
+
+        [{Key, CommitTime}] ->
+            CommitTime > Version
+    end,
+    case Stale of
+        true ->
+            true;
+        false ->
+            pvc_are_keys_stale(Rest, Version, VLogLastCache, DefaultTime)
+    end.
+
 -spec pvc_are_keys_stale(partition_id(), list(key()), pvc_vc(), cache_id(), non_neg_integer()) -> boolean().
 pvc_are_keys_stale(_, [], _, _, _) ->
     false;

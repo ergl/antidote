@@ -73,6 +73,21 @@ process_request_internal('ReadRequest', #{partition := Partition,
             {ok, Value, CommitVC, MaxVC}
     end;
 
+process_request_internal('Prepare', #{partition := Partition,
+                                      transaction_id := TxId,
+                                      writeset := Writeset,
+                                      partition_version := Version}) ->
+
+    ok = clocksi_vnode:pvc_prepare(self(), Partition, TxId, Writeset, Version),
+    receive
+        {error, Reason} ->
+            {error, Partition, Reason};
+        {ok, SeqNumber} ->
+            {ok, Partition, SeqNumber}
+    end;
+
+%% TODO(borja): Add decide handler
+
 process_request_internal('Ping', _) ->
     {ok, TxId} = pvc:start_transaction(),
     Commit = pvc:commit_transaction(TxId),
