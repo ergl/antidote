@@ -28,9 +28,9 @@
 
 -record(cqueue, {
     %% The main commit TxId queue
-    q :: queue:queue({txid(), list()}),
+    q :: queue:queue(txid()),
     %% Mapping between txids and their write sets
-    write_sets :: dict:dict(txid(), list()),
+    write_sets :: dict:dict(txid(), writeset()),
     %% For the ready tx, put their ids with their commit VC
     %% and their index key list here
     ready_tx :: dict:dict(txid(), {pvc_vc(), list()}),
@@ -40,7 +40,7 @@
 
 -opaque cqueue() :: #cqueue{}.
 
--type writeset() :: [{key(), term(), term()}].
+-type writeset() :: pvc_writeset:ws(key(), val()).
 
 -export_type([cqueue/0]).
 
