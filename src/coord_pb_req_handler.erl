@@ -52,7 +52,12 @@ sequential_read([Key | Rest], Tx) ->
 -spec process_request(atom(), #{}) -> {reply, term()} | noreply.
 process_request(Name, Args) ->
     %% FIXME(borja): Temporary hack to reply, modify later
-    {reply, process_request_internal(Name, Args)}.
+    case process_request_internal(Name, Args) of
+        noreply ->
+            noreply;
+        Any ->
+            {reply, Any}
+    end.
 
 process_request_internal('ConnectRequest', _) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
@@ -86,7 +91,13 @@ process_request_internal('Prepare', #{partition := Partition,
             {ok, Partition, SeqNumber}
     end;
 
-%% TODO(borja): Add decide handler
+process_request_internal('Decide', #{partition := Partition,
+                                     transaction_id := TxId,
+                                     payload := Outcome}) ->
+
+    ok = clocksi_vnode:pvc_decide(Partition, TxId, Outcome),
+    noreply;
+
 
 process_request_internal('Ping', _) ->
     {ok, TxId} = pvc:start_transaction(),

@@ -72,6 +72,7 @@
 -export([pvc_read/3,
          pvc_read_replica/4,
          pvc_update/1,
+         pvc_update_keys/3,
          pvc_update_indices/1,
          pvc_key_range/4,
          pvc_get_default_value/1,
@@ -165,6 +166,14 @@ pvc_update(Payload = #clocksi_payload{key = Key}) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
         {pvc_update, Payload},
+        materializer_vnode_master
+    ).
+
+-spec pvc_update_keys(partition(), pvc_writeset:ws(key(), val()), pvc_vc()) -> ok | {error, reason()}.
+pvc_update_keys(Partition, Writeset, CommitVC) ->
+    riak_core_vnode_master:sync_command(
+        {Partition, node()},
+        {pvc_update_v2, Writeset, CommitVC},
         materializer_vnode_master
     ).
 
@@ -361,6 +370,11 @@ handle_command({update, Key, DownstreamOp}, _Sender, State) ->
 
 handle_command({pvc_update, Payload}, _Sender, State) ->
     ok = pvc_update_ops_bypass(Payload, State),
+    {reply, ok, State};
+
+handle_command({pvc_update_v2, WriteSet, CommitVC}, _Sender, State=#mat_state{partition = Partition,
+                                                                              pvc_vlog_cache = VLogCache}) ->
+    ok = pvc_update_keys_internal(Partition, WriteSet, CommitVC, VLogCache),
     {reply, ok, State};
 
 handle_command({pvc_index, Keys}, _Sender, State = #mat_state{pvc_index_set = PVC_Index}) ->
@@ -899,6 +913,19 @@ pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
 
     NextVersionLog = pvc_version_log:insert(SnapshotTime, DownstreamOp, VersionLog),
     true = ets:insert(VLogCache, {Key, NextVersionLog}),
+    ok.
+
+-spec pvc_update_keys_internal(partition_id(), pvc_writeset:ws(key(), val()), pvc_vc(), cache_id()) -> ok.
+pvc_update_keys_internal(Partition, WriteSet, CommitVC, VLogCache) ->
+    Objects = lists:map(fun({Key, Value}) ->
+        VersionLog = case ets:lookup(VLogCache, Key) of
+            [] -> pvc_version_log:new(Partition);
+            [{Key, PrevVLog}] -> PrevVLog
+        end,
+        NewVlog = pvc_version_log:insert(CommitVC, Value, VersionLog),
+        {Key, NewVlog}
+    end, WriteSet),
+    true = ets:insert(VLogCache, Objects),
     ok.
 
 %% @doc Scan the PVC_Index for matching keys
