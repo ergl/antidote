@@ -285,6 +285,7 @@ create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol) ->
     },
     {Transaction, TransactionId}.
 
+%% @deprecated
 -spec create_pvc_tx_record(atom(), transactional_protocol()) -> {tx(), txid()}.
 create_pvc_tx_record(Name, Protocol) ->
     Now = ?DC_UTIL:now_microsec(),
@@ -691,6 +692,7 @@ pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
             end, ordsets:new(), S)
     end.
 
+%% @deprecated
 pvc_single_read(Key, State = #tx_coord_state{
     from = Sender,
     client_ops = ClientOps,
@@ -714,6 +716,7 @@ pvc_read_res({pvc_readreturn, From, _Key, Value, VCdep, VCaggr}, State = #tx_coo
     gen_fsm:reply(State#tx_coord_state.from, {ok, Value}),
     {next_state, execute_op, State#tx_coord_state{transaction = pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
 
+%% @deprecated
 %% @doc Loop through all the keys, calling the appropriate partitions
 pvc_read(Keys, Sender, State = #tx_coord_state{
     client_ops=ClientOps,
@@ -724,6 +727,7 @@ pvc_read(Keys, Sender, State = #tx_coord_state{
     {next_state, receive_read_objects_result, State#tx_coord_state{from=Sender,
                                                                    return_accumulator={Keys, Rest}}}.
 
+%% @deprecated
 -spec pvc_perform_read(key(), tx(), list()) -> ok.
 pvc_perform_read(Key, Transaction, ClientOps) ->
     %% If the key has already been updated in this transaction,
@@ -745,6 +749,7 @@ pvc_perform_read(Key, Transaction, ClientOps) ->
             gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
     end.
 
+%% @deprecated
 %% @doc Check if a key was updated by the client.
 %%
 %%      If it was, return the assigned value, returns false otherwise
@@ -813,6 +818,7 @@ clocksi_update(UpdateOps, Sender, State = #tx_coord_state{transaction=Transactio
             {next_state, receive_logging_responses, LoggingState, 0}
     end.
 
+%% @deprecated
 pvc_update(UpdateOps, Sender, State) ->
     PerformUpdates = fun(Op, AccState=#tx_coord_state{
         client_ops=ClientOps,
@@ -835,6 +841,7 @@ pvc_update(UpdateOps, Sender, State) ->
     gen_fsm:reply(Sender, ok),
     {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}.
 
+%% @deprecated
 pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
     %% Don't read snapshot, will do that at commit time
     %% As we only allow lww-registers, we don't need to keep track of all
@@ -843,6 +850,7 @@ pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
     UpdatedOps = pvc_swap_operations(ClientOps, Op),
     {NewUpdatedPartitions, UpdatedOps}.
 
+%% @deprecated
 pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
     Partition = log_utilities:get_key_partition(Key),
     case lists:keyfind(Partition, 1, UpdatedPartitions) of
@@ -858,6 +866,7 @@ pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
             lists:keyreplace(Partition, 1, UpdatedPartitions, {Partition, NewWS})
     end.
 
+%% @deprecated
 pvc_swap_operations(ClientOps, {Key, _, _}=Update) ->
     case lists:keyfind(Key, 1, ClientOps) of
         false ->
@@ -966,6 +975,7 @@ receive_read_objects_result(Msg, State=#tx_coord_state{transactional_protocol=pv
             pvc_read_loop(Key, Value, UpdatedTransaction, State)
     end.
 
+%% @deprecated
 -spec pvc_read_loop(key(), val(), tx(), #tx_coord_state{}) -> _.
 pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOps,
                                                              return_accumulator={RequestedKeys, RemainingKeys}}) ->
@@ -990,6 +1000,7 @@ pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOp
                                      return_accumulator={ReadValues, Rest}}}
     end.
 
+%% @deprecated
 -spec pvc_update_transaction(partition_id(), pvc_vc(), pvc_vc(), tx()) -> tx().
 pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
     pvc_hasread = HasRead,
@@ -1026,6 +1037,7 @@ apply_tx_updates_to_snapshot(Key, CoordState, Type, Snapshot)->
             clocksi_materializer:materialize_eager(Type, Snapshot, FileteredAndReversedUpdates)
     end.
 
+%% @deprecated
 pvc_prepare(State = #tx_coord_state{
     from=From,
     client_ops=ClientOps,
@@ -1049,6 +1061,7 @@ pvc_prepare(State = #tx_coord_state{
             }}
     end.
 
+%% @deprecated
 pvc_log_responses(LogResponse, State = #tx_coord_state{
     num_to_read=NumToRead,
     transaction=Transaction,
@@ -1095,6 +1108,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
             end
     end.
 
+%% @deprecated
 -spec pvc_propagate_updates(tx(), list({key(), type(), op()})) -> ok.
 pvc_propagate_updates(#transaction{txn_id=TxId}, Ops) ->
     lists:foreach(fun({Key, Type, Update}) ->
@@ -1239,6 +1253,7 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
             end
     end.
 
+%% @deprecated
 pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
 %%    transaction = Tx,
     num_to_ack = NumToAck,
@@ -1282,6 +1297,7 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
             end
     end.
 
+%% @deprecated
 pvc_decide(State = #tx_coord_state{
     from = From,
     client_ops = ClientOps,

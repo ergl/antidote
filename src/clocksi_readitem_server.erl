@@ -47,7 +47,6 @@
 
 %% PVC only
 -export([pvc_async_read/3,
-         pvc_async_read/5,
          pvc_refresh_default/2]).
 
 %% Spawn
@@ -59,6 +58,7 @@
     prepared_cache :: cache_id(),
 
     %% PVC Atomic cache
+    %% @deprecated
     pvc_atomic_cache :: atom()
 }).
 
@@ -110,6 +110,7 @@ async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
         {perform_read_cast, Coordinator, Key, Type, Transaction}
     ).
 
+%% @deprecated
 %% @doc PVC-only asynchronous read
 -spec pvc_async_read(
     Key :: key(),
@@ -129,6 +130,7 @@ pvc_async_read(Key, HasRead, VCaggr) ->
     Mode :: atom()
 ) -> ok.
 
+%% @deprecated
 pvc_async_read({Partition, Node}=IndexNode, Key, HasRead, VCaggr, Mode) ->
     Coordinator = case Mode of
         fsm -> {fsm, self()};
@@ -299,6 +301,7 @@ handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
     ok = pvc_vlog_read_internal(Coordinator, SelfPartition, Key, VCaggr, MatState),
     {noreply, State}.
 
+%% @deprecated
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
 %%
 %%      It will scan the materializer for the specific snapshot, and reply
@@ -316,6 +319,7 @@ pvc_vlog_read_internal(Coordinator, Partition, Key, MaxVC, MatState) ->
             pvc_reply(Coordinator, ReplyMsg, FallBack)
     end.
 
+%% @deprecated
 %% @doc Wait until this PVC partition is ready to perform a read.
 %%
 %%      If this partition has not been read before, wait until the most
@@ -345,12 +349,13 @@ pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCa
             pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, State)
     end.
 
+%% @deprecated
 %% @doc Check if this partition is ready to proceed with a PVC read.
 %%
 %%      If it is not, will sleep for 1000 ms and try again.
 %%
 -spec pvc_check_time(partition_id(), pvc_vc(), pvc_vc()) -> ready
-                                                                    | {not_ready, non_neg_integer()}.
+                                                          | {not_ready, non_neg_integer()}.
 
 pvc_check_time(Partition, MostRecentVC, VCaggr) ->
     MostRecentTime = pvc_vclock:get_time(Partition, MostRecentVC),
@@ -360,6 +365,7 @@ pvc_check_time(Partition, MostRecentVC, VCaggr) ->
         false -> ready
     end.
 
+%% @deprecated
 %% @doc Scan the replication log for a valid vector clock time for a read at this partition
 %%
 %%      The valid time is the maximum vector clock such that for every partition
@@ -389,6 +395,7 @@ pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, #state{
             pvc_vlog_read_internal(Coordinator, SelfPartition, Key, MaxVC, MatState)
     end.
 
+%% @deprecated
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
 -spec pvc_find_maxvc(
     IndexNode :: index_node(),
@@ -522,6 +529,7 @@ reply_to_coordinator(Coordinator, _Msg, FallbackMsg) ->
     gen_server:reply(Coordinator, FallbackMsg),
     ok.
 
+%% @deprecated
 %% @doc Send a message back to the transaction coordinator.
 %%
 %%      Allows to specify a simple message if the coordinator is a simple

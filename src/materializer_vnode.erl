@@ -101,6 +101,7 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
             internal_read(Key, Type, SnapshotTime, TxId, MatState)
     end.
 
+%% @deprecated
 %% @doc Same as read/5, but return also the commit time of the snapshot.
 %%
 %%      Will also bypass the ops cache as we don't need it.
@@ -157,6 +158,7 @@ update(Key, DownstreamOp) ->
         materializer_vnode_master
     ).
 
+%% @deprecated
 -spec pvc_update(clocksi_payload()) -> ok | {error, reason()}.
 pvc_update(Payload = #clocksi_payload{key = Key}) ->
     IndexNode = log_utilities:get_key_partition(Key),
@@ -862,6 +864,7 @@ tuple_to_cached_ops(Tuple) ->
     Ops = Tuple,
     {Key, Length, Ops}.
 
+%% @deprecated
 %% @doc Simplified materializer update for pvc
 %%
 %%      Instead of storing ops and applying those to the previous
