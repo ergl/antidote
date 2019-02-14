@@ -110,7 +110,7 @@ pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache=VLogCache,
                                                   pvc_default_value=BottomValue}) ->
     case ets:info(VLogCache) of
         undefined ->
-            %% TODO(borja): When is this triggered?
+            %% TODO(borja/pvc-prot): When is this triggered?
             %% We should already be at the correct node and partition
             lager:info("Materializer partition miss with ~p", [Key]),
             riak_core_vnode_master:sync_command(
@@ -870,7 +870,7 @@ tuple_to_cached_ops(Tuple) ->
 %%      we only operate on lww registers, the update is the same
 %%      as the value.
 %%
-%% TODO(borja): Will ignore transactions from other DCs
+%% TODO(borja/pvc-prot): Will ignore transactions from other DCs
 %% By ignoring the ops cache, it will miss updates from other
 %% data centers. Right now when a transaction is delivered from
 %% another DC, Antidote will store the updates in the operation

@@ -142,7 +142,7 @@ init([Partition, Id]) ->
 
     %% Partition replica
     StateReplica = clocksi_vnode:get_cache_name(Partition, pvc_state_table),
-    %% TODO(borja): Change name of ETS table
+    %% TODO(borja/pvc-ccoord): Change name of ETS table
     Committed = clocksi_vnode:get_cache_name(Partition, committed_tx),
 
     Self = generate_replica_name(Partition, Id),

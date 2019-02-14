@@ -267,7 +267,7 @@ get_stable_snapshot() ->
                                    end,
                                    StableSnapshot)}
                     end;
-                %% TODO(borja): Just for now
+                %% TODO(borja/pvc-prot): Just for now
                 {ok, pvc} ->
                     {ok, SS}
             end
