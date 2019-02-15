@@ -114,7 +114,7 @@ pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache=VLogCache,
         undefined ->
             %% TODO(borja/pvc-prot): When is this triggered?
             %% We should already be at the correct node and partition
-            lager:info("Materializer partition miss with ~p", [Key]),
+            lager:debug("Materializer partition miss with ~p", [Key]),
             riak_core_vnode_master:sync_command(
                 {MatState#mat_state.partition, node()},
                 {pvc_read, Key, SnapshotTime},

@@ -23,6 +23,7 @@
 -behavior(gen_server).
 
 -include("antidote.hrl").
+-include("debug_log.hrl").
 
 %% supervision tree
 -export([start_link/2]).
@@ -202,12 +203,13 @@ read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State) ->
 
     %% FIXME(borja): Remove hack {Partition, node()}
     %% Table should be at this node
-    lager:info("get_mrvc({~p,~p})", [Partition, node()]),
+    ?LAGER_LOG("get_mrvc({~p,~p})", [Partition, node()]),
+
     MRVC = clocksi_vnode:pvc_get_most_recent_vc({Partition, node()}, ReplicaState),
-    lager:info("MRVC = ~p", [MRVC]),
+    ?LAGER_LOG("MRVC = ~p", [MRVC]),
     case check_time(Partition, MRVC, VCaggr) of
         {not_ready, WaitTime} ->
-            lager:info("Partition not ready, will wait ~p", [WaitTime]),
+            ?LAGER_LOG("Partition not ready, will wait ~p", [WaitTime]),
             erlang:send_after(WaitTime, self(), {wait_scan, ReplyTo, Key, HasRead, VCaggr}),
             ok;
         ready ->
@@ -227,9 +229,9 @@ scan_and_read(ReplyTo, Key, HasRead, VCaggr, #state{partition=Partition,
                                                     default_bottom_clock=ClockValue,
                                                     partition_state_replica=ReplicaState}) ->
 
-    lager:info("scan_and_read(~p, ~p, ~p, ~p)", [ReplyTo, Key, HasRead, VCaggr]),
+    ?LAGER_LOG("scan_and_read(~p, ~p, ~p, ~p)", [ReplyTo, Key, HasRead, VCaggr]),
     MaxVCRes = find_max_vc(Partition, HasRead, VCaggr, ReplicaState),
-    lager:info("MaxVC = ~p", [MaxVCRes]),
+    ?LAGER_LOG("MaxVC = ~p", [MaxVCRes]),
     case MaxVCRes of
         {error, Reason} ->
             reply(ReplyTo, {error, Reason});
@@ -252,14 +254,14 @@ find_max_vc(Partition, HasRead, VCaggr, ReplicaState) ->
         0 ->
             %% FIXME(borja): Remove hack {Partition, node()}
             %% Table should be at this node
-            lager:info("get_mrvc({~p,~p})", [Partition, node()]),
+            ?LAGER_LOG("get_mrvc({~p,~p})", [Partition, node()]),
             clocksi_vnode:pvc_get_most_recent_vc({Partition, node()}, ReplicaState);
         _ ->
-            lager:info("logging_vnode:pvc_get_max_vc({~p,~p})", [Partition, node()]),
+            ?LAGER_LOG("logging_vnode:pvc_get_max_vc({~p,~p})", [Partition, node()]),
             logging_vnode:pvc_get_max_vc({Partition, node()}, ordsets:to_list(HasRead), VCaggr)
     end,
 
-    lager:info("Scanned MaxVC ~p", [MaxVC]),
+    ?LAGER_LOG("Scanned MaxVC ~p", [MaxVC]),
     %% If the selected time is too old, we should abort the read
     MaxSelectedTime = pvc_vclock:get_time(Partition, MaxVC),
     CurrentThresholdTime = pvc_vclock:get_time(Partition, VCaggr),
@@ -280,7 +282,7 @@ find_max_vc(Partition, HasRead, VCaggr, ReplicaState) ->
 %%
 -spec read_vlog_internal(pid(), key(), pvc_vc(), atom(), tuple()) -> ok.
 read_vlog_internal(ReplyTo, Key, MaxVC, VLogCache, DefaultBottom) ->
-    lager:info("vlog read(~p, ~p, ~p)", [ReplyTo, Key, MaxVC]),
+    ?LAGER_LOG("vlog read(~p, ~p, ~p)", [ReplyTo, Key, MaxVC]),
     case materializer_vnode:pvc_read_replica(Key, MaxVC, VLogCache, DefaultBottom) of
         {error, Reason} ->
             reply(ReplyTo, {error, Reason});
