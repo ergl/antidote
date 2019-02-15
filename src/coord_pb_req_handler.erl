@@ -51,7 +51,6 @@ sequential_read([Key | Rest], Tx) ->
 %% FIXME(borja): Ugly, needs knowledge of PB message names and map layout
 -spec process_request(atom(), #{}) -> {reply, term()} | noreply.
 process_request(Name, Args) ->
-    %% FIXME(borja): Temporary hack to reply, modify later
     case process_request_internal(Name, Args) of
         noreply ->
             noreply;
