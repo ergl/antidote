@@ -51,13 +51,27 @@ process_request('Ping', _) ->
             {error, Reason}
     end;
 
-process_request('Load', #{num_keys := N, bin_size := Size}) ->
-    case pvc:unsafe_load(N, Size) of
-        ?committed ->
-            ok;
-        {error, Reason} ->
-            {error, Reason}
-    end;
+process_request('Load', #{num_keys := _Ignore, bin_size := Size}) ->
+    NewLastPrep = 1,
+    Val = crypto:strong_rand_bytes(Size),
+
+    ForceClock = lists:foldl(fun(Partition, Acc) ->
+        pvc_vclock:set_time(Partition, NewLastPrep, Acc)
+    end, pvc_vclock:new(), dc_utilities:get_all_partitions()),
+
+    BottomValue = {Val, ForceClock},
+    %% Set the default value for reads
+    SetDefaultReply = dc_utilities:bcast_my_vnode_sync(materializer_vnode_master, {pvc_set_default, BottomValue}),
+    ok = lists:foreach(fun({_, ok}) -> ok end, SetDefaultReply),
+
+    %% Refresh all read replicas
+    RefreshReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, pvc_refresh_replicas),
+    ok = lists:foreach(fun({_, ok}) -> ok end, RefreshReply),
+
+    %% Force advance replica state
+    ForceStateReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, {pvc_unsafe_set_clock, NewLastPrep, ForceClock}),
+    ok = lists:foreach(fun({_, ok}) -> ok end, ForceStateReply),
+    ok;
 
 process_request('ReadOnlyTx', #{keys := Keys}) ->
     {ok, TxId} = pvc:start_transaction(),
