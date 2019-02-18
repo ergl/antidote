@@ -47,7 +47,6 @@
          read_from/3,
          get/5,
          get_all/4,
-         pvc_get_max_vc/3,
          request_bucket_op_id/4,
          request_op_id/3]).
 
@@ -65,6 +64,10 @@
          handle_coverage/4,
          handle_info/2,
          handle_exit/3]).
+
+%% PVC-only export
+-export([pvc_get_max_vc/3,
+         pvc_insert_to_commit_log/2]).
 
 -ignore_xref([start_vnode/1]).
 
@@ -218,6 +221,16 @@ pvc_get_max_vc(IndexNode, ReadPartitions, VCAggr) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
         {pvc_max_vc, ReadPartitions, VCAggr},
+        ?LOGGING_MASTER,
+        infinity
+    ).
+
+%% @doc Append the given Vector Clock to the Commit Log
+-spec pvc_insert_to_commit_log(partition_id(), pvc_vc()) -> ok.
+pvc_insert_to_commit_log(Partition, VC) ->
+    riak_core_vnode_master:sync_command(
+        {Partition, node()},
+        {pvc_add_clog, VC},
         ?LOGGING_MASTER,
         infinity
     ).
@@ -589,14 +602,16 @@ handle_command({get_all, LogId, Continuation, Ops}, _Sender,
             {reply, {error, Reason}, State}
     end;
 
-handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State = #state{
-    pvc_clog = PVCLog
-}) ->
+handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State) ->
 %%    T1 = erlang:timestamp(),
-    MaxVC = pvc_commit_log:get_smaller_from_dots(ReadPartitions, VCAggr, PVCLog),
+    MaxVC = pvc_commit_log:get_smaller_from_dots(ReadPartitions, VCAggr, State#state.pvc_clog),
 %%    T2 = erlang:timestamp(),
 %%    lager:info("PVC get_smaller_from_dots took ~p microseconds~n", [timer:now_diff(T2, T1)]),
     {reply, MaxVC, State};
+
+handle_command({pvc_add_clog, VC}, _Sender, State) ->
+    NewCLog = pvc_commit_log:insert(VC, State#state.pvc_clog),
+    {reply, ok, State#state{pvc_clog=NewCLog}};
 
 handle_command(_Message, _Sender, State) ->
     {noreply, State}.

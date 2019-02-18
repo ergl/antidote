@@ -82,6 +82,7 @@
     prepared_dict :: orddict:orddict(),
 
     pvc_atomic_state :: cache_id(),
+    pvc_key_hit_miss_default :: term(),
     pvc_commitqueue :: pvc_commit_queue:cqueue()
 }).
 
@@ -305,6 +306,7 @@ init([Partition]) ->
         prepared_dict = orddict:new(),
 
         pvc_atomic_state = PVCTable,
+        pvc_key_hit_miss_default = 0,
         pvc_commitqueue = CommitQueue
     }}.
 
@@ -408,6 +410,11 @@ handle_command(check_servers_ready, _Sender, SD0 = #state{partition=Partition, r
 handle_command(pvc_refresh_replicas, _Sender, State = #state{partition=Partition, read_servers = Serv}) ->
     Result = clocksi_readitem_server:pvc_refresh_default(Partition, Serv),
     {reply, Result, State};
+
+handle_command({pvc_unsafe_set_clock, Seq, MRVC}, _Sender, State = #state{partition=Partition, pvc_atomic_state=PVCState}) ->
+    true = ets:insert(PVCState, [{seq_number, Seq}, {mrvc, MRVC}]),
+    ok = logging_vnode:pvc_insert_to_commit_log(Partition, MRVC),
+    {reply, ok, State#state{pvc_key_hit_miss_default=Seq}};
 
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
@@ -651,6 +658,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     committed_tx = CommittedTransactions,
 
     pvc_atomic_state = PVCState,
+    pvc_key_hit_miss_default = KeyHitDefault,
     pvc_commitqueue = CommitQueue
 }) ->
 
@@ -663,7 +671,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 
     %% Get the keys in the writeset
     PartitionKeys = [Key || {Key, _, _} <- WriteSet],
-    StaleTx = pvc_are_keys_stale(Partition, PartitionKeys, PrepareVC, CommittedTransactions),
+    StaleTx = pvc_are_keys_stale(Partition, PartitionKeys, PrepareVC, CommittedTransactions, KeyHitDefault),
 
     {Vote, Seq, NewState} = case WriteSetDisputed orelse StaleTx of
         true ->
@@ -694,16 +702,18 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 %% @doc Check if any of the keys in a transaction writeset are too stale with
 %%      respect to the most recent committed version.
 %%
--spec pvc_are_keys_stale(partition_id(), list(key()), pvc_vc(), cache_id()) -> boolean().
-pvc_are_keys_stale(_, [], _, _) ->
+-spec pvc_are_keys_stale(partition_id(), list(key()), pvc_vc(), cache_id(), non_neg_integer()) -> boolean().
+pvc_are_keys_stale(_, [], _, _, _) ->
     false;
 
-pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
+pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx, DefaultTime) ->
     StaleKey = case ets:lookup(CommittedTx, Key) of
         [] ->
-            false;
+            %% DefaultTime is 0 by default, but this is used to advance a partition state
+            PrepareTime = pvc_vclock:get_time(SelfPartition, PrepareVC),
+            DefaultTime > PrepareTime;
 
-        [{Key, SelfPartition, CommitTime}] ->
+        [{_, SelfPartition, CommitTime}] ->
             PrepareTime = pvc_vclock:get_time(SelfPartition, PrepareVC),
             CommitTime > PrepareTime
     end,
@@ -712,7 +722,7 @@ pvc_are_keys_stale(SelfPartition, [Key | Keys], PrepareVC, CommittedTx) ->
             true;
 
         false ->
-            pvc_are_keys_stale(SelfPartition, Keys, PrepareVC, CommittedTx)
+            pvc_are_keys_stale(SelfPartition, Keys, PrepareVC, CommittedTx, DefaultTime)
     end.
 
 -spec pvc_store_key_commitvc(partition_id(), cache_id(), list(), pvc_vc()) -> ok.
