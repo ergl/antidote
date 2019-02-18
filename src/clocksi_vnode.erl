@@ -405,6 +405,10 @@ handle_command(check_servers_ready, _Sender, SD0 = #state{partition=Partition, r
     Result = clocksi_readitem_server:check_partition_ready(node(), Partition, Serv),
     {reply, Result, SD0};
 
+handle_command(pvc_refresh_replicas, _Sender, State = #state{partition=Partition, read_servers = Serv}) ->
+    Result = clocksi_readitem_server:pvc_refresh_default(Partition, Serv),
+    {reply, Result, State};
+
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 

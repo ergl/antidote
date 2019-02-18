@@ -364,5 +364,8 @@
     pvc_vlog_cache :: cache_id() | undefined,
 
     %% Ordered VLog to support range queries
-    pvc_index_set :: cache_id() | undefined
+    pvc_index_set :: cache_id() | undefined,
+
+    %% Value to return when a key is not found in the storage
+    pvc_default_value :: term() | undefined
 }).

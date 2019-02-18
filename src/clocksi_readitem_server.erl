@@ -48,7 +48,8 @@
          stop_read_servers/2]).
 
 %% PVC only
--export([pvc_async_read/3]).
+-export([pvc_async_read/3,
+         pvc_refresh_default/2]).
 
 %% Spawn
 -record(state, {
@@ -145,6 +146,22 @@ check_partition_ready(Node, Partition, Num) ->
         _ -> check_partition_ready(Node, Partition, Num - 1)
     end.
 
+%% @doc Set a default value for keys not present in storage
+%%
+%%      No need to use unless for debugging purposes
+%%
+-spec pvc_refresh_default(partition_id(), non_neg_integer()) -> ok.
+pvc_refresh_default(Partition, Num) ->
+    pvc_refresh_default(node(), Partition, Num).
+
+pvc_refresh_default(_Node, _Partition, 0) ->
+    ok;
+
+pvc_refresh_default(Node, Partition, Num) ->
+    Target = {global, generate_server_name(Node, Partition, Num)},
+    ok = gen_server:call(Target, pvc_refresh_default),
+    pvc_refresh_default(Node, Partition, Num - 1).
+
 %%%===================================================================
 %%% Internal
 %%%===================================================================
@@ -208,12 +225,16 @@ init([Partition, Id]) ->
     PVC_VLog = materializer_vnode:get_cache_name(Partition, pvc_snapshot_cache),
     PVC_Index = materializer_vnode:get_cache_name(Partition, pvc_index_cache),
 
+    %% PVC Default value
+    PVCDefault = materializer_vnode:pvc_get_default_value({Partition, node()}),
+
     MatState = #mat_state{is_ready=false,
                           partition=Partition,
                           ops_cache=OpsCache,
                           snapshot_cache=SnapshotCache,
-                          pvc_vlog_cache = PVC_VLog,
-                          pvc_index_set = PVC_Index},
+                          pvc_vlog_cache=PVC_VLog,
+                          pvc_index_set=PVC_Index,
+                          pvc_default_value=PVCDefault},
 
     %% ClockSI Cache
     PreparedCache = clocksi_vnode:get_cache_name(Partition, prepared),
@@ -225,13 +246,17 @@ init([Partition, Id]) ->
     {ok, #state{id=Id,
                 self=Self,
                 partition=Partition,
-                mat_state = MatState,
-                pvc_atomic_cache = PVCAtomicCache,
+                mat_state=MatState,
+                pvc_atomic_cache=PVCAtomicCache,
                 prepared_cache=PreparedCache}}.
 
 handle_call({perform_read, Key, Type, Transaction}, Coordinator, SD0) ->
     ok = perform_read_internal(Coordinator, Key, Type, Transaction, [], SD0),
     {noreply, SD0};
+
+handle_call(pvc_refresh_default, _Sender, State = #state{partition=Partition, mat_state=MatState}) ->
+    PVCDefault = materializer_vnode:pvc_get_default_value({Partition, node()}),
+    {reply, ok, State#state{mat_state=MatState#mat_state{pvc_default_value=PVCDefault}}};
 
 handle_call(go_down, _Sender, SD0) ->
     {stop, shutdown, ok, SD0}.
