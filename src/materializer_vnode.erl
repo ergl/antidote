@@ -72,7 +72,9 @@
 -export([pvc_read/3,
          pvc_update/1,
          pvc_update_indices/1,
-         pvc_key_range/4]).
+         pvc_key_range/4,
+         pvc_get_default_value/1,
+         pvc_set_default_value/2]).
 
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
@@ -123,6 +125,14 @@ pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) -
 -spec get_cache_name(non_neg_integer(), atom()) -> atom().
 get_cache_name(Partition, Base) ->
     list_to_atom(atom_to_list(Base) ++ "-" ++ integer_to_list(Partition)).
+
+-spec pvc_get_default_value(index_node()) -> term().
+pvc_get_default_value(IndexNode) ->
+    riak_core_vnode_master:sync_command(IndexNode, pvc_get_default, materializer_vnode_master, infinity).
+
+-spec pvc_set_default_value(index_node(), term()) -> ok.
+pvc_set_default_value(IndexNode, Value) ->
+    riak_core_vnode_master:sync_command(IndexNode, {pvc_set_default, Value}, materializer_vnode_master, infinity).
 
 %%@doc write operation to cache for future read, updates are stored
 %%     one at a time into the ets tables
@@ -206,6 +216,9 @@ init([Partition]) ->
             undefined
     end,
 
+    %% PVC Default value
+    PVCDefault = {<<>>, pvc_vclock:new()},
+
     {ok, #mat_state{
         is_ready = IsReady,
         ops_cache = OpsCache,
@@ -213,7 +226,8 @@ init([Partition]) ->
         snapshot_cache = SnapshotCache,
 
         pvc_vlog_cache = PVC_VLog,
-        pvc_index_set = PVC_Index
+        pvc_index_set = PVC_Index,
+        pvc_default_value = PVCDefault
     }}.
 
 -spec load_from_log_to_tables(partition_id(), #mat_state{}) -> ok | {error, reason()}.
@@ -317,6 +331,12 @@ handle_command({check_ready}, _Sender, State = #mat_state{partition=Partition, i
 
 handle_command({read, Key, Type, SnapshotTime, Transaction}, _Sender, State) ->
     {reply, read(Key, Type, SnapshotTime, Transaction, State), State};
+
+handle_command(pvc_get_default, _Sender, State = #mat_state{pvc_default_value = Default}) ->
+    {reply, Default, State};
+
+handle_command({pvc_set_default, Value}, _Sender, State) ->
+    {reply, ok, State#mat_state{pvc_default_value = Value}};
 
 handle_command({pvc_read, Key, SnapshotTime}, _Sender, State) ->
     {reply, pvc_internal_read(Key, SnapshotTime, State), State};
@@ -473,11 +493,12 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
 -spec pvc_internal_read(key(), snapshot_time(), #mat_state{}) -> {ok, term(), snapshot_time()}.
 pvc_internal_read(Key, MinSnapshotTime, #mat_state{
-    pvc_vlog_cache = VLogCache
+    pvc_vlog_cache = VLogCache,
+    pvc_default_value = Default
 }) ->
     {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
         [] ->
-            {<<>>, pvc_vclock:new()};
+            Default;
 
         [{_, PrevVersionLog}] ->
             pvc_version_log:get_smaller(MinSnapshotTime, PrevVersionLog)
