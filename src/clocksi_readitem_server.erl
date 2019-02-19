@@ -35,9 +35,7 @@
          handle_call/3,
          handle_cast/2,
          code_change/3,
-         handle_event/3,
          handle_info/2,
-         handle_sync_event/4,
          terminate/2]).
 
 %% States
@@ -464,12 +462,6 @@ handle_info({pvc_wait_scan, Coordinator, IndexNode, Key, HasRead, VCaggr}, State
 
 handle_info(_Info, StateData) ->
     {noreply, StateData}.
-
-handle_event(_Event, _StateName, StateData) ->
-    {stop, badmsg, StateData}.
-
-handle_sync_event(_Event, _From, _StateName, StateData) ->
-    {stop, badmsg, StateData}.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
