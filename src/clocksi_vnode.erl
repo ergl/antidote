@@ -69,7 +69,15 @@
 -export([get_cache_name/2,
          now_microsec/1]).
 
--ignore_xref([start_vnode/1]).
+%% start_vnode/1 is called internally by riak_core
+%%
+%% check_*_ready/0 are called by external script (rpc)
+%% to join a cluster together
+%%
+-ignore_xref([start_vnode/1,
+              check_servers_ready/0,
+              check_tables_ready/0,
+              check_pvc_replicas_ready/0]).
 
 -record(state, {
     %% the partition that the vnode is responsible for.
@@ -134,6 +142,7 @@ pvc_get_most_recent_vc(Node, TableName) ->
         riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER)
     end.
 
+%% @deprecated
 -spec pvc_process_cqueue(partition_id()) -> ok.
 pvc_process_cqueue(Partition) ->
     riak_core_vnode_master:command({Partition, node()}, pvc_process_cqueue, ?CLOCKSI_MASTER).

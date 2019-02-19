@@ -78,6 +78,16 @@
          pvc_get_default_value/1,
          pvc_set_default_value/2]).
 
+%% start_vnode/1 is called internally by riak_core
+%%
+%% check_tables_ready/0 called by external script (rpc)
+%%
+%% pvc_set_default_value/2 called directly (riak_core_vnode:sync_command)
+%% by coord_pb_req_handler:load (force-set replica state)
+-ignore_xref([start_vnode/1,
+              check_tables_ready/0,
+              pvc_set_default_value/2]).
+
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
 start_vnode(I) ->
