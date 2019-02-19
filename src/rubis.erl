@@ -61,7 +61,7 @@ process_request('Load', #{bin_size := Size}) ->
 
     BottomValue = {Val, ForceClock},
     %% Set the default value for reads
-    SetDefaultReply = dc_utilities:bcast_my_vnode_sync(materializer_vnode_master, {pvc_set_default, BottomValue}),
+    SetDefaultReply = dc_utilities:bcast_vnode_sync(materializer_vnode_master, {pvc_set_default, BottomValue}),
     ok = lists:foreach(fun({_, ok}) -> ok end, SetDefaultReply),
 
     %% Refresh all read replicas
