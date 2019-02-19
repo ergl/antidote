@@ -30,17 +30,6 @@
 
 -export([process_request/2]).
 
-sequential_read([], _) ->
-    ok;
-
-sequential_read([Key | Rest], Tx) ->
-    case pvc:read_single(Key, Tx) of
-        {ok, _} ->
-            sequential_read(Rest, Tx);
-        {error, _}=ReadError ->
-            ReadError
-    end.
-
 %% @doc Process a PB command
 %%
 %%      The first argument is the atom name of the command, and the second
@@ -129,39 +118,6 @@ process_request_internal('Load', #{bin_size := Size}) ->
     ForceStateReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, {pvc_unsafe_set_clock, NewLastPrep, ForceClock}),
     ok = lists:foreach(fun({_, ok}) -> ok end, ForceStateReply),
     ok;
-
-process_request_internal('ReadOnlyTx', #{keys := Keys}) ->
-    {ok, TxId} = pvc:start_transaction(),
-    case sequential_read(Keys, TxId) of
-        {error, _}=ReadError ->
-            ReadError;
-        ok ->
-            Commit = pvc:commit_transaction(TxId),
-            case Commit of
-                ?committed ->
-                    ok;
-                {error, Reason} ->
-                    {error, Reason}
-            end
-    end;
-
-process_request_internal('ReadWriteTx', #{read_keys := Keys, ops := OpList}) ->
-    Updates = lists:map(fun(#{key := K, value := V}) -> {K, V} end, OpList),
-
-    {ok, TxId} = pvc:start_transaction(),
-    case sequential_read(Keys, TxId) of
-        {error, _}=ReadError ->
-            ReadError;
-        ok ->
-            ok = pvc:update_keys(Updates, TxId),
-            Commit = pvc:commit_transaction(TxId),
-            case Commit of
-                ?committed ->
-                    ok;
-                {error, Reason} ->
-                    {error, Reason}
-            end
-    end;
 
 %% Used for rubis load
 process_request_internal('PutRegion', #{region_name := Name}) ->
