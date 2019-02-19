@@ -58,43 +58,37 @@
 
 %% Callbacks
 -export([init/1,
-    code_change/4,
-    handle_event/3,
-    handle_info/3,
-    handle_sync_event/4,
-    terminate/3,
-    stop/1]).
+         code_change/4,
+         handle_event/3,
+         handle_info/3,
+         handle_sync_event/4,
+         terminate/3,
+         stop/1]).
 
 %% States
--export([create_transaction_record/6,
-    start_tx/2,
-    init_state/3,
-    perform_update/6,
-    perform_read/4,
-    execute_op/2,
-    execute_op/3,
-    receive_read_objects_result/2,
-    pvc_read_res/2,
-    receive_logging_responses/2,
-    finish_op/3,
-    prepare/1,
-    prepare_2pc/1,
-    pvc_log_responses/2,
-    pvc_receive_votes/2,
-    process_prepared/2,
-    receive_prepared/2,
-    single_committing/2,
-    committing_2pc/3,
-    committing_single/3,
-    committing/3,
-    receive_committed/2,
-    receive_aborted/2,
-    abort/1,
-    abort/2,
-    perform_singleitem_read/2,
-    perform_singleitem_update/3,
-    reply_to_client/1,
-    generate_name/1]).
+-export([start_tx/2,
+         execute_op/2,
+         execute_op/3,
+         receive_read_objects_result/2,
+         pvc_read_res/2,
+         receive_logging_responses/2,
+         finish_op/3,
+         prepare/1,
+         prepare_2pc/1,
+         pvc_log_responses/2,
+         pvc_receive_votes/2,
+         process_prepared/2,
+         receive_prepared/2,
+         single_committing/2,
+         committing_2pc/3,
+         committing_single/3,
+         committing/3,
+         receive_committed/2,
+         receive_aborted/2,
+         perform_singleitem_read/2,
+         perform_singleitem_update/3,
+         reply_to_client/1,
+         generate_name/1]).
 
 %%%===================================================================
 %%% API
@@ -1478,15 +1472,6 @@ abort(SD0 = #tx_coord_state{transaction = Transaction,
             {next_state, receive_aborted,
                 SD0#tx_coord_state{num_to_ack = NumToAck, state = aborted}}
     end.
-
-abort(abort, SD0) ->
-    abort(SD0);
-
-abort({prepared, _}, SD0) ->
-    abort(SD0);
-
-abort(_, SD0) ->
-    abort(SD0).
 
 %% @doc the fsm waits for acks indicating that each partition has successfully
 %%      aborted the tx and finishes operation.
