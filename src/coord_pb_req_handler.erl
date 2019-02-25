@@ -57,13 +57,20 @@ process_request_internal('ReadRequest', #{partition := Partition,
                                           has_read := HasRead}) ->
 
     %% Force read to be local, client already determined the correct node
-    ok = pvc_read_replica:async_read(self(), Partition, Key, HasRead, VC),
+    Received = os:timestamp(),
+    {Took, ok} = timer:tc(pvc_read_replica, async_read, [self(), Partition, Key, HasRead, VC]),
+    %% ok = pvc_read_replica:async_read(self(), Partition, Key, HasRead, VC),
+    WaitReceive = os:timestamp(),
     receive
         {error, Reason} ->
             {error, Reason};
 
-        {ok, Value, CommitVC, MaxVC} ->
-            {ok, Value, CommitVC, MaxVC}
+        {ok, _Value, CommitVC, MaxVC} ->
+            ReceivedMsg = os:timestamp(),
+            {ok, #{rcv => Received,
+                   read_took => Took,
+                   wait_took => timer:now_diff(ReceivedMsg, WaitReceive),
+                   send => os:timestamp()}, CommitVC, MaxVC}
     end;
 
 process_request_internal('Prepare', #{partition := Partition,
