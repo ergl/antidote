@@ -95,14 +95,7 @@ process_request_internal('Decide', #{partition := Partition,
 
 
 process_request_internal('Ping', _) ->
-    {ok, TxId} = pvc:start_transaction(),
-    Commit = pvc:commit_transaction(TxId),
-    case Commit of
-        ?committed ->
-            ok;
-        {error, Reason} ->
-            {error, Reason}
-    end;
+    ok;
 
 process_request_internal('Load', #{bin_size := Size}) ->
     NewLastPrep = 1,
