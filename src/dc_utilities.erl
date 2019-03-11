@@ -140,7 +140,7 @@ call_local_vnode_sync(Partition, VMaster, Request) ->
 bcast_vnode_sync(VMaster, Request) ->
     [begin
          {P, riak_core_vnode_master:sync_command(IndexNode, Request, VMaster)}
-     end || {P,_} = IndexNode <- get_all_partitions_nodes()].
+     end || {P, _} = IndexNode <- get_all_partitions_nodes()].
 
 %% Broadcasts a message to all vnodes of the given type
 %% located on the physical node from which this method is called
@@ -267,7 +267,7 @@ get_stable_snapshot() ->
                                    end,
                                    StableSnapshot)}
                     end;
-                %% TODO(borja): Just for now
+                %% TODO(borja/pvc-prot): Just for now
                 {ok, pvc} ->
                     {ok, SS}
             end

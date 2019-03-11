@@ -70,11 +70,23 @@
 
 %% PVC-only functions
 -export([pvc_read/3,
+         pvc_read_replica/4,
          pvc_update/1,
+         pvc_update_keys/3,
          pvc_update_indices/1,
          pvc_key_range/4,
          pvc_get_default_value/1,
          pvc_set_default_value/2]).
+
+%% start_vnode/1 is called internally by riak_core
+%%
+%% check_tables_ready/0 called by external script (rpc)
+%%
+%% pvc_set_default_value/2 called directly (riak_core_vnode:sync_command)
+%% by coord_pb_req_handler:load (force-set replica state)
+-ignore_xref([start_vnode/1,
+              check_tables_ready/0,
+              pvc_set_default_value/2]).
 
 -type op_and_id() :: {non_neg_integer(), #clocksi_payload{}}.
 
@@ -100,17 +112,19 @@ read(Key, Type, SnapshotTime, Transaction, MatState = #mat_state{ops_cache = Ops
             internal_read(Key, Type, SnapshotTime, TxId, MatState)
     end.
 
+%% @deprecated
 %% @doc Same as read/5, but return also the commit time of the snapshot.
 %%
 %%      Will also bypass the ops cache as we don't need it.
 %%
 -spec pvc_read(key(), snapshot_time(), #mat_state{}) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
-pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) ->
+pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache=VLogCache,
+                                                  pvc_default_value=BottomValue}) ->
     case ets:info(VLogCache) of
         undefined ->
-            %% TODO(borja): When is this triggered?
+            %% TODO(borja/pvc-prot): When is this triggered?
             %% We should already be at the correct node and partition
-            lager:info("Materializer partition miss with ~p", [Key]),
+            lager:debug("Materializer partition miss with ~p", [Key]),
             riak_core_vnode_master:sync_command(
                 {MatState#mat_state.partition, node()},
                 {pvc_read, Key, SnapshotTime},
@@ -119,7 +133,17 @@ pvc_read(Key, SnapshotTime, MatState = #mat_state{pvc_vlog_cache = VLogCache}) -
             );
 
         _ ->
-            pvc_internal_read(Key, SnapshotTime, MatState)
+            pvc_internal_read(Key, SnapshotTime, VLogCache, BottomValue)
+    end.
+
+-spec pvc_read_replica(key(), snapshot_time(), cache_id(), tuple()) -> {ok, snapshot(), snapshot_time()} | {error, reason()}.
+pvc_read_replica(Key, SnapshotTime, VLogCache, Default) ->
+    case ets:info(VLogCache) of
+        undefined ->
+            lager:error("Materializer partition miss with ~p", [Key]),
+            {error, partition_moved};
+        _ ->
+            pvc_internal_read(Key, SnapshotTime, VLogCache, Default)
     end.
 
 -spec get_cache_name(non_neg_integer(), atom()) -> atom().
@@ -145,12 +169,21 @@ update(Key, DownstreamOp) ->
         materializer_vnode_master
     ).
 
+%% @deprecated
 -spec pvc_update(clocksi_payload()) -> ok | {error, reason()}.
 pvc_update(Payload = #clocksi_payload{key = Key}) ->
     IndexNode = log_utilities:get_key_partition(Key),
     riak_core_vnode_master:sync_command(
         IndexNode,
         {pvc_update, Payload},
+        materializer_vnode_master
+    ).
+
+-spec pvc_update_keys(partition(), pvc_writeset:ws(key(), val()), pvc_vc()) -> ok | {error, reason()}.
+pvc_update_keys(Partition, Writeset, CommitVC) ->
+    riak_core_vnode_master:sync_command(
+        {Partition, node()},
+        {pvc_update_v2, Writeset, CommitVC},
         materializer_vnode_master
     ).
 
@@ -338,8 +371,8 @@ handle_command(pvc_get_default, _Sender, State = #mat_state{pvc_default_value = 
 handle_command({pvc_set_default, Value}, _Sender, State) ->
     {reply, ok, State#mat_state{pvc_default_value = Value}};
 
-handle_command({pvc_read, Key, SnapshotTime}, _Sender, State) ->
-    {reply, pvc_internal_read(Key, SnapshotTime, State), State};
+handle_command({pvc_read, Key, SnapshotTime}, _Sender, State=#mat_state{pvc_vlog_cache=VLog, pvc_default_value=Default}) ->
+    {reply, pvc_internal_read(Key, SnapshotTime, VLog, Default), State};
 
 handle_command({update, Key, DownstreamOp}, _Sender, State) ->
     true = op_insert_gc(Key, DownstreamOp, State),
@@ -347,6 +380,11 @@ handle_command({update, Key, DownstreamOp}, _Sender, State) ->
 
 handle_command({pvc_update, Payload}, _Sender, State) ->
     ok = pvc_update_ops_bypass(Payload, State),
+    {reply, ok, State};
+
+handle_command({pvc_update_v2, WriteSet, CommitVC}, _Sender, State=#mat_state{partition = Partition,
+                                                                              pvc_vlog_cache = VLogCache}) ->
+    ok = pvc_update_keys_internal(Partition, WriteSet, CommitVC, VLogCache),
     {reply, ok, State};
 
 handle_command({pvc_index, Keys}, _Sender, State = #mat_state{pvc_index_set = PVC_Index}) ->
@@ -491,11 +529,8 @@ internal_store_ss(Key, Snapshot, CommitTime, ShouldGc, State = #mat_state{
     end.
 
 %% @doc Simplified read for pvc, bypass the materializer and ops cache step
--spec pvc_internal_read(key(), snapshot_time(), #mat_state{}) -> {ok, term(), snapshot_time()}.
-pvc_internal_read(Key, MinSnapshotTime, #mat_state{
-    pvc_vlog_cache = VLogCache,
-    pvc_default_value = Default
-}) ->
+-spec pvc_internal_read(key(), snapshot_time(), cache_id(), term()) -> {ok, term(), snapshot_time()}.
+pvc_internal_read(Key, MinSnapshotTime, VLogCache, Default) ->
     {Val, CommitVC} = case ets:lookup(VLogCache, Key) of
         [] ->
             Default;
@@ -853,6 +888,7 @@ tuple_to_cached_ops(Tuple) ->
     Ops = Tuple,
     {Key, Length, Ops}.
 
+%% @deprecated
 %% @doc Simplified materializer update for pvc
 %%
 %%      Instead of storing ops and applying those to the previous
@@ -861,7 +897,7 @@ tuple_to_cached_ops(Tuple) ->
 %%      we only operate on lww registers, the update is the same
 %%      as the value.
 %%
-%% TODO(borja): Will ignore transactions from other DCs
+%% TODO(borja/pvc-prot): Will ignore transactions from other DCs
 %% By ignoring the ops cache, it will miss updates from other
 %% data centers. Right now when a transaction is delivered from
 %% another DC, Antidote will store the updates in the operation
@@ -887,6 +923,19 @@ pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
 
     NextVersionLog = pvc_version_log:insert(SnapshotTime, DownstreamOp, VersionLog),
     true = ets:insert(VLogCache, {Key, NextVersionLog}),
+    ok.
+
+-spec pvc_update_keys_internal(partition_id(), pvc_writeset:ws(key(), val()), pvc_vc(), cache_id()) -> ok.
+pvc_update_keys_internal(Partition, WriteSet, CommitVC, VLogCache) ->
+    Objects = lists:map(fun({Key, Value}) ->
+        VersionLog = case ets:lookup(VLogCache, Key) of
+            [] -> pvc_version_log:new(Partition);
+            [{Key, PrevVLog}] -> PrevVLog
+        end,
+        NewVlog = pvc_version_log:insert(CommitVC, Value, VersionLog),
+        {Key, NewVlog}
+    end, WriteSet),
+    true = ets:insert(VLogCache, Objects),
     ok.
 
 %% @doc Scan the PVC_Index for matching keys

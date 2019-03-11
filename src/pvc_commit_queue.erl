@@ -28,9 +28,9 @@
 
 -record(cqueue, {
     %% The main commit TxId queue
-    q :: queue:queue({txid(), list()}),
+    q :: queue:queue(txid()),
     %% Mapping between txids and their write sets
-    write_sets :: dict:dict(txid(), list()),
+    write_sets :: dict:dict(txid(), writeset()),
     %% For the ready tx, put their ids with their commit VC
     %% and their index key list here
     ready_tx :: dict:dict(txid(), {pvc_vc(), list()}),
@@ -40,7 +40,7 @@
 
 -opaque cqueue() :: #cqueue{}.
 
--type writeset() :: [{key(), term(), term()}].
+-type writeset() :: pvc_writeset:ws(key(), val()).
 
 -export_type([cqueue/0]).
 
@@ -147,34 +147,18 @@ is_ws_disputed(_, []) ->
     false;
 
 is_ws_disputed([{_TxId, OtherWS} | Rest], WS) ->
-    case ws_intersect(OtherWS, WS) of
+    case pvc_writeset:intersect(OtherWS, WS) of
         true ->
             true;
         false ->
             is_ws_disputed(Rest, WS)
     end.
 
--spec ws_intersect(writeset(), writeset()) -> boolean().
-ws_intersect([], _) ->
-    false;
-
-ws_intersect(_, []) ->
-    false;
-
-ws_intersect([{Key, _, _} | WS1], WS2) ->
-    case lists:keyfind(Key, 1, WS2) of
-        false ->
-            ws_intersect(WS1, WS2);
-        _ ->
-            true
-    end.
-
-
 -ifdef(TEST).
 
 pvc_commit_queue_conflict_test() ->
-    TestWS = [{key_a, ignore, ignore}],
-    TestWS1 = [{key_b, ignore, ignore}],
+    TestWS = [{key_a, ignore}],
+    TestWS1 = [{key_b, ignore}],
 
     CQ = pvc_commit_queue:new(),
 

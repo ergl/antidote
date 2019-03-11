@@ -94,7 +94,7 @@ get_smaller_from_dots([], _, #clog{data=Tree}) ->
     end;
 
 get_smaller_from_dots(Dots, VC, #clog{data=Tree}) ->
-    %% TODO(borja): Can we optimize here? (smallest > VC[Id])
+    %% TODO(borja/misc): Can we optimize here? (smallest > VC[Id])
     case catch get_smaller_from_dots(Dots, VC, gb_trees:balance(Tree), pvc_vclock:new()) of
         {found, Max} ->
             Max;

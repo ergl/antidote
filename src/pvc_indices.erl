@@ -132,18 +132,18 @@ claimed_index(RootKey, TxId) ->
     {ok, [RootVal]} = pvc:read_keys(RootKey, TxId),
     RootVal =:= ?CLAIMED.
 
-%% TODO(borja): Handle non-binary data
+%% TODO(borja/pvc-indices): Handle non-binary data
 make_u_index_key(IndexName, IndexValue) ->
     <<IndexName/binary, ?UINDEX_SEP/binary, IndexValue/binary>>.
 
-%% TODO(borja): Handle non-binary data
+%% TODO(borja/pvc-indices): Handle non-binary data
 make_root_index_key(IndexName) ->
     IndexName.
 
 make_root_index_key(IndexName, IndexValue) ->
     <<IndexName/binary, ?INDEX_SEP/binary, IndexValue/binary>>.
 
-%% TODO(borja): Handle non-binary data
+%% TODO(borja/pvc-indices): Handle non-binary data
 make_index_key(IndexName, IndexValue, RefKey) ->
     <<IndexName/binary, ?INDEX_SEP/binary, IndexValue/binary, ?INDEX_SEP/binary, RefKey/binary>>.
 

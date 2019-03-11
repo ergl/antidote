@@ -58,43 +58,37 @@
 
 %% Callbacks
 -export([init/1,
-    code_change/4,
-    handle_event/3,
-    handle_info/3,
-    handle_sync_event/4,
-    terminate/3,
-    stop/1]).
+         code_change/4,
+         handle_event/3,
+         handle_info/3,
+         handle_sync_event/4,
+         terminate/3,
+         stop/1]).
 
 %% States
--export([create_transaction_record/6,
-    start_tx/2,
-    init_state/3,
-    perform_update/6,
-    perform_read/4,
-    execute_op/2,
-    execute_op/3,
-    receive_read_objects_result/2,
-    pvc_read_res/2,
-    receive_logging_responses/2,
-    finish_op/3,
-    prepare/1,
-    prepare_2pc/1,
-    pvc_log_responses/2,
-    pvc_receive_votes/2,
-    process_prepared/2,
-    receive_prepared/2,
-    single_committing/2,
-    committing_2pc/3,
-    committing_single/3,
-    committing/3,
-    receive_committed/2,
-    receive_aborted/2,
-    abort/1,
-    abort/2,
-    perform_singleitem_read/2,
-    perform_singleitem_update/3,
-    reply_to_client/1,
-    generate_name/1]).
+-export([start_tx/2,
+         execute_op/2,
+         execute_op/3,
+         receive_read_objects_result/2,
+         pvc_read_res/2,
+         receive_logging_responses/2,
+         finish_op/3,
+         prepare/1,
+         prepare_2pc/1,
+         pvc_log_responses/2,
+         pvc_receive_votes/2,
+         process_prepared/2,
+         receive_prepared/2,
+         single_committing/2,
+         committing_2pc/3,
+         committing_single/3,
+         committing/3,
+         receive_committed/2,
+         receive_aborted/2,
+         perform_singleitem_read/2,
+         perform_singleitem_update/3,
+         reply_to_client/1,
+         generate_name/1]).
 
 %%%===================================================================
 %%% API
@@ -285,6 +279,7 @@ create_cure_gr_tx_record(Name, ClientClock, UpdateClock, Protocol) ->
     },
     {Transaction, TransactionId}.
 
+%% @deprecated
 -spec create_pvc_tx_record(atom(), transactional_protocol()) -> {tx(), txid()}.
 create_pvc_tx_record(Name, Protocol) ->
     Now = ?DC_UTIL:now_microsec(),
@@ -297,7 +292,7 @@ create_pvc_tx_record(Name, Protocol) ->
         %% PVC-related state
         pvc_vcaggr = pvc_vclock:new(),
         pvc_vcdep = pvc_vclock:new(),
-        pvc_hasread = sets:new(),
+        pvc_hasread = ordsets:new(),
 
         transactional_protocol=Protocol,
         snapshot_time=CompatibilityTime,
@@ -467,7 +462,7 @@ perform_update(Op, UpdatedPartitions, Transaction, _Sender, ClientOps, InternalR
             WS
     end,
 
-    %% TODO(borja): Wouldn't this execute every time an object is updated?
+    %% TODO(borja/antidote): Wouldn't this execute every time an object is updated?
     %% Maybe move to prepare?
     %% Execute pre_commit_hook if any
     case antidote_hooks:execute_pre_commit_hook(Key, Type, Update) of
@@ -644,11 +639,11 @@ pvc_unsafe_load(NKeys, Size, Sender, State) ->
 pvc_unsafe_load_update(0, _, State) ->
     State;
 
-pvc_unsafe_load_update(N, Val, S = #tx_coord_state{client_ops=Ops0,updated_partitions=P0}) ->
+pvc_unsafe_load_update(N, Val, S = #tx_coord_state{client_ops=Ops0, updated_partitions=P0}) ->
     Key = integer_to_binary(N, 36),
     Op = {Key, antidote_crdt_lwwreg, {assign, Val}},
     {P, Ops} = pvc_perform_update(Op, P0, Ops0),
-    pvc_unsafe_load_update(N - 1, Val, S#tx_coord_state{client_ops=Ops,updated_partitions=P}).
+    pvc_unsafe_load_update(N - 1, Val, S#tx_coord_state{client_ops=Ops, updated_partitions=P}).
 
 -spec pvc_add_to_index_dict(index_node(), key(), dict:dict()) -> dict:dict().
 pvc_add_to_index_dict(Part, Key, Dict) ->
@@ -664,7 +659,7 @@ pvc_add_to_index_dict(Part, Key, Dict) ->
 %% @doc Return the locally updated keys belonging to Partition that match
 %%      the given prefix, skipping the root key
 -spec pvc_get_local_matching_keys(
-    partition_id(),
+    index_node(),
     key(),
     pvc_indices:range(),
     dict:dict()
@@ -691,6 +686,7 @@ pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
             end, ordsets:new(), S)
     end.
 
+%% @deprecated
 pvc_single_read(Key, State = #tx_coord_state{
     from = Sender,
     client_ops = ClientOps,
@@ -714,6 +710,7 @@ pvc_read_res({pvc_readreturn, From, _Key, Value, VCdep, VCaggr}, State = #tx_coo
     gen_fsm:reply(State#tx_coord_state.from, {ok, Value}),
     {next_state, execute_op, State#tx_coord_state{transaction = pvc_update_transaction(From, VCdep, VCaggr, Tx)}}.
 
+%% @deprecated
 %% @doc Loop through all the keys, calling the appropriate partitions
 pvc_read(Keys, Sender, State = #tx_coord_state{
     client_ops=ClientOps,
@@ -724,6 +721,7 @@ pvc_read(Keys, Sender, State = #tx_coord_state{
     {next_state, receive_read_objects_result, State#tx_coord_state{from=Sender,
                                                                    return_accumulator={Keys, Rest}}}.
 
+%% @deprecated
 -spec pvc_perform_read(key(), tx(), list()) -> ok.
 pvc_perform_read(Key, Transaction, ClientOps) ->
     %% If the key has already been updated in this transaction,
@@ -745,6 +743,7 @@ pvc_perform_read(Key, Transaction, ClientOps) ->
             gen_fsm:send_event(self(), {pvc_key_was_updated, Key, Value})
     end.
 
+%% @deprecated
 %% @doc Check if a key was updated by the client.
 %%
 %%      If it was, return the assigned value, returns false otherwise
@@ -813,6 +812,7 @@ clocksi_update(UpdateOps, Sender, State = #tx_coord_state{transaction=Transactio
             {next_state, receive_logging_responses, LoggingState, 0}
     end.
 
+%% @deprecated
 pvc_update(UpdateOps, Sender, State) ->
     PerformUpdates = fun(Op, AccState=#tx_coord_state{
         client_ops=ClientOps,
@@ -835,6 +835,7 @@ pvc_update(UpdateOps, Sender, State) ->
     gen_fsm:reply(Sender, ok),
     {next_state, execute_op, NewCoordState#tx_coord_state{return_accumulator=[]}}.
 
+%% @deprecated
 pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
     %% Don't read snapshot, will do that at commit time
     %% As we only allow lww-registers, we don't need to keep track of all
@@ -843,6 +844,7 @@ pvc_perform_update(Op, UpdatedPartitions, ClientOps) ->
     UpdatedOps = pvc_swap_operations(ClientOps, Op),
     {NewUpdatedPartitions, UpdatedOps}.
 
+%% @deprecated
 pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
     Partition = log_utilities:get_key_partition(Key),
     case lists:keyfind(Partition, 1, UpdatedPartitions) of
@@ -858,6 +860,7 @@ pvc_swap_writeset(UpdatedPartitions, {Key, _, _}=Update) ->
             lists:keyreplace(Partition, 1, UpdatedPartitions, {Partition, NewWS})
     end.
 
+%% @deprecated
 pvc_swap_operations(ClientOps, {Key, _, _}=Update) ->
     case lists:keyfind(Key, 1, ClientOps) of
         false ->
@@ -924,7 +927,7 @@ receive_read_objects_result({ok, {Key, Type, Snapshot}}, CoordState = #tx_coord_
 
     %% Swap keys with their appropiate read values
     ReadValues = replace_first(ReadKeys, Key, Value),
-    %% TODO(borja): Why use the old snapshot, instead of UpdatedSnapshot?
+    %% TODO(borja/antidote): Why use the old snapshot, instead of UpdatedSnapshot?
     NewReadSet = orddict:store(Key, Snapshot, ReadSet),
 
     %% Loop back to the same state until we process all the replies
@@ -966,6 +969,7 @@ receive_read_objects_result(Msg, State=#tx_coord_state{transactional_protocol=pv
             pvc_read_loop(Key, Value, UpdatedTransaction, State)
     end.
 
+%% @deprecated
 -spec pvc_read_loop(key(), val(), tx(), #tx_coord_state{}) -> _.
 pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOps,
                                                              return_accumulator={RequestedKeys, RemainingKeys}}) ->
@@ -990,6 +994,7 @@ pvc_read_loop(Key, Value, Transaction, State=#tx_coord_state{client_ops=ClientOp
                                      return_accumulator={ReadValues, Rest}}}
     end.
 
+%% @deprecated
 -spec pvc_update_transaction(partition_id(), pvc_vc(), pvc_vc(), tx()) -> tx().
 pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
     pvc_hasread = HasRead,
@@ -997,14 +1002,14 @@ pvc_update_transaction(FromPartition, VCdep, VCaggr, Transaction = #transaction{
     pvc_vcaggr = TVCaggr
 }) ->
 
-    NewHasRead = sets:add_element(FromPartition, HasRead),
+    NewHasRead = ordsets:add_element(FromPartition, HasRead),
 
     NewVCdep = pvc_vclock:max(TVCdep, VCdep),
     NewVCaggr = pvc_vclock:max(TVCaggr, VCaggr),
 
     Transaction#transaction{pvc_hasread=NewHasRead,
-                            pvc_vcdep = NewVCdep,
-                            pvc_vcaggr = NewVCaggr}.
+                            pvc_vcdep=NewVCdep,
+                            pvc_vcaggr=NewVCaggr}.
 
 %% The following function is used to apply the updates that were performed by the running
 %% transaction, to the result returned by a read.
@@ -1026,6 +1031,7 @@ apply_tx_updates_to_snapshot(Key, CoordState, Type, Snapshot)->
             clocksi_materializer:materialize_eager(Type, Snapshot, FileteredAndReversedUpdates)
     end.
 
+%% @deprecated
 pvc_prepare(State = #tx_coord_state{
     from=From,
     client_ops=ClientOps,
@@ -1049,6 +1055,7 @@ pvc_prepare(State = #tx_coord_state{
             }}
     end.
 
+%% @deprecated
 pvc_log_responses(LogResponse, State = #tx_coord_state{
     num_to_read=NumToRead,
     transaction=Transaction,
@@ -1095,6 +1102,7 @@ pvc_log_responses(LogResponse, State = #tx_coord_state{
             end
     end.
 
+%% @deprecated
 -spec pvc_propagate_updates(tx(), list({key(), type(), op()})) -> ok.
 pvc_propagate_updates(#transaction{txn_id=TxId}, Ops) ->
     lists:foreach(fun({Key, Type, Update}) ->
@@ -1239,6 +1247,7 @@ process_prepared(ReceivedPrepareTime, S0 = #tx_coord_state{
             end
     end.
 
+%% @deprecated
 pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
 %%    transaction = Tx,
     num_to_ack = NumToAck,
@@ -1282,6 +1291,7 @@ pvc_receive_votes({pvc_vote, From, Outcome, SeqNumber}, State = #tx_coord_state{
             end
     end.
 
+%% @deprecated
 pvc_decide(State = #tx_coord_state{
     from = From,
     client_ops = ClientOps,
@@ -1462,15 +1472,6 @@ abort(SD0 = #tx_coord_state{transaction = Transaction,
             {next_state, receive_aborted,
                 SD0#tx_coord_state{num_to_ack = NumToAck, state = aborted}}
     end.
-
-abort(abort, SD0) ->
-    abort(SD0);
-
-abort({prepared, _}, SD0) ->
-    abort(SD0);
-
-abort(_, SD0) ->
-    abort(SD0).
 
 %% @doc the fsm waits for acks indicating that each partition has successfully
 %%      aborted the tx and finishes operation.

@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 
--module(rubis_pb_server).
+-module(coord_pb_server).
 
 -include("pvc.hrl").
 
@@ -26,15 +26,15 @@
 
 -spec start_listeners() -> ok.
 start_listeners() ->
-    RubisPbPort = application:get_env(antidote, rubis_pb_port, ?RUBIS_PB_PORT),
-    {ok, _} = ranch:start_listener(tcp_rubis,
-                                   ?RUBIS_PB_POOL,
+    DefaultPort = application:get_env(antidote, coord_pb_port, ?COORD_PB_PORT),
+    {ok, _} = ranch:start_listener(tcp_coord_conn,
+                                   ?COORD_PB_POOL,
                                    ranch_tcp,
-                                   [{port, RubisPbPort}, {max_connections, infinity}],
-                                   rubis_pb_worker,
+                                   [{port, DefaultPort}, {max_connections, infinity}],
+                                   coord_pb_server_worker,
                                    []),
 
-    Port = ranch:get_port(tcp_rubis),
+    Port = ranch:get_port(tcp_coord_conn),
     lager:info("Rubis pb server started on port ~p", [Port]),
 
     ok.

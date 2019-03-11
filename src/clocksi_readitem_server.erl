@@ -58,6 +58,7 @@
     prepared_cache :: cache_id(),
 
     %% PVC Atomic cache
+    %% @deprecated
     pvc_atomic_cache :: atom()
 }).
 
@@ -109,18 +110,41 @@ async_read_data_item({Partition, Node}, Key, Type, Transaction, Coordinator) ->
         {perform_read_cast, Coordinator, Key, Type, Transaction}
     ).
 
+%% @deprecated
 %% @doc PVC-only asynchronous read
--spec pvc_async_read(key(), sets:set(), pvc_vc()) -> ok.
+-spec pvc_async_read(
+    Key :: key(),
+    HasRead :: ordsets:ordset(),
+    VCaggr :: pvc_vc()
+) -> ok.
+
 pvc_async_read(Key, HasRead, VCaggr) ->
-    %% If not read, go through wait process
-    {Partition, Node}=IndexNode = log_utilities:get_key_partition(Key),
+    IndexNode = log_utilities:get_key_partition(Key),
+    pvc_async_read(IndexNode, Key, HasRead, VCaggr, fsm).
+
+-spec pvc_async_read(
+    IndexNode :: index_node(),
+    Key :: key(),
+    HasRead :: ordsets:ordset(),
+    VCaggr :: pvc_vc(),
+    Mode :: atom()
+) -> ok.
+
+%% @deprecated
+pvc_async_read({Partition, Node}=IndexNode, Key, HasRead, VCaggr, Mode) ->
+    Coordinator = case Mode of
+        fsm -> {fsm, self()};
+        bang -> {bang, self()}
+    end,
     Target = {global, generate_random_server_name(Node, Partition)},
-    case sets:is_element(Partition, HasRead) of
-        false ->
-            gen_server:cast(Target, {pvc_fresh_read, self(), IndexNode, Key, HasRead, VCaggr});
+    case ordsets:is_element(Partition, HasRead) of
         true ->
             %% If partition has been read, read directly from VLog
-            gen_server:cast(Target, {pvc_vlog_read, self(), Key, VCaggr})
+            gen_server:cast(Target, {pvc_vlog_read, Coordinator, Key, VCaggr});
+
+        false ->
+            %% If not read, go through wait process
+            gen_server:cast(Target, {pvc_fresh_read, Coordinator, IndexNode, Key, HasRead, VCaggr})
     end.
 
 -spec start_read_servers(index_node()) -> boolean().
@@ -277,6 +301,7 @@ handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
     ok = pvc_vlog_read_internal(Coordinator, SelfPartition, Key, VCaggr, MatState),
     {noreply, State}.
 
+%% @deprecated
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
 %%
 %%      It will scan the materializer for the specific snapshot, and reply
@@ -287,11 +312,14 @@ handle_cast({pvc_vlog_read, Coordinator, Key, VCaggr}, State) ->
 pvc_vlog_read_internal(Coordinator, Partition, Key, MaxVC, MatState) ->
     case materializer_vnode:pvc_read(Key, MaxVC, MatState) of
         {error, Reason} ->
-            gen_fsm:send_event(Coordinator, {error, Reason});
+            pvc_reply(Coordinator, {error, Reason});
         {ok, Value, CommitVC} ->
-            gen_fsm:send_event(Coordinator, {pvc_readreturn, Partition, Key, Value, CommitVC, MaxVC})
+            ReplyMsg = {pvc_readreturn, Partition, Key, Value, CommitVC, MaxVC},
+            FallBack = {ok, Value, CommitVC, MaxVC},
+            pvc_reply(Coordinator, ReplyMsg, FallBack)
     end.
 
+%% @deprecated
 %% @doc Wait until this PVC partition is ready to perform a read.
 %%
 %%      If this partition has not been read before, wait until the most
@@ -300,7 +328,15 @@ pvc_vlog_read_internal(Coordinator, Partition, Key, MaxVC, MatState) ->
 %%
 %%      Once this happens, perform the read at this partition.
 %%
--spec pvc_fresh_read_internal(term(), index_node(), key(), sets:set(), pvc_vc(), #state{}) -> ok.
+-spec pvc_fresh_read_internal(
+    Coordinator :: term(),
+    IndexNode :: index_node(),
+    Key :: key(),
+    HasRead :: ordsets:ordset(),
+    VCaggr :: pvc_vc(),
+    State :: #state{}
+) -> ok.
+
 pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCaggr, State = #state{
     pvc_atomic_cache = AtomicCache
 }) ->
@@ -313,12 +349,13 @@ pvc_fresh_read_internal(Coordinator, {Partition, _}=IndexNode, Key, HasRead, VCa
             pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, State)
     end.
 
+%% @deprecated
 %% @doc Check if this partition is ready to proceed with a PVC read.
 %%
 %%      If it is not, will sleep for 1000 ms and try again.
 %%
 -spec pvc_check_time(partition_id(), pvc_vc(), pvc_vc()) -> ready
-                                                                    | {not_ready, non_neg_integer()}.
+                                                          | {not_ready, non_neg_integer()}.
 
 pvc_check_time(Partition, MostRecentVC, VCaggr) ->
     MostRecentTime = pvc_vclock:get_time(Partition, MostRecentVC),
@@ -328,6 +365,7 @@ pvc_check_time(Partition, MostRecentVC, VCaggr) ->
         false -> ready
     end.
 
+%% @deprecated
 %% @doc Scan the replication log for a valid vector clock time for a read at this partition
 %%
 %%      The valid time is the maximum vector clock such that for every partition
@@ -338,7 +376,7 @@ pvc_check_time(Partition, MostRecentVC, VCaggr) ->
     Coordinator :: term(),
     index_node(),
     key(),
-    sets:set(),
+    HasRead :: ordsets:ordset(),
     pvc_vc(),
     #state{}
 ) -> ok.
@@ -351,22 +389,27 @@ pvc_scan_and_read(Coordinator, IndexNode, Key, HasRead, VCaggr, #state{
     MaxVCRes = pvc_find_maxvc(IndexNode, HasRead, VCaggr, AtomicCache),
     case MaxVCRes of
         {error, Reason} ->
-            gen_fsm:send_event(Coordinator, {error, Reason});
+            pvc_reply(Coordinator, {error, Reason});
 
         {ok, MaxVC} ->
             pvc_vlog_read_internal(Coordinator, SelfPartition, Key, MaxVC, MatState)
     end.
 
+%% @deprecated
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
--spec pvc_find_maxvc(index_node(), sets:set(), pvc_vc(), atom()) -> {ok, pvc_vc()}
-                                                                       | {error, reason()}.
+-spec pvc_find_maxvc(
+    IndexNode :: index_node(),
+    HasRead :: ordsets:ordset(),
+    VCaggr :: pvc_vc(),
+    AtomicCache :: atom()
+) -> {ok, pvc_vc()} | {error, reason()}.
 
 pvc_find_maxvc({CurrentPartition, _} = IndexNode, HasRead, VCaggr, AtomicCache) ->
     %% If this is the first partition we're reading, our MaxVC will be
     %% the current MostRecentVC at this partition
-    MaxVC = case sets:size(HasRead) of
+    MaxVC = case ordsets:size(HasRead) of
         0 -> clocksi_vnode:pvc_get_most_recent_vc(IndexNode, AtomicCache);
-        _ -> logging_vnode:pvc_get_max_vc(IndexNode, sets:to_list(HasRead), VCaggr)
+        _ -> logging_vnode:pvc_get_max_vc(IndexNode, ordsets:to_list(HasRead), VCaggr)
     end,
 
     %% If the selected time is too old, we should abort the read
@@ -485,3 +528,20 @@ reply_to_coordinator({fsm, Sender}, Msg, _FallbackMsg) ->
 reply_to_coordinator(Coordinator, _Msg, FallbackMsg) ->
     gen_server:reply(Coordinator, FallbackMsg),
     ok.
+
+%% @deprecated
+%% @doc Send a message back to the transaction coordinator.
+%%
+%%      Allows to specify a simple message if the coordinator is a simple
+%%      process instead of the full-fsm coordinator.
+%%
+-spec pvc_reply({fsm, pid()} | {bang, pid()}, term()) -> ok.
+pvc_reply(Coordinator, Msg) ->
+    pvc_reply(Coordinator, Msg, Msg).
+
+pvc_reply({bang, Pid}, _Msg, FallBack) when is_pid(Pid) ->
+    Pid ! FallBack,
+    ok;
+
+pvc_reply({fsm, Pid}, Msg, _Fallback) when is_pid(Pid) ->
+    gen_fsm:send_event(Pid, Msg).

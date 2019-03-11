@@ -11,6 +11,7 @@
                   riak_api,
                   riak_core,
                   pvc_proto,
+                  pvc_types,
                   antidote_crdt,
                   cuttlefish,
                   riak_dt,

@@ -63,6 +63,8 @@ init(_Args) ->
     %% RUBIS Key Generator Oracle, one per partition
     RubisKeyGen = ?VNODE(rubis_keygen_vnode_master, rubis_keygen_vnode),
 
+    PVCReplicaSup = ?CHILD(pvc_read_replica_sup, supervisor, []),
+
     ClockSIMaster = { clocksi_vnode_master,
                       {riak_core_vnode_master, start_link, [clocksi_vnode]},
                       permanent, 5000, worker, [riak_core_vnode_master]},
@@ -116,6 +118,7 @@ init(_Args) ->
      {{one_for_one, 5, 10},
       [LoggingMaster,
        RubisKeyGen,
+       PVCReplicaSup,
        ClockSIMaster,
        ClockSIiTxCoordSup,
        ClockSIReadSup,

@@ -29,23 +29,19 @@
          commit_transaction/1]).
 
 %% API
--export([
-    start_transaction/3,
-    start_transaction/2,
-    abort_transaction/1,
-    read_single/2,
-    read_objects/2,
-    read_objects/3,
-    read_objects/4,
-    update_objects/2,
-    update_objects/3,
-    update_objects/4
-]).
+-export([start_transaction/3,
+         start_transaction/2,
+         abort_transaction/1,
+         read_single/2,
+         read_objects/2,
+         read_objects/3,
+         read_objects/4,
+         update_objects/2,
+         update_objects/3,
+         update_objects/4]).
 
 %% Unsafe load API
--export([
-    unsafe_load/2
-]).
+-export([unsafe_load/2]).
 
 %% @doc UNSAFE: Blindly write a random binary blobs of size Size to N keys
 %%
@@ -67,10 +63,11 @@ unsafe_load(N, Size) ->
     end.
 
 %% PVC-Only API
-
+%% @deprecated
 start_transaction() ->
     pvc_istart_tx().
 
+%% @deprecated
 commit_transaction(TxId) ->
     CommitRes = gen_fsm:sync_send_event(TxId#tx_id.server_pid, {prepare, pvc_commit}, ?OP_TIMEOUT),
     case CommitRes of
@@ -80,9 +77,11 @@ commit_transaction(TxId) ->
         Res -> Res
     end.
 
+%% @deprecated
 read_single(Key, #tx_id{server_pid = Pid}) ->
     gen_fsm:sync_send_event(Pid, {read_single, Key}, ?OP_TIMEOUT).
 
+%% @deprecated
 read_keys([], _) ->
     {ok, []};
 
@@ -92,6 +91,7 @@ read_keys(Keys, #tx_id{server_pid = Pid}) when is_list(Keys) ->
 read_keys(Key, TxId) ->
     read_keys([Key], TxId).
 
+%% @deprecated
 update_keys(UpdateOps, TxId = #tx_id{server_pid = Pid}) when is_list(UpdateOps) ->
     CompatOps = lists:map(fun({K, V}) ->
         {K, antidote_crdt_lwwreg, {assign, V}}
