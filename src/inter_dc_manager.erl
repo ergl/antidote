@@ -131,17 +131,22 @@ start_bg_processes(MetaDataName) ->
     TimerReply = dc_utilities:bcast_vnode_sync(logging_vnode_master, {start_timer, undefined}),
     ok = lists:foreach(fun({_, ok}) -> ok end, TimerReply),
 
-    %% Start the read servers for the node
-    %% Be sure they all started ok, crash otherwise
-    lager:info("Starting read servers"),
-    ServerReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers),
-    ok = lists:foreach(fun({_, true}) -> ok end, ServerReply),
-
-    lager:info("Starting pvc read replicas"),
-    PVCReplicaResp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, start_pvc_servers),
-    ok = lists:foreach(fun({_, true}) -> ok end, PVCReplicaResp),
+    ok = start_read_replicas(),
 
     ok.
+
+%% @doc Start the appropriate read replicas for the current tx protocol
+-spec start_read_replicas() -> ok.
+start_read_replicas() ->
+    Response = case application:get_env(antidote, txn_prot) of
+        {ok, pvc} ->
+            lager:info("Starting pvc read replicas"),
+            dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, start_pvc_servers);
+        _ ->
+            lager:info("Starting read servers"),
+            dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers)
+    end,
+    ok = lists:foreach(fun({_, true}) -> ok end, Response).
 
 %% This should be called once the DC is up and running successfully
 %% It sets a flag on disk to true.  When this is true on fail and
@@ -183,14 +188,7 @@ check_node_restart() ->
             %% Be sure they all started ok, crash otherwise
             ok = lists:foreach(fun({_, ok}) -> ok end, Responses),
 
-            lager:info("Starting read servers"),
-            Responses2 = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, start_read_servers),
-            %% Be sure they all started ok, crash otherwise
-            ok = lists:foreach(fun({_, true}) -> ok end, Responses2),
-
-            lager:info("Starting pvc read replicas"),
-            PVCReplicaResp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, start_pvc_servers),
-            ok = lists:foreach(fun({_, true}) -> ok end, PVCReplicaResp),
+            ok = start_read_replicas(),
 
             %% Reconnect this node to other DCs
             OtherDCs = dc_meta_data_utilities:get_dc_descriptors(),
