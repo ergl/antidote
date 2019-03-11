@@ -13,6 +13,6 @@
 -define(MAX_VERSIONS, 100).
 
 %% Size of active listener pool for the protocol buffer server
--define(COORD_PB_POOL, 100).
+-define(COORD_PB_POOL, (1 * erlang:system_info(schedulers_online))).
 %% Port number for protocol buffer sever
 -define(COORD_PB_PORT, 7878).
