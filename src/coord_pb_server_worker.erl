@@ -43,7 +43,7 @@ start_link(Ref, Socket, Transport, Opts) ->
 init({Ref, Socket, Transport, _Opts}) ->
     ok = ranch:accept_ack(Ref),
     ok = ranch:remove_connection(Ref),
-    ok = Transport:setopts(Socket, [{active, once}, {packet, 2}]),
+    ok = Transport:setopts(Socket, [{active, once}, {packet, 4}]),
     gen_server:enter_loop(?MODULE, [], #state{socket=Socket, transport=Transport}).
 
 handle_call(E, _From, S) ->
