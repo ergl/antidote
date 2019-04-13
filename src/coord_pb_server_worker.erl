@@ -23,7 +23,14 @@
 -behaviour(gen_server).
 -behavior(ranch_protocol).
 
--record(state, { socket, transport }).
+-record(state, {
+    socket :: inet:socket(),
+    transport :: module(),
+    %% The lenght (in bits) of the message identifier
+    %% Identifiers are supposed to be opaque, and are ignored by the server,
+    %% and simply forwarded back to the client
+    id_len :: non_neg_integer() | undefined
+}).
 
 %% ranch_protocol callback
 -export([start_link/4]).
@@ -44,7 +51,9 @@ init({Ref, Socket, Transport, _Opts}) ->
     ok = ranch:accept_ack(Ref),
     ok = ranch:remove_connection(Ref),
     ok = Transport:setopts(Socket, [{active, once}, {packet, 4}]),
-    gen_server:enter_loop(?MODULE, [], #state{socket=Socket, transport=Transport}).
+    IDLen = application:get_env(antidote, coord_id_len_bits, 16),
+    State = #state{socket=Socket, transport=Transport, id_len=IDLen},
+    gen_server:enter_loop(?MODULE, [], State).
 
 handle_call(E, _From, S) ->
     io:format("unexpected call: ~p~n", [E]),
@@ -54,12 +63,15 @@ handle_cast(E, S) ->
     io:format("unexpected cast: ~p~n", [E]),
     {noreply, S}.
 
-handle_info({tcp, Socket, Data}, State = #state{socket=Socket, transport=Transport}) ->
-    {HandlerMod, Type, Msg} = pvc_proto:decode_client_req(Data),
+handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
+                                                transport=Transport,
+                                                id_len=IDLen}) ->
+    <<MessageID:IDLen, Request/binary>> = Data,
+    {HandlerMod, Type, Msg} = pvc_proto:decode_client_req(Request),
     case coord_pb_req_handler:process_request(Type, Msg) of
         {reply, Result} ->
             Reply = pvc_proto:encode_serv_reply(HandlerMod, Type, Result),
-            Transport:send(Socket, Reply);
+            Transport:send(Socket, <<MessageID:IDLen, Reply/binary>>);
         noreply ->
             ok
     end,
