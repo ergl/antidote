@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 
--module(pvc).
+-module(antidote_pvc_protocol).
 
 -include("antidote.hrl").
 

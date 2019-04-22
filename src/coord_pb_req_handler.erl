@@ -260,13 +260,13 @@ put_region(RegionName) ->
     %% We place the region_name index entries in a globally-reachable grouping
     NameIndex = ?ru:gen_index_name(?default_group, regions_name),
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(RegionKey, TxId),
-    ok = pvc:update_keys({RegionKey, RegionName}, TxId),
-    ok = pvc_indices:index(NameIndex, RegionName, RegionKey, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    {ok, [<<>>]} = antidote_pvc_protocol:read_keys(RegionKey, TxId),
+    ok = antidote_pvc_protocol:update_keys({RegionKey, RegionName}, TxId),
+    ok = antidote_pvc_indices:index(NameIndex, RegionName, RegionKey, TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -292,13 +292,13 @@ put_category(CategoryName) ->
     %% it was not in RUBIS originally
     NameIndex = ?ru:gen_index_name(?default_group, categories_name),
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(CategoryKey, TxId),
-    ok = pvc:update_keys({CategoryKey, CategoryName}, TxId),
-    ok = pvc_indices:index(NameIndex, CategoryName, CategoryKey, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    {ok, [<<>>]} = antidote_pvc_protocol:read_keys(CategoryKey, TxId),
+    ok = antidote_pvc_protocol:update_keys({CategoryKey, CategoryName}, TxId),
+    ok = antidote_pvc_indices:index(NameIndex, CategoryName, CategoryKey, TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -310,15 +310,15 @@ put_category(CategoryName) ->
 -spec auth_user(binary(), binary()) -> {ok, key()} | {error, reason()}.
 auth_user(Username, Password) ->
     NameIndex = ?ru:gen_index_name(?default_group, users_name),
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [Val]} = pvc_indices:read_u_index(NameIndex, Username, TxId),
+    {ok, [Val]} = antidote_pvc_indices:read_u_index(NameIndex, Username, TxId),
     Result = case Val of
         <<>> ->
             {error, user_not_found};
 
         UserId ->
-            {ok, [{password, Pass}]} = pvc:read_keys(?ru:key_field(UserId, password), TxId),
+            {ok, [{password, Pass}]} = antidote_pvc_protocol:read_keys(?ru:key_field(UserId, password), TxId),
             case Pass of
                 Password ->
                     {ok, UserId};
@@ -326,7 +326,7 @@ auth_user(Username, Password) ->
                     {error, wrong_password}
             end
     end,
-    Commit = pvc:commit_transaction(TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -340,15 +340,15 @@ register_user(Username, Password, RegionId) ->
     %% The user_name index live globally to ensure global uniqueness
     UsernameIndex = ?ru:gen_index_name(?default_group, users_name),
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
 
     %% Check that our username is unique
-    {ok, [Val]} = pvc_indices:read_u_index(UsernameIndex, Username, TxId),
+    {ok, [Val]} = antidote_pvc_indices:read_u_index(UsernameIndex, Username, TxId),
     Result = case Val of
         <<>> ->
             %% Users are grouped into their region name group
-            {ok, [RegionName]} = pvc:read_keys(RegionId, TxId),
+            {ok, [RegionName]} = antidote_pvc_protocol:read_keys(RegionId, TxId),
             RegionPartition = log_utilities:get_key_partition(RegionName),
             SelfGrouping = RegionName,
 
@@ -368,16 +368,16 @@ register_user(Username, Password, RegionId) ->
                 {?ru:gen_key(SelfGrouping, users, NextUserId, regionId), {regionId, RegionId}}
             ],
 
-            ok = pvc:update_keys(UserObj, TxId),
-            ok = pvc_indices:u_index(UsernameIndex, Username, UserKey, TxId),
-            ok = pvc_indices:index(RegionIdIndex, RegionName, UserKey, TxId),
+            ok = antidote_pvc_protocol:update_keys(UserObj, TxId),
+            ok = antidote_pvc_indices:u_index(UsernameIndex, Username, UserKey, TxId),
+            ok = antidote_pvc_indices:index(RegionIdIndex, RegionName, UserKey, TxId),
             {ok, UserKey};
 
         _ ->
             %% If the username is not unique, abort the transaction
             {error, non_unique_username}
     end,
-    Commit = pvc:commit_transaction(TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -389,15 +389,15 @@ register_user(Username, Password, RegionId) ->
 -spec browse_categories() -> {ok, list()} | {error, reason()}.
 browse_categories() ->
     CategoryNameIndex = ?ru:gen_index_name(?default_group, categories_name),
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, CategoryKeys} = pvc_indices:read_index(CategoryNameIndex, TxId),
-    case pvc:read_keys(CategoryKeys, TxId) of
+    {ok, CategoryKeys} = antidote_pvc_indices:read_index(CategoryNameIndex, TxId),
+    case antidote_pvc_protocol:read_keys(CategoryKeys, TxId) of
         {error, _}=ReadError ->
             ReadError;
 
         {ok, Result} ->
-            case pvc:commit_transaction(TxId) of
+            case antidote_pvc_protocol:commit_transaction(TxId) of
                 ?committed ->
                     {ok, Result};
                 {error, Reason} ->
@@ -409,15 +409,15 @@ browse_categories() ->
 search_items_by_category(CategoryId) ->
     CategoryGrouping = ?ru:get_grouping(CategoryId),
     CategoryIndex = ?ru:gen_index_name(CategoryGrouping, items_category_id),
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, ItemKeys} = pvc_indices:read_index(CategoryIndex, CategoryId, TxId),
-    case pvc:read_keys(ItemKeys, TxId) of
+    {ok, ItemKeys} = antidote_pvc_indices:read_index(CategoryIndex, CategoryId, TxId),
+    case antidote_pvc_protocol:read_keys(ItemKeys, TxId) of
         {error, _}=ReadError ->
             ReadError;
 
         {ok, Result} ->
-            case pvc:commit_transaction(TxId) of
+            case antidote_pvc_protocol:commit_transaction(TxId) of
                 ?committed ->
                     {ok, Result};
                 {error, Reason} ->
@@ -428,15 +428,15 @@ search_items_by_category(CategoryId) ->
 -spec browse_regions() -> {ok, list()} | {error, reason()}.
 browse_regions() ->
     RegionNameIndex = ?ru:gen_index_name(?default_group, regions_name),
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, RegionKeys} = pvc_indices:read_index(RegionNameIndex, TxId),
-    case pvc:read_keys(RegionKeys, TxId) of
+    {ok, RegionKeys} = antidote_pvc_indices:read_index(RegionNameIndex, TxId),
+    case antidote_pvc_protocol:read_keys(RegionKeys, TxId) of
         {error, _}=ReadError ->
             ReadError;
 
         {ok, Result} ->
-            case pvc:commit_transaction(TxId) of
+            case antidote_pvc_protocol:commit_transaction(TxId) of
                 ?committed ->
                     {ok, Result};
                 {error, Reason} ->
@@ -448,17 +448,17 @@ browse_regions() ->
 search_items_by_region(CategoryId, RegionId) ->
     %% Get all items in category CategoryId, such that their sellers
     %% are part of the given region
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [RegionName]} = pvc:read_keys(RegionId, TxId),
+    {ok, [RegionName]} = antidote_pvc_protocol:read_keys(RegionId, TxId),
     UserRegionIndex = ?ru:gen_index_name(RegionName, users_region),
-    {ok, UsersInRegion} = pvc_indices:read_index(UserRegionIndex, TxId),
+    {ok, UsersInRegion} = antidote_pvc_indices:read_index(UserRegionIndex, TxId),
     MatchingItems = lists:flatmap(fun(UserKey) ->
         SellerGroup = ?ru:get_grouping(UserKey),
         SellerIndex = ?ru:gen_index_name(SellerGroup, items_seller_id),
-        {ok, SoldByUser} = pvc_indices:read_index(SellerIndex, UserKey, TxId),
+        {ok, SoldByUser} = antidote_pvc_indices:read_index(SellerIndex, UserKey, TxId),
         lists:filtermap(fun(ItemKey) ->
-            {ok, [{category, ItemCat}]} = pvc:read_keys(?ru:key_field(ItemKey, category), TxId),
+            {ok, [{category, ItemCat}]} = antidote_pvc_protocol:read_keys(?ru:key_field(ItemKey, category), TxId),
             case ItemCat of
                 CategoryId ->
                     {true, ItemKey};
@@ -467,7 +467,7 @@ search_items_by_region(CategoryId, RegionId) ->
             end
         end, SoldByUser)
     end, UsersInRegion),
-    Commit = pvc:commit_transaction(TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -478,9 +478,9 @@ search_items_by_region(CategoryId, RegionId) ->
 
 -spec view_item(key()) -> {ok, tuple()} | {error, reason()}.
 view_item(ItemId) ->
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [{seller, SellerId} | ItemDetails]} = pvc:read_keys([?ru:key_field(ItemId, seller),
+    {ok, [{seller, SellerId} | ItemDetails]} = antidote_pvc_protocol:read_keys([?ru:key_field(ItemId, seller),
                                                               ?ru:key_field(ItemId, name),
                                                               ?ru:key_field(ItemId, category),
                                                               ?ru:key_field(ItemId, description),
@@ -488,7 +488,7 @@ view_item(ItemId) ->
                                                               ?ru:key_field(ItemId, quantity)], TxId),
 
     {ok, [SellerUsername,
-          SellerRating]} = pvc:read_keys([?ru:key_field(SellerId, username),
+          SellerRating]} = antidote_pvc_protocol:read_keys([?ru:key_field(SellerId, username),
                                           ?ru:key_field(SellerId, rating)], TxId),
 
     ViewItem = {proplists:get_value(name, ItemDetails),
@@ -499,7 +499,7 @@ view_item(ItemId) ->
                 SellerUsername,
                 SellerRating},
 
-    Commit = pvc:commit_transaction(TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -513,16 +513,16 @@ view_user(UserId) ->
     UserGroup = ?ru:get_grouping(UserId),
     CommentIndex = ?ru:gen_index_name(UserGroup, comments_to_id),
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
-    {ok, CommentsToUser} = pvc_indices:read_index(CommentIndex, UserId, TxId),
+    {ok, [{username, Username}]} = antidote_pvc_protocol:read_keys(?ru:key_field(UserId, username), TxId),
+    {ok, CommentsToUser} = antidote_pvc_indices:read_index(CommentIndex, UserId, TxId),
     CommentInfo = lists:map(fun(CommentId) ->
-        {ok, [{from, FromUserId}]} = pvc:read_keys(?ru:key_field(CommentId, from), TxId),
-        {ok, [{username, FromUsername}]} = pvc:read_keys(?ru:key_field(FromUserId, username), TxId),
+        {ok, [{from, FromUserId}]} = antidote_pvc_protocol:read_keys(?ru:key_field(CommentId, from), TxId),
+        {ok, [{username, FromUsername}]} = antidote_pvc_protocol:read_keys(?ru:key_field(FromUserId, username), TxId),
         {CommentId, FromUsername}
     end, CommentsToUser),
-    Commit = pvc:commit_transaction(TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -536,16 +536,16 @@ view_item_bid_hist(ItemId) ->
     SelfGrouping = ?ru:get_grouping(ItemId),
     OnItemIdIndex = ?ru:gen_index_name(SelfGrouping, bids_on_item_id),
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [{name, ItemName}]} = pvc:read_keys(?ru:key_field(ItemId, name), TxId),
-    {ok, BidsOnItem} = pvc_indices:read_index(OnItemIdIndex, ItemId, TxId),
+    {ok, [{name, ItemName}]} = antidote_pvc_protocol:read_keys(?ru:key_field(ItemId, name), TxId),
+    {ok, BidsOnItem} = antidote_pvc_indices:read_index(OnItemIdIndex, ItemId, TxId),
     BidInfo = lists:map(fun(BidId) ->
-        {ok, [{bidder, UserId}]} = pvc:read_keys(?ru:key_field(BidId, bidder), TxId),
-        {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
+        {ok, [{bidder, UserId}]} = antidote_pvc_protocol:read_keys(?ru:key_field(BidId, bidder), TxId),
+        {ok, [{username, Username}]} = antidote_pvc_protocol:read_keys(?ru:key_field(UserId, username), TxId),
         {BidId, Username}
     end, BidsOnItem),
-    Commit = pvc:commit_transaction(TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -573,21 +573,21 @@ store_buy_now(OnItemId, BuyerId, Quantity) ->
         {?ru:gen_key(SelfGrouping, buy_now, BuyNowId, quantity), {quantity, Quantity}}
     ],
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
 
     %% Insert the buy_now object and update the related index
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(BuyNowKey, TxId),
-    ok = pvc:update_keys(BuyNowObj, TxId),
-    ok = pvc_indices:index(BuyerIndex, BuyerId, BuyNowKey, TxId),
+    {ok, [<<>>]} = antidote_pvc_protocol:read_keys(BuyNowKey, TxId),
+    ok = antidote_pvc_protocol:update_keys(BuyNowObj, TxId),
+    ok = antidote_pvc_indices:index(BuyerIndex, BuyerId, BuyNowKey, TxId),
 
     %% Update the item quantity
     ItemQuantityKey = ?ru:key_field(OnItemId, quantity),
-    {ok, [{quantity, OldQty}]} = pvc:read_keys(ItemQuantityKey, TxId),
+    {ok, [{quantity, OldQty}]} = antidote_pvc_protocol:read_keys(ItemQuantityKey, TxId),
     NewQty = case OldQty - Quantity of N when N < 0 -> 0; M -> M end,
-    ok = pvc:update_keys({ItemQuantityKey, {quantity, NewQty}}, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    ok = antidote_pvc_protocol:update_keys({ItemQuantityKey, {quantity, NewQty}}, TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -618,27 +618,27 @@ store_bid(OnItemId, BidderId, Value) ->
         {?ru:gen_key(SelfGrouping, bids, BidId, price), {price, Value}}
     ],
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
 
     %% Insert the bid and update the related indices
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(BidKey, TxId),
+    {ok, [<<>>]} = antidote_pvc_protocol:read_keys(BidKey, TxId),
     %% FIXME(borja): There might be a pvc_bad_vc abort here
-    {ok, _} = pvc:read_keys(BidderId, TxId),
-    ok = pvc:update_keys(BidObj, TxId),
-    ok = pvc_indices:index(OnItemIdIndex, OnItemId, BidKey, TxId),
-    ok = pvc_indices:index(BidderIdIndex, BidderId, BidKey, TxId),
+    {ok, _} = antidote_pvc_protocol:read_keys(BidderId, TxId),
+    ok = antidote_pvc_protocol:update_keys(BidObj, TxId),
+    ok = antidote_pvc_indices:index(OnItemIdIndex, OnItemId, BidKey, TxId),
+    ok = antidote_pvc_indices:index(BidderIdIndex, BidderId, BidKey, TxId),
 
     %% Update the referenced item to track the number of bids
     NumBidKey = ?ru:key_field(OnItemId, num_bids),
     MaxBidKey = ?ru:key_field(OnItemId, max_bid),
-    {ok, [{num_bids, NBids}, {max_bid, OldMax}]} = pvc:read_keys([NumBidKey, MaxBidKey], TxId),
+    {ok, [{num_bids, NBids}, {max_bid, OldMax}]} = antidote_pvc_protocol:read_keys([NumBidKey, MaxBidKey], TxId),
     NewMax = max(OldMax, Value),
-    ok = pvc:update_keys([{NumBidKey, {num_bids, NBids + 1}},
+    ok = antidote_pvc_protocol:update_keys([{NumBidKey, {num_bids, NBids + 1}},
                           {MaxBidKey, {max_bid, NewMax}}], TxId),
 
-    Commit = pvc:commit_transaction(TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -669,21 +669,21 @@ store_comment(OnItemId, FromId, ToId, Rating, Body) ->
         {?ru:gen_key(SelfGrouping, comments, CommentId, body), {body, Body}}
     ],
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
 
     %% Insert the comment and update the related index
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(CommentKey, TxId),
-    ok = pvc:update_keys(CommentObj, TxId),
-    ok = pvc_indices:index(ToIdIndex, ToId, CommentKey, TxId),
+    {ok, [<<>>]} = antidote_pvc_protocol:read_keys(CommentKey, TxId),
+    ok = antidote_pvc_protocol:update_keys(CommentObj, TxId),
+    ok = antidote_pvc_indices:index(ToIdIndex, ToId, CommentKey, TxId),
 
     %% Update the referenced user to update the rating
     RatingKey = ?ru:key_field(ToId, rating),
-    {ok, [{rating, OldRating}]} = pvc:read_keys(RatingKey, TxId),
+    {ok, [{rating, OldRating}]} = antidote_pvc_protocol:read_keys(RatingKey, TxId),
     NewRating = OldRating + Rating,
-    ok = pvc:update_keys({RatingKey, {rating, NewRating}}, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    ok = antidote_pvc_protocol:update_keys({RatingKey, {rating, NewRating}}, TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -718,14 +718,14 @@ store_item(ItemName, Description, Quantity, CategoryId, SellerId) ->
         {?ru:gen_key(SelfGrouping, items, ItemId, category), {category, CategoryId}}
     ],
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
     %% Make sure we don't perform blind-writes
-    {ok, [<<>>]} = pvc:read_keys(ItemKey, TxId),
-    ok = pvc:update_keys(ItemObj, TxId),
-    ok = pvc_indices:index(CategoryIndex, CategoryId, ItemKey, TxId),
-    ok = pvc_indices:index(SellerIndex, SellerId, ItemKey, TxId),
-    Commit = pvc:commit_transaction(TxId),
+    {ok, [<<>>]} = antidote_pvc_protocol:read_keys(ItemKey, TxId),
+    ok = antidote_pvc_protocol:update_keys(ItemObj, TxId),
+    ok = antidote_pvc_indices:index(CategoryIndex, CategoryId, ItemKey, TxId),
+    ok = antidote_pvc_indices:index(SellerIndex, SellerId, ItemKey, TxId),
+    Commit = antidote_pvc_protocol:commit_transaction(TxId),
 
     case Commit of
         ?committed ->
@@ -739,13 +739,13 @@ about_me(UserId) ->
     UserGroup = ?ru:get_grouping(UserId),
     SellerIndex = ?ru:gen_index_name(UserGroup, items_seller_id),
 
-    {ok, TxId} = pvc:start_transaction(),
+    {ok, TxId} = antidote_pvc_protocol:start_transaction(),
     %% lager:info("{~p} ~p", [erlang:phash2(TxId), ?FUNCTION_NAME]),
-    {ok, [{username, Username}]} = pvc:read_keys(?ru:key_field(UserId, username), TxId),
+    {ok, [{username, Username}]} = antidote_pvc_protocol:read_keys(?ru:key_field(UserId, username), TxId),
 
     %% Get all the items sold by the given UserId
-    {ok, SoldItems} = pvc_indices:read_index(SellerIndex, UserId, TxId),
-    {ok, _ItemInfo} = pvc:read_keys(SoldItems, TxId),
+    {ok, SoldItems} = antidote_pvc_indices:read_index(SellerIndex, UserId, TxId),
+    {ok, _ItemInfo} = antidote_pvc_protocol:read_keys(SoldItems, TxId),
 
     UserDetails = case get_bought_items(UserId, TxId) of
         {error, _}=Err0 ->
@@ -772,7 +772,7 @@ about_me(UserId) ->
             DetailsErr;
 
         ok ->
-            case pvc:commit_transaction(TxId) of
+            case antidote_pvc_protocol:commit_transaction(TxId) of
                 ?committed ->
                     {ok, Username};
 
@@ -787,20 +787,20 @@ about_me(UserId) ->
 get_bought_items(UserId, TxId) ->
     UserGroup = ?ru:get_grouping(UserId),
     BuyerIndex = ?ru:gen_index_name(UserGroup, buy_now_buyer_id),
-    {ok, Bought} = pvc_indices:read_index(BuyerIndex, UserId, TxId),
+    {ok, Bought} = antidote_pvc_indices:read_index(BuyerIndex, UserId, TxId),
     map_error(fun(BuyNowId) ->
         OnItemKey = ?ru:key_field(BuyNowId, on_item),
         QuantityKey = ?ru:key_field(BuyNowId, quantity),
-        case pvc:read_keys([OnItemKey, QuantityKey], TxId) of
+        case antidote_pvc_protocol:read_keys([OnItemKey, QuantityKey], TxId) of
             {error, _}=Err ->
                 throw(Err);
 
             {ok, [{on_item, OnItemId}, {quantity, Quantity}]} ->
                 {ok, [{seller, SellerId},
-                      {name, ItemName}]} = pvc:read_keys([?ru:key_field(OnItemId, seller),
+                      {name, ItemName}]} = antidote_pvc_protocol:read_keys([?ru:key_field(OnItemId, seller),
                                                           ?ru:key_field(OnItemId, name)], TxId),
 
-                {ok, [{username, SellerUsername}]} = pvc:read_keys(?ru:key_field(SellerId, username), TxId),
+                {ok, [{username, SellerUsername}]} = antidote_pvc_protocol:read_keys(?ru:key_field(SellerId, username), TxId),
                 {SellerUsername, ItemName, Quantity}
         end
     end, Bought).
@@ -810,15 +810,15 @@ get_bought_items(UserId, TxId) ->
 get_bidded_items(UserId, TxId) ->
     UserGroup = ?ru:get_grouping(UserId),
     BidderIndex = ?ru:gen_index_name(UserGroup, bids_bidder_id),
-    {ok, PlacedBids} = pvc_indices:read_index(BidderIndex, UserId, TxId),
+    {ok, PlacedBids} = antidote_pvc_indices:read_index(BidderIndex, UserId, TxId),
     map_error(fun(BidId) ->
-        case pvc:read_keys(?ru:key_field(BidId, on_item), TxId) of
+        case antidote_pvc_protocol:read_keys(?ru:key_field(BidId, on_item), TxId) of
             {error, _}=Err ->
                 throw(Err);
 
             {ok, [{on_item, OnItemId}]} ->
-                {ok, [{seller, SellerId}]} = pvc:read_keys(?ru:key_field(OnItemId, seller), TxId),
-                {ok, [{username, SellerUsername}]} = pvc:read_keys(?ru:key_field(SellerId, username), TxId),
+                {ok, [{seller, SellerId}]} = antidote_pvc_protocol:read_keys(?ru:key_field(OnItemId, seller), TxId),
+                {ok, [{username, SellerUsername}]} = antidote_pvc_protocol:read_keys(?ru:key_field(SellerId, username), TxId),
                 {OnItemId, SellerUsername}
         end
     end, PlacedBids).
@@ -827,8 +827,8 @@ get_bidded_items(UserId, TxId) ->
 get_authored_comments(UserId, TxId) ->
     UserGroup = ?ru:get_grouping(UserId),
     CommentIndex = ?ru:gen_index_name(UserGroup, comments_to_id),
-    {ok, CommentsToUser} = pvc_indices:read_index(CommentIndex, UserId, TxId),
-    pvc:read_keys(CommentsToUser, TxId).
+    {ok, CommentsToUser} = antidote_pvc_indices:read_index(CommentIndex, UserId, TxId),
+    antidote_pvc_protocol:read_keys(CommentsToUser, TxId).
 
 %% Util functions
 

@@ -661,7 +661,7 @@ pvc_add_to_index_dict(Part, Key, Dict) ->
 -spec pvc_get_local_matching_keys(
     index_node(),
     key(),
-    pvc_indices:range(),
+    antidote_pvc_indices:range(),
     dict:dict()
 ) -> ordsets:ordset().
 
@@ -676,7 +676,7 @@ pvc_get_local_matching_keys(Partition, Root, Range, ToIndexDict) ->
                     Root ->
                         Acc;
                     _ ->
-                        case pvc_indices:in_range(Key, Range) of
+                        case antidote_pvc_indices:in_range(Key, Range) of
                             true ->
                                 ordsets:add_element(Key, Acc);
                             false ->

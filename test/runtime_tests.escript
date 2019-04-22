@@ -198,25 +198,25 @@ multiple_read(Node) ->
   end, lists:seq(1,100)),
 
   %% First, set up KeyA and KeyB to some base values
-  {ok, Tx0} = rpc:call(Node, pvc, start_transaction, []),
-  {ok, _} = rpc:call(Node, pvc, read_keys, [[KeyA, KeyB], Tx0]),
+  {ok, Tx0} = rpc:call(Node, antidote_pvc_protocol, start_transaction, []),
+  {ok, _} = rpc:call(Node, antidote_pvc_protocol, read_keys, [[KeyA, KeyB], Tx0]),
   ok = rpc:call(
     Node,
-    pvc,
+    antidote_pvc_protocol,
     update_keys,
     [[{KeyA, 0}, {KeyB, 0}], Tx0]
   ),
-  {ok, []} = rpc:call(Node, pvc, commit_transaction, [Tx0]),
+  {ok, []} = rpc:call(Node, antidote_pvc_protocol, commit_transaction, [Tx0]),
 
 
   %% Now, start two concurrent transactions, Tx1 and Tx2
-  {ok, Tx1} = rpc:call(Node, pvc, start_transaction, []),
+  {ok, Tx1} = rpc:call(Node, antidote_pvc_protocol, start_transaction, []),
 
   %% Tx2 will update KeyA and KeyB to some changed values
-  {ok, Tx2} = rpc:call(Node, pvc, start_transaction, []),
-  {ok, [ValA, ValB]} = rpc:call(Node, pvc, read_keys, [[KeyA, KeyB], Tx2]),
+  {ok, Tx2} = rpc:call(Node, antidote_pvc_protocol, start_transaction, []),
+  {ok, [ValA, ValB]} = rpc:call(Node, antidote_pvc_protocol, read_keys, [[KeyA, KeyB], Tx2]),
   ?assertEqual([0, 0], [ValA, ValB]),
-  ok = rpc:call(Node, pvc, update_keys, [[{KeyA, ValA + 1}, {KeyB, ValB + 1}], Tx2]),
+  ok = rpc:call(Node, antidote_pvc_protocol, update_keys, [[{KeyA, ValA + 1}, {KeyB, ValB + 1}], Tx2]),
 
   %% Now, concurrently, commit Tx2 and perform a slow read on Tx1
   %% Tx1 should either read both base values, or both changed values
@@ -224,7 +224,7 @@ multiple_read(Node) ->
 
   DelayCommitTx2 = fun(Pid) ->
     timer:sleep(1),
-    Commit = rpc:call(Node, pvc, commit_transaction, [Tx2]),
+    Commit = rpc:call(Node, antidote_pvc_protocol, commit_transaction, [Tx2]),
     Pid ! {delay, Commit}
   end,
 
@@ -232,11 +232,11 @@ multiple_read(Node) ->
   %% to change the key values on us
   AllKeys = [KeyA | FillerKeys] ++ [KeyB],
   ReadAll = fun(Pid) ->
-    {ok, ReadResult} = rpc:call(Node, pvc, read_keys, [AllKeys, Tx1]),
+    {ok, ReadResult} = rpc:call(Node, antidote_pvc_protocol, read_keys, [AllKeys, Tx1]),
     [ValA1 | _] = ReadResult,
     ValB1 = lists:last(ReadResult),
-    ok = rpc:call(Node, pvc, update_keys, [[{KeyA, ValA1 + 1}, {KeyB, ValB1 + 1}], Tx1]),
-    Commit = rpc:call(Node, pvc, commit_transaction, [Tx1]),
+    ok = rpc:call(Node, antidote_pvc_protocol, update_keys, [[{KeyA, ValA1 + 1}, {KeyB, ValB1 + 1}], Tx1]),
+    Commit = rpc:call(Node, antidote_pvc_protocol, commit_transaction, [Tx1]),
     Pid ! {read_all, ReadResult, Commit}
   end,
 

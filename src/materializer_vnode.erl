@@ -201,7 +201,7 @@ pvc_update_indices([K| _] = Keys) ->
     ).
 
 %% @doc Get the key range after Root with the given Prefix of size PrefixLen
--spec pvc_key_range(index_node(), key(), pvc_indices:range(), non_neg_integer()) -> list().
+-spec pvc_key_range(index_node(), key(), antidote_pvc_indices:range(), non_neg_integer()) -> list().
 pvc_key_range(IndexNode, Root, Range, Limit) ->
     riak_core_vnode_master:sync_command(
         IndexNode,
@@ -955,7 +955,7 @@ pvc_update_keys_internal(Partition, WriteSet, CommitVC, VLogCache) ->
 %%      This function will scan the index until `Limit` keys are added to the range,
 %%      or we hit the end of the table, whatever happens first.
 %%
--spec pvc_get_key_range(key(), pvc_indices:range(), non_neg_integer(), cache_id()) -> list().
+-spec pvc_get_key_range(key(), antidote_pvc_indices:range(), non_neg_integer(), cache_id()) -> list().
 pvc_get_key_range(Root, Range, Limit, PVC_Index) ->
     case ets:lookup(PVC_Index, Root) of
         [] ->
@@ -974,7 +974,7 @@ pvc_get_key_range(_, _Range, 0, _PVC_Index, Acc) ->
     Acc;
 
 pvc_get_key_range(Key, Range, Limit, PVC_Index, Acc) ->
-    case pvc_indices:in_range(Key, Range) of
+    case antidote_pvc_indices:in_range(Key, Range) of
         true ->
             NextKey = ets:next(PVC_Index, Key),
             pvc_get_key_range(NextKey, Range, Limit - 1, PVC_Index, [Key | Acc]);
