@@ -47,77 +47,27 @@ process_request(Name, Args) ->
             {reply, Any}
     end.
 
+process_request_internal('Ping', _) -> ok;
+
 process_request_internal('ConnectRequest', _) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    {ok, riak_core_ring:chash(Ring)};
-
-process_request_internal('ReadRequest', #{partition := Partition,
-                                          key := Key,
-                                          vc_aggr := VC,
-                                          has_read := HasRead}) ->
-
-    %% Force read to be local, client already determined the correct node
-    Received = os:timestamp(),
-    {Took, ok} = timer:tc(pvc_read_replica, async_read, [self(), Partition, Key, HasRead, VC]),
-    %% ok = pvc_read_replica:async_read(self(), Partition, Key, HasRead, VC),
-    WaitReceive = os:timestamp(),
-    receive
-        {error, Reason} ->
-            {error, Reason};
-
-        {ok, _Value, CommitVC, MaxVC} ->
-            ReceivedMsg = os:timestamp(),
-            {ok, #{rcv => Received,
-                   read_took => Took,
-                   wait_took => timer:now_diff(ReceivedMsg, WaitReceive),
-                   send => os:timestamp()}, CommitVC, MaxVC}
-    end;
-
-process_request_internal('Prepare', #{partition := Partition,
-                                      transaction_id := TxId,
-                                      writeset := Writeset,
-                                      partition_version := Version}) ->
-
-    ok = clocksi_vnode:pvc_prepare(self(), Partition, TxId, Writeset, Version),
-    receive
-        {error, Reason} ->
-            {error, Partition, Reason};
-        {ok, SeqNumber} ->
-            {ok, Partition, SeqNumber}
-    end;
-
-process_request_internal('Decide', #{partition := Partition,
-                                     transaction_id := TxId,
-                                     payload := Outcome}) ->
-
-    ok = clocksi_vnode:pvc_decide(Partition, TxId, Outcome),
-    noreply;
-
-
-process_request_internal('Ping', _) ->
-    ok;
+    antidote_pvc_protocol:connect();
 
 process_request_internal('Load', #{bin_size := Size}) ->
-    NewLastPrep = 1,
-    Val = crypto:strong_rand_bytes(Size),
+    antidote_pvc_protocol:load(Size);
 
-    ForceClock = lists:foldl(fun(Partition, Acc) ->
-        pvc_vclock:set_time(Partition, NewLastPrep, Acc)
-    end, pvc_vclock:new(), dc_utilities:get_all_partitions()),
+process_request_internal('ReadRequest', Args) ->
+    #{partition := Partition, key := Key, vc_aggr := VC, has_read := HasRead} = Args,
+    antidote_pvc_protocol:read_request(Partition, Key, VC, HasRead);
 
-    BottomValue = {Val, ForceClock},
-    %% Set the default value for reads
-    SetDefaultReply = dc_utilities:bcast_vnode_sync(materializer_vnode_master, {pvc_set_default, BottomValue}),
-    ok = lists:foreach(fun({_, ok}) -> ok end, SetDefaultReply),
+process_request_internal('Prepare', Args) ->
+    #{partition := Partition, transaction_id := TxId,
+     writeset := Writeset, partition_version := Version} = Args,
+    antidote_pvc_protocol:prepare(Partition, TxId, Writeset, Version);
 
-    %% Refresh all read replicas
-    RefreshReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, pvc_refresh_replicas),
-    ok = lists:foreach(fun({_, ok}) -> ok end, RefreshReply),
-
-    %% Force advance replica state
-    ForceStateReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, {pvc_unsafe_set_clock, NewLastPrep, ForceClock}),
-    ok = lists:foreach(fun({_, ok}) -> ok end, ForceStateReply),
-    ok;
+process_request_internal('Decide', Args) ->
+    #{partition := Partition, transaction_id := TxId, payload := Outcome} = Args,
+    ok = antidote_pvc_protocol:decide(Partition, TxId, Outcome),
+    noreply;
 
 %% Used for rubis load
 process_request_internal('PutRegion', #{region_name := Name}) ->
