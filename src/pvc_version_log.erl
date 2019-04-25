@@ -64,19 +64,16 @@ maybe_gc(Data) ->
     end.
 
 -spec get_smaller(pvc_vc(), vlog()) -> {val(), pvc_vc()}.
-get_smaller(VC, #vlog{at=Id, data=[{MaxTime, MaxVersion} | _]=Data}) ->
-    case Data of
-        [] ->
-            ?bottom;
+get_smaller(_VC, #vlog{data=[]}) ->
+    ?bottom;
 
-        _ ->
-            LookupKey = pvc_vclock:get_time(Id, VC),
-            case LookupKey > abs(MaxTime) of
-                true ->
-                    MaxVersion;
-                false ->
-                    get_smaller_internal(-LookupKey, Data)
-            end
+get_smaller(VC, #vlog{at=Id, data=[{MaxTime, MaxVersion} | _]=Data}) ->
+    LookupKey = pvc_vclock:get_time(Id, VC),
+    case LookupKey > abs(MaxTime) of
+        true ->
+            MaxVersion;
+        false ->
+            get_smaller_internal(-LookupKey, Data)
     end.
 
 -spec get_smaller_internal(integer(), versions()) -> {val(), pvc_vc()}.
