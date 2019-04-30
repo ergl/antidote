@@ -730,11 +730,13 @@ pvc_prepare_v2(ReplyTo, TxId, Writeset, Version, State = #state{
                 true -> pvc_conflict;
                 false -> pvc_stale_vc
             end,
+            ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {error, Reason}]),
             ReplyTo ! {error, Reason},
             State;
         false ->
             SeqNumber = pvc_faa_lastprep(PartitionState),
             NewCommitQueue = pvc_commit_queue:enqueue(TxId, Writeset, CommitQueue),
+            ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {ok, SeqNumber}]),
             ReplyTo ! {ok, SeqNumber},
             State#state{pvc_commitqueue=NewCommitQueue}
     end.

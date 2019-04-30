@@ -19,6 +19,7 @@
 %% -------------------------------------------------------------------
 
 -module(antidote_pvc_protocol).
+-include("debug_log.hrl").
 
 %% New API
 -export([connect/0,
@@ -100,8 +101,10 @@ prepare(Partition, TxId, WriteSet, PartitionVersion) ->
     ok = clocksi_vnode:pvc_prepare(self(), Partition, TxId, WriteSet, PartitionVersion),
     receive
         {error, Reason} ->
+            ?LAGER_LOG("Received ~p", [{error, Reason}]),
             {error, Partition, Reason};
         {ok, SeqNumber} ->
+            ?LAGER_LOG("Received ~p", [{ok, Partition, SeqNumber}]),
             {ok, Partition, SeqNumber}
     end.
 

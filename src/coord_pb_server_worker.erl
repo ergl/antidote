@@ -19,6 +19,7 @@
 %% -------------------------------------------------------------------
 
 -module(coord_pb_server_worker).
+-include("debug_log.hrl").
 
 -behaviour(gen_server).
 -behavior(ranch_protocol).
@@ -70,6 +71,7 @@ handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
     {HandlerMod, Type, Msg} = pvc_proto:decode_client_req(Request),
     case coord_pb_req_handler:process_request(Type, Msg) of
         {reply, Result} ->
+            ?LAGER_LOG("Sending back ~p", [Result]),
             Reply = pvc_proto:encode_serv_reply(HandlerMod, Type, Result),
             Transport:send(Socket, <<MessageID:IDLen, Reply/binary>>);
         noreply ->
