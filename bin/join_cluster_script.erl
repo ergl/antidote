@@ -32,7 +32,7 @@ parse_node_list([_|_]=NodeListString) ->
 -spec parse_node_config(ConfigFilePath :: string()) -> {ok, [atom()]} | error.
 parse_node_config(ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
-        {ok, [NodeNames]} ->
+        {ok, NodeNames} ->
             {ok, build_erlang_node_names(NodeNames)};
         _ ->
             error
