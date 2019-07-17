@@ -6,30 +6,13 @@
 
 -export([main/1]).
 
+main([NodeNanemListConfig]) ->
+    validate(parse_node_config(NodeNanemListConfig));
+
 main(NodesListString) ->
-    case parse_node_list(NodesListString) of
-        error ->
-            usage();
+    validate(parse_node_list(NodesListString)).
 
-        {ok, [_SingleNode]} ->
-            io:format("Single-node cluster, nothing to join"),
-            halt();
-
-        {ok, [MainNode | _] = Nodes} ->
-            io:format("Starting clustering of nodes ~p~n", [Nodes]),
-            lists:foreach(fun(N) -> erlang:set_cookie(N, antidote) end, Nodes),
-            ok = join_cluster(Nodes),
-            {_, BadNodes} = rpc:multicall(Nodes, inter_dc_manager, start_bg_processes, [stable], infinity),
-            case BadNodes of
-                [] ->
-                    ok = wait_until_master_ready(MainNode),
-                    io:format("Successfully joined nodes ~p~n", [Nodes]);
-                _ ->
-                    io:fwrite(standard_error, "start_bg_processes failed on ~p, aborting~n", [BadNodes]),
-                    halt(1)
-            end
-    end.
-
+%% @doc Parse a literal node list passed as argument
 -spec parse_node_list(list(string())) -> {ok, [node()]} | error.
 parse_node_list([]) ->
     error;
@@ -45,10 +28,48 @@ parse_node_list([_|_]=NodeListString) ->
         _:_ -> error
     end.
 
+%% @doc Parse node names from config file
+-spec parse_node_config(ConfigFilePath :: string()) -> {ok, [atom()]} | error.
+parse_node_config(ConfigFilePath) ->
+    case file:consult(ConfigFilePath) of
+        {ok, [NodeNames]} ->
+            {ok, build_erlang_node_names(NodeNames)};
+        _ ->
+            error
+    end.
+
+-spec build_erlang_node_names([atom()]) -> [atom()].
+build_erlang_node_names(NodeNames) ->
+    [begin
+         {ok, Addr} = inet:getaddr(Node, inet),
+         IPString = inet:ntoa(Addr),
+         list_to_atom("antidote@" ++ IPString)
+     end || Node <- NodeNames].
+
+%% @doc Validate parsing, then proceed
+validate(error) ->
+    usage();
+validate({ok, [_SingleNode]}) ->
+    io:format("Single-node cluster, nothing to join"),
+    halt();
+validate({ok, [MainNode | _] = Nodes}) ->
+    io:format("Starting clustering of nodes ~p~n", [Nodes]),
+    lists:foreach(fun(N) -> erlang:set_cookie(N, antidote) end, Nodes),
+    ok = join_cluster(Nodes),
+    {_, BadNodes} = rpc:multicall(Nodes, inter_dc_manager, start_bg_processes, [stable], infinity),
+    case BadNodes of
+        [] ->
+            ok = wait_until_master_ready(MainNode),
+            io:format("Successfully joined nodes ~p~n", [Nodes]);
+        _ ->
+            io:fwrite(standard_error, "start_bg_processes failed on ~p, aborting~n", [BadNodes]),
+            halt(1)
+    end.
+
 -spec usage() -> no_return().
 usage() ->
     Name = filename:basename(escript:script_name()),
-    io:fwrite(standard_error, "~s 'node_1@host_1' ... 'node_n@host_n'~n", [Name]),
+    io:fwrite(standard_error, "~s <config_file> | 'node_1@host_1' ... 'node_n@host_n'~n", [Name]),
     halt(1).
 
 %% @doc Build clusters out of the given node list
