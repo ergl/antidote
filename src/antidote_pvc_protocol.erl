@@ -39,7 +39,7 @@ connect() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     {ok, riak_core_ring:chash(Ring)}.
 
-%% @doc Force advance the system
+%% @doc Force advance the system. Will propagate to all nodes in the ring
 -spec load(non_neg_integer()) -> ok.
 load(Size) ->
     NewLastPrep = 1,
