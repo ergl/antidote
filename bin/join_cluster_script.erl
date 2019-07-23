@@ -29,6 +29,11 @@ parse_node_list([_|_]=NodeListString) ->
     end.
 
 %% @doc Parse node names from config file
+%%
+%% An example config file:
+%% ```nodes.config
+%% {nodes, ['apollo-1-1.imdea', 'apollo-2-2.imdea']}.
+%% ```
 -spec parse_node_config(ConfigFilePath :: string()) -> {ok, [atom()]} | error.
 parse_node_config(ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
