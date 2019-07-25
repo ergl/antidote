@@ -35,7 +35,7 @@ parse_node_list([_|_]=NodeListString) ->
 parse_node_config(ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {ok, Terms} ->
-            {clusters, ClusterMap} = lists:keyfind(nodes, 1, Terms),
+            {clusters, ClusterMap} = lists:keyfind(clusters, 1, Terms),
             NodeNames = lists:usort(lists:flatten(maps:values(ClusterMap))),
             {ok, build_erlang_node_names(NodeNames)};
         _ ->
