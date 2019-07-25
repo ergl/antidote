@@ -30,15 +30,13 @@ parse_node_list([_|_]=NodeListString) ->
 
 %% @doc Parse node names from config file
 %%
-%% An example config file:
-%% ```nodes.config
-%% {nodes, ['apollo-1-1.imdea', 'apollo-2-2.imdea']}.
-%% ```
+%% The config file is the same as the cluster definition.
 -spec parse_node_config(ConfigFilePath :: string()) -> {ok, [atom()]} | error.
 parse_node_config(ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {ok, Terms} ->
-            {nodes, NodeNames} = lists:keyfind(nodes, 1, Terms),
+            {clusters, ClusterMap} = lists:keyfind(nodes, 1, Terms),
+            NodeNames = lists:usort(lists:flatten(maps:values(ClusterMap))),
             {ok, build_erlang_node_names(NodeNames)};
         _ ->
             error
