@@ -64,6 +64,13 @@ process_request_internal('Prepare', Args) ->
      writeset := Writeset, partition_version := Version} = Args,
     antidote_pvc_protocol:prepare(Partition, TxId, Writeset, Version);
 
+process_request_internal('PrepareNode', Args) ->
+    #{transaction_id := TxId, prepares := PrepareMsgs} = Args,
+    [begin
+         #{partition := P, writeset := WS, version := Vsn} = Prepare,
+         antidote_pvc_protocol:prepare(P, TxId, WS, Vsn)
+     end || Prepare <- PrepareMsgs];
+
 process_request_internal('Decide', Args) ->
     #{partition := Partition, transaction_id := TxId, payload := Outcome} = Args,
     ok = antidote_pvc_protocol:decide(Partition, TxId, Outcome),
