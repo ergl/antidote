@@ -59,11 +59,6 @@ process_request_internal('ReadRequest', Args) ->
     #{partition := Partition, key := Key, vc_aggr := VC, has_read := HasRead} = Args,
     antidote_pvc_protocol:read_request(Partition, Key, VC, HasRead);
 
-process_request_internal('Prepare', Args) ->
-    #{partition := Partition, transaction_id := TxId,
-     writeset := Writeset, partition_version := Version} = Args,
-    antidote_pvc_protocol:prepare(Partition, TxId, Writeset, Version);
-
 process_request_internal('PrepareNode', Args) ->
     #{transaction_id := TxId, prepares := PrepareMsgs} = Args,
     [begin
