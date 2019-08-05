@@ -45,6 +45,8 @@
 
 -ignore_xref([start_vnode/1]).
 
+-define(TABLE_NAME, rubis_key_table).
+
 -record(state, {
     partition :: partition_id(),
     key_table :: cache_id()
@@ -52,7 +54,7 @@
 
 -spec next_id(index_node(), any()) -> non_neg_integer().
 next_id(Node, RubisTable) ->
-    TableName = table_name(Node, pvc_key_table),
+    TableName = table_name(Node, ?TABLE_NAME),
     case ets:info(TableName) of
         undefined ->
             riak_core_vnode_master:sync_command(Node, {faa, RubisTable}, rubis_keygen_vnode_master);
@@ -81,7 +83,7 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    KeyTable = ets:new(table_name(Partition, pvc_key_table), [set, public, named_table, {write_concurrency, true}]),
+    KeyTable = ets:new(table_name(Partition, ?TABLE_NAME), [set, public, named_table, {write_concurrency, true}]),
     {ok, #state{key_table = KeyTable,
                 partition = Partition}}.
 
