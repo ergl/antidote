@@ -65,25 +65,16 @@ init(_Args) ->
 
     PVCReplicaSup = ?CHILD(pvc_read_replica_sup, supervisor, []),
 
-    ClockSIMaster = { clocksi_vnode_master,
-                      {riak_core_vnode_master, start_link, [clocksi_vnode]},
-                      permanent, 5000, worker, [riak_core_vnode_master]},
-
-    ClockSIiTxCoordSup =  { clocksi_interactive_tx_coord_sup,
-                            {clocksi_interactive_tx_coord_sup, start_link, []},
-                            permanent, 5000, supervisor,
-                            [clockSI_interactive_tx_coord_sup]},
+    ClockSIMaster = ?VNODE(clocksi_vnode_master, clocksi_vnode),
+    ClockSIiTxCoordSup = {clocksi_interactive_tx_coord_sup,
+                          {clocksi_interactive_tx_coord_sup, start_link, []},
+                          permanent, 5000, supervisor,  [clockSI_interactive_tx_coord_sup]},
 
     ClockSIReadSup = {clocksi_readitem_sup,
                       {clocksi_readitem_sup, start_link, []},
-                      permanent, 5000, supervisor,
-                      [clocksi_readitem_sup]},
+                      permanent, 5000, supervisor, [clocksi_readitem_sup]},
 
-    MaterializerMaster = {materializer_vnode_master,
-                          {riak_core_vnode_master,  start_link,
-                           [materializer_vnode]},
-                          permanent, 5000, worker, [riak_core_vnode_master]},
-
+    MaterializerMaster = ?VNODE(materializer_vnode_master, materializer_vnode),
 
     BCounterManager = ?CHILD(bcounter_mgr, worker, []),
 
@@ -105,13 +96,11 @@ init(_Args) ->
 
     MetaDataSenderSup = {meta_data_sender_sup,
                          {meta_data_sender_sup, start_link, [stable_time_functions:export_funcs_and_vals()]},
-                         permanent, 5000, supervisor,
-                         [meta_data_sender_sup]},
+                         permanent, 5000, supervisor, [meta_data_sender_sup]},
 
     LogResponseReaderSup = {inter_dc_query_response_sup,
                             {inter_dc_query_response_sup, start_link, [?INTER_DC_QUERY_CONCURRENCY]},
-                            permanent, 5000, supervisor,
-                            [inter_dc_query_response_sup]},
+                            permanent, 5000, supervisor, [inter_dc_query_response_sup]},
 
 
     {ok,
