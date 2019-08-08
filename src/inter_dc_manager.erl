@@ -28,14 +28,14 @@
 -define(DC_CONNECT_RETRIES, 5).
 -define(DC_CONNECT_RETY_SLEEP, 1000).
 
--export([
-  get_descriptor/0,
-  start_bg_processes/1,
-  observe_dcs_sync/1,
-  dc_successfully_started/0,
-  check_node_restart/0,
-  forget_dcs/1,
-  drop_ping/1]).
+-export([get_descriptor/0,
+         start_bg_processes/1,
+         stop_read_replicas/0,
+         observe_dcs_sync/1,
+         dc_successfully_started/0,
+         check_node_restart/0,
+         forget_dcs/1,
+         drop_ping/1]).
 
 -spec get_descriptor() -> {ok, #descriptor{}}.
 get_descriptor() ->
@@ -147,6 +147,17 @@ start_read_replicas() ->
             dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers)
     end,
     ok = lists:foreach(fun({_, true}) -> ok end, Response).
+
+-spec stop_read_replicas() -> ok.
+stop_read_replicas() ->
+    case application:get_env(antidote, txn_prot) of
+        {ok, pvc} ->
+            lager:info("Stopping pvc read replicas"),
+            Resp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, stop_pvc_servers),
+            lists:foreach(fun({_, true}) -> ok end, Resp);
+        _ ->
+            ok
+    end.
 
 %% This should be called once the DC is up and running successfully
 %% It sets a flag on disk to true.  When this is true on fail and

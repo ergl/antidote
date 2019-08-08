@@ -22,6 +22,7 @@
 
 -include("antidote.hrl").
 -include("debug_log.hrl").
+-include("pvc.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 %% riak core callbacks
@@ -95,7 +96,10 @@
 
     pvc_atomic_state :: cache_id(),
     pvc_key_hit_miss_default :: term(),
-    pvc_commitqueue :: pvc_commit_queue:cqueue()
+    pvc_commitqueue :: pvc_commit_queue:cqueue(),
+
+    %% Timer reference for periodic dequeue
+    pvc_dequeue_timer = undefined :: timer:tref() | undefined
 }).
 
 %%%===================================================================
@@ -147,10 +151,21 @@ pvc_get_most_recent_vc(Node, TableName) ->
 pvc_process_cqueue(Partition) ->
     riak_core_vnode_master:command({Partition, node()}, pvc_process_cqueue, ?CLOCKSI_MASTER).
 
--spec pvc_process_cqueue_v2(partition_id()) -> ok.
-pvc_process_cqueue_v2(Partition) ->
-    ?LAGER_LOG("Process queue for ~p", [Partition]),
-    riak_core_vnode_master:command({Partition, node()}, pvc_process_cqueue_v2, ?CLOCKSI_MASTER).
+%% @doc Schedule a dequeue event in the vnode
+%%
+%%      This function will send a message to the Partition's vnode every
+%%      DEQUEUE_INTERVAL ms
+-spec schedule_dequeue_interval(partition_id()) -> {ok, timer:tref()}.
+schedule_dequeue_interval(Partition) ->
+    Args = [{Partition, node()}, pvc_dequeue_event, ?CLOCKSI_MASTER],
+    timer:apply_interval(?DEQUEUE_INTERVAL, riak_core_vnode_master,
+                                            command,
+                                            Args).
+
+-spec stop_dequeue_interval(timer:tref()) -> ok.
+stop_dequeue_interval(TRef) ->
+    {ok, cancel} = timer:cancel(TRef),
+    ok.
 
 %% @doc Return active transactions in prepare state with their preparetime for a given key
 %% should be run from same physical node
@@ -472,15 +487,22 @@ handle_command({pvc_unsafe_set_clock, Seq, MRVC}, _Sender, State = #state{partit
     {reply, ok, State#state{pvc_key_hit_miss_default=Seq}};
 
 %% @doc Start PVC-only read replicas
-handle_command(start_pvc_servers, _From, SD0=#state{partition=Partition, read_servers=Num}) ->
+handle_command(start_pvc_servers, _From, SD0=#state{partition=Partition, read_servers=Num, pvc_dequeue_timer=undefined}) ->
     ok = pvc_read_replica:start_replicas(Partition, Num),
     Result = pvc_read_replica:replica_ready(Partition, Num),
-    {reply, Result, SD0};
+    {ok, TRef} = schedule_dequeue_interval(Partition),
+    {reply, Result, SD0#state{pvc_dequeue_timer=TRef}};
 
 %% @doc Check that PVC-only read replicas are up
 handle_command(check_pvc_replicas_ready, _Sender, SD0=#state{partition=Partition, read_servers=Num}) ->
     Result = pvc_read_replica:replica_ready(Partition, Num),
     {reply, Result, SD0};
+
+%% @doc Stop PVC-only read replicas
+handle_command(stop_pvc_servers, _From, SD0=#state{partition=Partition, read_servers=Num, pvc_dequeue_timer=TRef}) ->
+    ok = pvc_read_replica:stop_replicas(Partition, Num),
+    ok = stop_dequeue_interval(TRef),
+    {reply, ok, SD0#state{pvc_dequeue_timer=undefined}};
 
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
@@ -502,7 +524,7 @@ handle_command({pvc_decide, Transaction, WriteSet, IndexList, CommitVC, Outcome}
     {noreply, State#state{pvc_commitqueue=NewQueue}};
 
 handle_command({pvc_decide_v2, TxId, Outcome}, _Sender, State) ->
-    NewQueue = pvc_decide_v2(TxId, Outcome, State),
+    NewQueue = pvc_decide_v2(TxId, Outcome, State#state.pvc_commitqueue),
     {noreply, State#state{pvc_commitqueue=NewQueue}};
 
 handle_command({pvc_abort, Transaction, WriteSet}, _Sender, State = #state{
@@ -511,6 +533,7 @@ handle_command({pvc_abort, Transaction, WriteSet}, _Sender, State = #state{
     ok = pvc_append_abort(Partition, Transaction#transaction.txn_id, WriteSet),
     {noreply, State};
 
+%% @deprecated
 handle_command(pvc_process_cqueue, _Sender, State = #state{partition = Partition,
                                                            pvc_commitqueue = CQueue,
                                                            committed_tx = CommittedTx,
@@ -552,8 +575,8 @@ handle_command(pvc_process_cqueue, _Sender, State = #state{partition = Partition
     end,
     {noreply, State#state{pvc_commitqueue = NewQueue}};
 
-handle_command(pvc_process_cqueue_v2, _Sender, State) ->
-    NewQueue = pvc_process_cqueue_v2_internal(State),
+handle_command(pvc_dequeue_event, _Sender, State) ->
+    NewQueue = pvc_dequeue_event_internal(State),
     {noreply, State#state{pvc_commitqueue=NewQueue}};
 
 %% @doc This is the only partition being updated by a transaction,
@@ -850,8 +873,8 @@ pvc_decide(Transaction, WriteSet, IndexList, CommitVC, Outcome, #state{partition
             ReadyQueue
     end.
 
--spec pvc_decide_v2(term(), abort | {ok, pvc_vc()}, #state{}) -> pvc_commit_queue:cqueue().
-pvc_decide_v2(TxId, Outcome, #state{partition=SelfPartition, pvc_commitqueue=CommitQueue}) ->
+-spec pvc_decide_v2(term(), abort | {ok, pvc_vc()}, pvc_commit_queue:cqueue()) -> pvc_commit_queue:cqueue().
+pvc_decide_v2(TxId, Outcome, CommitQueue) ->
     case Outcome of
         abort ->
             ?LAGER_LOG("Abort: Removing ~p from CommitQueue", [TxId]),
@@ -859,16 +882,14 @@ pvc_decide_v2(TxId, Outcome, #state{partition=SelfPartition, pvc_commitqueue=Com
         {ok, CommitVC} ->
             %% TODO(borja/pvc-ccoord): Don't pass empty index, remove
             ?LAGER_LOG("Commit: Mark ~p as ready", [TxId]),
-            ReadyQueue = pvc_commit_queue:ready(TxId, [], CommitVC, CommitQueue),
-            ok = pvc_process_cqueue_v2(SelfPartition),
-            ReadyQueue
+            pvc_commit_queue:ready(TxId, [], CommitVC, CommitQueue)
     end.
 
--spec pvc_process_cqueue_v2_internal(#state{}) -> pvc_commit_queue:cqueue().
-pvc_process_cqueue_v2_internal(#state{partition = Partition,
-                                      pvc_commitqueue=CommitQueue,
-                                      pvc_atomic_state = PartitionState,
-                                      committed_tx = VLogLastCache}) ->
+-spec pvc_dequeue_event_internal(#state{}) -> pvc_commit_queue:cqueue().
+pvc_dequeue_event_internal(#state{partition = Partition,
+                                  pvc_commitqueue=CommitQueue,
+                                  pvc_atomic_state = PartitionState,
+                                  committed_tx = VLogLastCache}) ->
 
     {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(CommitQueue),
     ok = case ReadyTx of
