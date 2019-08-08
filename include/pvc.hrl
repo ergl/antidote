@@ -26,4 +26,4 @@
 -define(COORD_PB_PORT, 7878).
 
 %% Defines how often partition vnodes try to dequeue ready transactions
--define(DEQUEUE_INTERVAL, 1000).
+-define(DEQUEUE_INTERVAL, 5).
