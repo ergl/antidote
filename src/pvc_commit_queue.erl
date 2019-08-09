@@ -51,8 +51,7 @@
          remove/2,
          contains_disputed/2]).
 
-%% TODO(borja): Use a different structure for this
-%% See the parallel prepare brainstorming for ideas
+%% @deprecated See pvc_pending_keys on clocksi_vnode
 -spec contains_disputed(writeset(), cqueue()) -> boolean().
 contains_disputed(WS, #cqueue{write_sets = WriteSets}) ->
     is_ws_disputed(maps:to_list(WriteSets), WS).
@@ -81,7 +80,11 @@ ready(TxId, IndexList, VC, CQueue = #cqueue{
             CQueue#cqueue{ready_tx = ReadyMap#{TxId => {VC, IndexList}}}
     end.
 
--spec remove(txid(), cqueue()) -> cqueue().
+%% @doc Remove a transaction from the queue.
+%%      If the transaction is present, also return its writeset,
+%%      so we can remove it from the pending key table.
+%%
+-spec remove(txid(), cqueue()) -> {writeset(), cqueue()}.
 remove(TxId, CQueue = #cqueue{
     q = Queue,
     write_sets = WriteSets,
@@ -89,10 +92,11 @@ remove(TxId, CQueue = #cqueue{
 }) ->
     case queue:member(TxId, Queue) of
         false ->
-            CQueue;
+            {#{}, CQueue};
         true ->
-            CQueue#cqueue{write_sets = maps:remove(TxId, WriteSets),
-                          discarded_tx = sets:add_element(TxId, DiscardedSet)}
+            {WriteSet, NewWriteSet} = maps:take(TxId, WriteSets),
+            {WriteSet, CQueue#cqueue{write_sets = NewWriteSet,
+                                     discarded_tx = sets:add_element(TxId, DiscardedSet)}}
     end.
 
 -spec dequeue_ready(cqueue()) -> {[{txid(), writeset(), pvc_vc(), list()}], cqueue()}.
@@ -180,7 +184,7 @@ pvc_commit_queue_conflict_test() ->
 
     CQ3 = pvc_commit_queue:enqueue(id2, TestWS1, CQ2),
     %% Intersect does not take removed ids into account
-    CQ4 = pvc_commit_queue:remove(id2, CQ3),
+    {_, CQ4} = pvc_commit_queue:remove(id2, CQ3),
     ?assertEqual(false, pvc_commit_queue:contains_disputed(TestWS1, CQ4)).
 
 pvc_commit_queue_ready_same_test() ->
@@ -206,7 +210,7 @@ pvc_commit_queue_ready_skip_test() ->
     CQ3 = pvc_commit_queue:enqueue(id2, #{}, CQ2),
 
     CQ4 = pvc_commit_queue:ready(id2, [], ignore, CQ3),
-    CQ5 = pvc_commit_queue:remove(id1, CQ4),
+    {_, CQ5} = pvc_commit_queue:remove(id1, CQ4),
 
     {Elts, CQ6} = pvc_commit_queue:dequeue_ready(CQ5),
     ?assertEqual([], Elts),
@@ -219,7 +223,7 @@ pvc_commit_queue_ready_skip_test() ->
     ?assertMatch([{id, #{}, ignore, []}, {id2, #{}, ignore, []}], Elts1),
 
     %% id1 is gone forever, queue stays the same
-    CQ9 = pvc_commit_queue:remove(id1, CQ8),
+    {_, CQ9} = pvc_commit_queue:remove(id1, CQ8),
     ?assertEqual(CQ9, CQ8),
 
     %% the queue should be empty now

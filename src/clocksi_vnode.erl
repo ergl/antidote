@@ -97,6 +97,7 @@
     pvc_atomic_state :: cache_id(),
     pvc_key_hit_miss_default :: term(),
     pvc_commitqueue :: pvc_commit_queue:cqueue(),
+    pvc_pending_keys :: cache_id(),
 
     %% Timer reference for periodic dequeue
     pvc_dequeue_timer = undefined :: timer:tref() | undefined
@@ -348,6 +349,9 @@ init([Partition]) ->
 
     PVCTable = pvc_atomic_state_init(Partition),
     CommitQueue = pvc_commit_queue:new(),
+    PendingKeys = open_table(Partition,
+                             pvc_pending_keys,
+                             [bag, protected, named_table]),
 
     {ok, #state{
         partition = Partition,
@@ -358,7 +362,8 @@ init([Partition]) ->
 
         pvc_atomic_state = PVCTable,
         pvc_key_hit_miss_default = 0,
-        pvc_commitqueue = CommitQueue
+        pvc_commitqueue = CommitQueue,
+        pvc_pending_keys = PendingKeys
     }}.
 
 %% @doc The table holding the prepared transactions is shared with concurrent
@@ -523,8 +528,9 @@ handle_command({pvc_decide, Transaction, WriteSet, IndexList, CommitVC, Outcome}
     NewQueue = pvc_decide(Transaction, WriteSet, IndexList, CommitVC, Outcome, State),
     {noreply, State#state{pvc_commitqueue=NewQueue}};
 
-handle_command({pvc_decide_v2, TxId, Outcome}, _Sender, State) ->
-    NewQueue = pvc_decide_v2(TxId, Outcome, State#state.pvc_commitqueue),
+handle_command({pvc_decide_v2, TxId, Outcome}, _Sender, State=#state{pvc_commitqueue=CommitQueue,
+                                                                     pvc_pending_keys=PendingKeys}) ->
+    NewQueue = pvc_decide_v2(TxId, Outcome, CommitQueue, PendingKeys),
     {noreply, State#state{pvc_commitqueue=NewQueue}};
 
 handle_command({pvc_abort, Transaction, WriteSet}, _Sender, State = #state{
@@ -745,26 +751,31 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
 
 pvc_prepare_v2(ReplyTo, TxId, Writeset, Version, State = #state{
     pvc_commitqueue = CommitQueue,
+    pvc_pending_keys = PendingKeys,
     pvc_atomic_state = PartitionState,
     pvc_key_hit_miss_default = DefaultLastVersion,
     committed_tx = VLogLastCache
 }) ->
-    Disputed = pvc_commit_queue:contains_disputed(Writeset, CommitQueue),
-    ?LAGER_LOG("~p disputed = ~p", [TxId, Disputed]),
-    StaleTx = pvc_are_keys_stale(maps:keys(Writeset), Version, VLogLastCache, DefaultLastVersion),
-    ?LAGER_LOG("~p stale = ~p", [TxId, StaleTx]),
-    case Disputed orelse StaleTx of
-        true ->
-            Reason = case Disputed of
-                true -> pvc_conflict;
-                false -> pvc_stale_vc
-            end,
-            ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {error, Reason}]),
-            ReplyTo ! {error, Reason},
+
+    WriteSetKeys = maps:keys(Writeset),
+    Valid = pvc_valid_tx_keys(WriteSetKeys,
+                              Version,
+                              PendingKeys,
+                              VLogLastCache,
+                              DefaultLastVersion),
+
+    case Valid of
+        {error, _}=Err ->
+            ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, Err]),
+            ReplyTo ! Err,
             State;
-        false ->
+
+        true ->
             SeqNumber = pvc_faa_lastprep(PartitionState),
             NewCommitQueue = pvc_commit_queue:enqueue(TxId, Writeset, CommitQueue),
+
+            %% Mark the new keys as pending in the commitqueue
+            true = ets:insert(PendingKeys, [{Key, TxId} || Key <- WriteSetKeys]),
             ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {ok, SeqNumber}]),
             ReplyTo ! {ok, SeqNumber},
             State#state{pvc_commitqueue=NewCommitQueue}
@@ -817,28 +828,44 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     Msg = {pvc_vote, Partition, Vote, Seq},
     {Msg, NewState}.
 
-%% @doc Check if any of the keys in a transaction writeset are too stale with
-%%      respect to the most recent committed version.
+%% @doc Check if this key is not present in the commit queue, or too stale
+%%      compared to the its stored version in the database.
 %%
--spec pvc_are_keys_stale([key(), ...], pvc_vc(), cache_id(), non_neg_integer()) -> boolean().
-pvc_are_keys_stale([], _, _, _) ->
-    false;
+-spec pvc_key_clean_check(Key :: key(),
+                          Version :: non_neg_integer(),
+                          PendingKeys :: cache_id(),
+                          VLogLastCache :: cache_id(),
+                          DefaultTime :: non_neg_integer()) -> true | {error, atom()}.
 
-pvc_are_keys_stale([Key | Rest], Version, VLogLastCache, DefaultTime) ->
-    Stale = case ets:lookup(VLogLastCache, Key) of
-        [] ->
-            DefaultTime > Version;
-
-        [{Key, CommitTime}] ->
-            CommitTime > Version
-    end,
-    case Stale of
+pvc_key_clean_check(Key, Version, PendingKeys, VLogLastCache, DefaultTime) ->
+    Disputed = ets:member(PendingKeys, Key),
+    case Disputed of
         true ->
-            true;
+            {error, pvc_conflict};
         false ->
-            pvc_are_keys_stale(Rest, Version, VLogLastCache, DefaultTime)
+            StoredVersion = try ets:lookup_element(VLogLastCache, Key, 2) catch _:_ -> DefaultTime end,
+            Stale = StoredVersion > Version,
+            case Stale of
+                true -> {error, pvc_stale_vc};
+                false -> true
+            end
     end.
 
+-spec pvc_valid_tx_keys([key(), ...], non_neg_integer(), cache_id(), cache_id(), non_neg_integer()) -> true | {error, atom()}.
+pvc_valid_tx_keys([], _Version, _PendingKeys, _VLogLastCache, _DefaultTime) ->
+    true;
+
+pvc_valid_tx_keys([Key | Rest], Version, PendingKeys, VLogLastCache, DefaultTime) ->
+    case pvc_key_clean_check(Key, Version, PendingKeys, VLogLastCache, DefaultTime) of
+        {error, _}=Err ->
+            Err;
+        true ->
+            pvc_valid_tx_keys(Rest, Version, PendingKeys, VLogLastCache, DefaultTime)
+    end.
+
+%% @deprecated
+%% @doc Check if any of the keys in a transaction writeset are too stale with
+%%      respect to the most recent committed version
 -spec pvc_are_keys_stale(partition_id(), list(key()), pvc_vc(), cache_id(), non_neg_integer()) -> boolean().
 pvc_are_keys_stale(_, [], _, _, _) ->
     false;
@@ -879,12 +906,18 @@ pvc_decide(Transaction, WriteSet, IndexList, CommitVC, Outcome, #state{partition
             ReadyQueue
     end.
 
--spec pvc_decide_v2(term(), abort | {ok, pvc_vc()}, pvc_commit_queue:cqueue()) -> pvc_commit_queue:cqueue().
-pvc_decide_v2(TxId, Outcome, CommitQueue) ->
+-spec pvc_decide_v2(TxId :: term(),
+                    Outcome :: abort | {ok, pvc_vc()},
+                    CommitQueue :: pvc_commit_queue:cqueue(),
+                    PendingKeys :: cache_id()) -> pvc_commit_queue:cqueue().
+
+pvc_decide_v2(TxId, Outcome, CommitQueue, PendingKeys) ->
     case Outcome of
         abort ->
             ?LAGER_LOG("Abort: Removing ~p from CommitQueue", [TxId]),
-            pvc_commit_queue:remove(TxId, CommitQueue);
+            {WriteSet, CQueue} = pvc_commit_queue:remove(TxId, CommitQueue),
+            ok = pvc_remove_pending(maps:keys(WriteSet), TxId, PendingKeys),
+            CQueue;
         {ok, CommitVC} ->
             %% TODO(borja/pvc-ccoord): Don't pass empty index, remove
             ?LAGER_LOG("Commit: Mark ~p as ready", [TxId]),
@@ -894,6 +927,7 @@ pvc_decide_v2(TxId, Outcome, CommitQueue) ->
 -spec pvc_dequeue_event_internal(#state{}) -> pvc_commit_queue:cqueue().
 pvc_dequeue_event_internal(#state{partition = Partition,
                                   pvc_commitqueue=CommitQueue,
+                                  pvc_pending_keys = PendingKeys,
                                   pvc_atomic_state = PartitionState,
                                   committed_tx = VLogLastCache}) ->
 
@@ -907,6 +941,7 @@ pvc_dequeue_event_internal(#state{partition = Partition,
             ok = lists:foreach(fun({TxId, WriteSet, CommitVC, _IndexList}) ->
                 ?LAGER_LOG("Processing ~p, update materializer", [TxId]),
 
+                %% Persist the writeset in storage
                 ok = materializer_vnode:pvc_update_keys(Partition, WriteSet, CommitVC),
 
                 %% Update current MRVC
@@ -919,18 +954,33 @@ pvc_dequeue_event_internal(#state{partition = Partition,
                 ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
                 ok = logging_vnode:pvc_insert_to_commit_log(Partition, CommitVC),
 
+                WriteSetKeys = maps:keys(WriteSet),
+
                 %% Cache VLog.last(key)
                 ?LAGER_LOG("Processing ~p, cache VLog.last", [TxId]),
                 CommitTime = pvc_vclock:get_time(Partition, CommitVC),
-                ok = pvc_cache_last_value(WriteSet, CommitTime, VLogLastCache)
+                ok = pvc_cache_last_value(WriteSetKeys, CommitTime, VLogLastCache),
+
+                %% Remove the keys from the pending table
+                %% NOTE: Don't try to optimize by fusing this loop with the previous
+                %% function. We want the changes to the VLog to be visible before
+                %% removing the key from the pending table. Since Erlang doesn't offer
+                %% an atomic multi-object ets:delete_object/2, we have to do it the old way.
+                ok = pvc_remove_pending(WriteSetKeys, TxId, PendingKeys)
             end, Entries)
     end,
     NewQueue.
 
--spec pvc_cache_last_value(#{key() => val()}, non_neg_integer(), cache_id()) -> ok.
-pvc_cache_last_value(WriteSet, CommitTime, VLogCache) ->
-    Objects = [{Key, CommitTime} || Key <- maps:keys(WriteSet)],
+-spec pvc_cache_last_value([key(), ...], non_neg_integer(), cache_id()) -> ok.
+pvc_cache_last_value(Keys, CommitTime, VLogCache) ->
+    Objects = [{Key, CommitTime} || Key <- Keys],
     true = ets:insert(VLogCache, Objects),
+    ok.
+
+-spec pvc_remove_pending([key(), ...], term(), cache_id()) -> ok.
+pvc_remove_pending(Keys, TxId, PendingKeys) ->
+    %% ets:delete_object/2 doesn't support batch deletion like insert
+    _ = [ets:delete_object(PendingKeys, {Key, TxId}) || Key <- Keys],
     ok.
 
 %% @deprecated
