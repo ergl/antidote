@@ -179,7 +179,7 @@ pvc_update(Payload = #clocksi_payload{key = Key}) ->
         materializer_vnode_master
     ).
 
--spec pvc_update_keys(partition(), pvc_writeset:ws(key(), val()), pvc_vc()) -> ok | {error, reason()}.
+-spec pvc_update_keys(partition(), #{key() => val()}, pvc_vc()) -> ok | {error, reason()}.
 pvc_update_keys(Partition, Writeset, CommitVC) ->
     riak_core_vnode_master:sync_command(
         {Partition, node()},
@@ -925,16 +925,16 @@ pvc_update_ops_bypass(Payload, #mat_state{partition = Partition,
     true = ets:insert(VLogCache, {Key, NextVersionLog}),
     ok.
 
--spec pvc_update_keys_internal(partition_id(), pvc_writeset:ws(key(), val()), pvc_vc(), cache_id()) -> ok.
+-spec pvc_update_keys_internal(partition_id(), #{key() => val()}, pvc_vc(), cache_id()) -> ok.
 pvc_update_keys_internal(Partition, WriteSet, CommitVC, VLogCache) ->
-    Objects = lists:map(fun({Key, Value}) ->
+    Objects = maps:fold(fun(Key, Value, Acc) ->
         VersionLog = case ets:lookup(VLogCache, Key) of
             [] -> pvc_version_log:new(Partition);
             [{Key, PrevVLog}] -> PrevVLog
         end,
         NewVlog = pvc_version_log:insert(CommitVC, Value, VersionLog),
-        {Key, NewVlog}
-    end, WriteSet),
+        [{Key, NewVlog} | Acc]
+    end, [], WriteSet),
     true = ets:insert(VLogCache, Objects),
     ok.
 

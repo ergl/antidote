@@ -737,6 +737,12 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
             end
     end.
 
+-spec pvc_prepare_v2(ReplyTo :: pid(),
+                     TxId :: term(),
+                     WriteSet :: #{key() => val()},
+                     Version :: non_neg_integer(),
+                     State :: #state{}) -> #state{}.
+
 pvc_prepare_v2(ReplyTo, TxId, Writeset, Version, State = #state{
     pvc_commitqueue = CommitQueue,
     pvc_atomic_state = PartitionState,
@@ -745,7 +751,7 @@ pvc_prepare_v2(ReplyTo, TxId, Writeset, Version, State = #state{
 }) ->
     Disputed = pvc_commit_queue:contains_disputed(Writeset, CommitQueue),
     ?LAGER_LOG("~p disputed = ~p", [TxId, Disputed]),
-    StaleTx = pvc_are_keys_stale(pvc_writeset:to_list(Writeset), Version, VLogLastCache, DefaultLastVersion),
+    StaleTx = pvc_are_keys_stale(maps:keys(Writeset), Version, VLogLastCache, DefaultLastVersion),
     ?LAGER_LOG("~p stale = ~p", [TxId, StaleTx]),
     case Disputed orelse StaleTx of
         true ->
@@ -921,9 +927,9 @@ pvc_dequeue_event_internal(#state{partition = Partition,
     end,
     NewQueue.
 
--spec pvc_cache_last_value(pvc_writeset:ws(key(), val()), non_neg_integer(), cache_id()) -> ok.
+-spec pvc_cache_last_value(#{key() => val()}, non_neg_integer(), cache_id()) -> ok.
 pvc_cache_last_value(WriteSet, CommitTime, VLogCache) ->
-    Objects = [{Key, CommitTime} || {Key, _} <- pvc_writeset:to_list(WriteSet)],
+    Objects = [{Key, CommitTime} || Key <- maps:keys(WriteSet)],
     true = ets:insert(VLogCache, Objects),
     ok.
 
