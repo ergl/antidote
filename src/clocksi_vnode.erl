@@ -820,11 +820,11 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
 %% @doc Check if any of the keys in a transaction writeset are too stale with
 %%      respect to the most recent committed version.
 %%
--spec pvc_are_keys_stale(list(key()), pvc_vc(), cache_id(), non_neg_integer()) -> boolean().
+-spec pvc_are_keys_stale([key(), ...], pvc_vc(), cache_id(), non_neg_integer()) -> boolean().
 pvc_are_keys_stale([], _, _, _) ->
     false;
 
-pvc_are_keys_stale([{Key, _} | Rest], Version, VLogLastCache, DefaultTime) ->
+pvc_are_keys_stale([Key | Rest], Version, VLogLastCache, DefaultTime) ->
     Stale = case ets:lookup(VLogLastCache, Key) of
         [] ->
             DefaultTime > Version;
