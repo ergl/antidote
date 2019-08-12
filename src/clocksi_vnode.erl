@@ -95,8 +95,14 @@
     prepared_dict :: orddict:orddict(),
 
     pvc_atomic_state :: cache_id(),
-    pvc_key_hit_miss_default :: term(),
+    %% The default VLog.last(key).vid[partition],
+    %% useful for emulating database load.
+    %% Tells the client what is the most recent version of a key.
+    pvc_key_miss_default_version :: non_neg_integer(),
     pvc_commitqueue :: pvc_commit_queue:cqueue(),
+    %% A set populated with all the keys currently present in the commit queue
+    %% mapping key() => tx_id(), Cleaned on marking a transaction as aborted,
+    %% or when it gets dequeued.
     pvc_pending_keys :: cache_id(),
 
     %% Timer reference for periodic dequeue
@@ -361,7 +367,7 @@ init([Partition]) ->
         prepared_dict = orddict:new(),
 
         pvc_atomic_state = PVCTable,
-        pvc_key_hit_miss_default = 0,
+        pvc_key_miss_default_version = 0,
         pvc_commitqueue = CommitQueue,
         pvc_pending_keys = PendingKeys
     }}.
@@ -489,7 +495,7 @@ handle_command(pvc_refresh_replicas, _Sender, State = #state{partition=Partition
 handle_command({pvc_unsafe_set_clock, Seq, MRVC}, _Sender, State = #state{partition=Partition, pvc_atomic_state=PVCState}) ->
     true = ets:insert(PVCState, [{seq_number, Seq}, {mrvc, MRVC}]),
     ok = logging_vnode:pvc_insert_to_commit_log(Partition, MRVC),
-    {reply, ok, State#state{pvc_key_hit_miss_default=Seq}};
+    {reply, ok, State#state{pvc_key_miss_default_version=Seq}};
 
 %% @doc Start PVC-only read replicas
 handle_command(start_pvc_servers, _From, SD0=#state{partition=Partition, read_servers=Num, pvc_dequeue_timer=undefined}) ->
@@ -753,7 +759,7 @@ pvc_prepare_v2(ReplyTo, TxId, Writeset, Version, State = #state{
     pvc_commitqueue = CommitQueue,
     pvc_pending_keys = PendingKeys,
     pvc_atomic_state = PartitionState,
-    pvc_key_hit_miss_default = DefaultLastVersion,
+    pvc_key_miss_default_version = DefaultLastVersion,
     committed_tx = VLogLastCache
 }) ->
 
@@ -787,7 +793,7 @@ pvc_prepare(Transaction = #transaction{txn_id = TxnId}, WriteSet, State = #state
     committed_tx = CommittedTransactions,
 
     pvc_atomic_state = PVCState,
-    pvc_key_hit_miss_default = KeyHitDefault,
+    pvc_key_miss_default_version = KeyHitDefault,
     pvc_commitqueue = CommitQueue
 }) ->
 
