@@ -515,6 +515,12 @@ handle_command(stop_pvc_servers, _From, SD0=#state{partition=Partition, read_ser
     ok = stop_dequeue_interval(TRef),
     {reply, ok, SD0#state{pvc_dequeue_timer=undefined}};
 
+%% @doc Flush commit queues for easy restart without flushing the main memory
+%%      WARNING: Use only for debugging
+handle_command(pvc_flush_commit_queue, _From, SD0=#state{pvc_pending_keys=PendingKeys}) ->
+    true = ets:delete_all_objects(PendingKeys),
+    {reply, ok, SD0#state{pvc_commitqueue=pvc_commit_queue:new()}};
+
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
 

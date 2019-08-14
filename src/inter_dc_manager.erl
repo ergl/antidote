@@ -31,6 +31,7 @@
 -export([get_descriptor/0,
          start_bg_processes/1,
          stop_read_replicas/0,
+         flush_pvc_commit_queues/0,
          observe_dcs_sync/1,
          dc_successfully_started/0,
          check_node_restart/0,
@@ -154,7 +155,18 @@ stop_read_replicas() ->
         {ok, pvc} ->
             lager:info("Stopping pvc read replicas"),
             Resp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, stop_pvc_servers),
-            lists:foreach(fun({_, true}) -> ok end, Resp);
+            lists:foreach(fun({_, ok}) -> ok end, Resp);
+        _ ->
+            ok
+    end.
+
+-spec flush_pvc_commit_queues() -> ok.
+flush_pvc_commit_queues() ->
+    case application:get_env(antidote, txn_prot) of
+        {ok, pvc} ->
+            lager:info("Stopping pvc read replicas"),
+            Resp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, pvc_flush_commit_queue),
+            lists:foreach(fun({_, ok}) -> ok end, Resp);
         _ ->
             ok
     end.
