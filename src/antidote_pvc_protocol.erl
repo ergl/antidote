@@ -97,6 +97,11 @@ read_request(Partition, Key, VCaggr, HasRead) ->
     end.
 -endif.
 
+-ifdef(empty_2pc).
+prepare(Partition, TxId, _, _) ->
+    ?LAGER_LOG("{empty_prepare, ~p}", [TxId]),
+    {ok, Partition, 1}.
+-else.
 prepare(Partition, TxId, WriteSet, PartitionVersion) ->
     ok = clocksi_vnode:pvc_prepare(self(), Partition, TxId, WriteSet, PartitionVersion),
     receive
@@ -107,9 +112,16 @@ prepare(Partition, TxId, WriteSet, PartitionVersion) ->
             ?LAGER_LOG("Received ~p", [{ok, Partition, SeqNumber}]),
             {ok, Partition, SeqNumber}
     end.
+-endif.
 
+-ifdef(empty_2pc).
+decide(_Partition, TxId, _) ->
+    ?LAGER_LOG("{empty_decide, ~p}", [TxId]),
+    ok.
+-else.
 decide(Partition, TxId, Outcome) ->
     clocksi_vnode:pvc_decide(Partition, TxId, Outcome).
+-endif.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
