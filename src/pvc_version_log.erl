@@ -25,7 +25,7 @@
 
 -define(bottom, {<<>>, pvc_vclock:new()}).
 
--type versions() :: orddict:dict(integer(), {val(), pvc_vc()}).
+-type versions() :: orddict:dict(neg_integer(), {val(), pvc_vc()}).
 
 -record(vlog, {
     %% The partition where this structure resides
@@ -76,7 +76,7 @@ get_smaller(VC, #vlog{at=Id, data=[{MaxTime, MaxVersion} | _]=Data}) ->
             get_smaller_internal(-LookupKey, Data)
     end.
 
--spec get_smaller_internal(integer(), versions()) -> {val(), pvc_vc()}.
+-spec get_smaller_internal(neg_integer(), versions()) -> {val(), pvc_vc()}.
 get_smaller_internal(_, []) ->
     ?bottom;
 
