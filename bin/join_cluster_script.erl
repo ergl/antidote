@@ -6,8 +6,8 @@
 
 -export([main/1]).
 
-main([NodeNanemListConfig]) ->
-    validate(parse_node_config(NodeNanemListConfig));
+main([NodeNaneListConfig]) ->
+    validate(parse_node_config(NodeNaneListConfig));
 
 main(NodesListString) ->
     validate(parse_node_list(NodesListString)).
