@@ -25,6 +25,7 @@
 
 -define(bottom, {<<>>, pvc_vclock:new()}).
 
+-type min_version() :: undefined | non_neg_integer().
 -type versions() :: orddict:dict(neg_integer(), {val(), pvc_vc()}).
 
 -record(vlog, {
@@ -37,7 +38,13 @@
     %% This snapshot time is stored as a negative number, as the default
     %% ordered dict implementation orders them in ascending order, and
     %% we want them in descending order.
-    data :: versions()
+    data :: versions(),
+    %% The minimum version we hold, useful to short-circuit searching
+    %% the array of versions if we are asked for a version we no longer
+    %% hold in memory. This is needed because we garbage collect old
+    %% versions as the log gets bigger. This helps us track how many
+    %% versions we should keep around.
+    min_version :: min_version()
 }).
 
 -type vlog() :: #vlog{}.
@@ -49,30 +56,53 @@
 
 -spec new(partition_id()) -> vlog().
 new(AtId) ->
-    #vlog{at=AtId, data=orddict:new()}.
+    #vlog{at=AtId, data=orddict:new(), min_version=undefined}.
 
 -spec insert(pvc_vc(), term(), vlog()) -> vlog().
-insert(VC, Value, V=#vlog{at=Id, data=Dict}) ->
+insert(VC, Value, V=#vlog{at=Id, data=Dict, min_version=OldMin}) ->
     Key = pvc_vclock:get_time(Id, VC),
-    V#vlog{data=maybe_gc(orddict:store(-Key, {Value, VC}, Dict))}.
+    {NewData, NewMin} = maybe_gc(Key,
+                                 OldMin,
+                                 orddict:store(-Key, {Value, VC}, Dict)),
+    V#vlog{data=NewData, min_version=NewMin}.
 
-maybe_gc(Data) ->
+-spec maybe_gc(non_neg_integer(), min_version(), versions()) -> {versions(), non_neg_integer()}.
+maybe_gc(LastInserted, OldMin, Data) ->
     Size = orddict:size(Data),
     case Size > ?VERSION_THRESHOLD of
-        false -> Data;
-        true -> lists:sublist(Data, ?MAX_VERSIONS)
+        false ->
+            {Data, min_version(LastInserted, OldMin)};
+        true ->
+            %% TODO(borja): Improve this, both sublist and last are O(n)
+            %% Merge sublist and last (and maybe the min version calc)
+            %% into a single function
+            NewData = lists:sublist(Data, ?MAX_VERSIONS),
+            {PrunedMinVersion, _} = lists:last(NewData),
+            NewMin = max_version(abs(PrunedMinVersion), OldMin),
+            {NewData, NewMin}
     end.
+
+-spec min_version(non_neg_integer(), min_version()) -> non_neg_integer().
+min_version(Left, undefined) -> Left;
+min_version(Left, Right) -> erlang:min(Left, Right).
+
+-spec max_version(non_neg_integer(), min_version()) -> non_neg_integer().
+max_version(Left, undefined) -> Left;
+max_version(Left, Right) -> erlang:max(Left, Right).
 
 -spec get_smaller(pvc_vc(), vlog()) -> {val(), pvc_vc()}.
 get_smaller(_VC, #vlog{data=[]}) ->
     ?bottom;
 
-get_smaller(VC, #vlog{at=Id, data=[{MaxTime, MaxVersion} | _]=Data}) ->
+get_smaller(VC, #vlog{at=Id, data=[{MaxTime, MaxVersion} | _]=Data, min_version=MinVersion}) when MinVersion =/= undefined ->
     LookupKey = pvc_vclock:get_time(Id, VC),
-    case LookupKey > abs(MaxTime) of
-        true ->
+    if
+        LookupKey > abs(MaxTime) ->
             MaxVersion;
-        false ->
+        LookupKey < MinVersion ->
+            lager:error("Version too old, might have been pruned (~p < ~p)", [LookupKey, MinVersion]),
+            ?bottom;
+        true ->
             get_smaller_internal(-LookupKey, Data)
     end.
 
