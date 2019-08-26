@@ -48,13 +48,7 @@
          enqueue/3,
          dequeue_ready/1,
          ready/4,
-         remove/2,
-         contains_disputed/2]).
-
-%% @deprecated See pvc_pending_keys on clocksi_vnode
--spec contains_disputed(writeset(), cqueue()) -> boolean().
-contains_disputed(WS, #cqueue{write_sets = WriteSets}) ->
-    is_ws_disputed(maps:to_list(WriteSets), WS).
+         remove/2]).
 
 -spec new() -> cqueue().
 new() ->
@@ -143,49 +137,7 @@ from(Queue, WriteSets, ReadyMap, DiscardedDict) ->
             ready_tx = ReadyMap,
             discarded_tx = DiscardedDict}.
 
--spec is_ws_disputed([{txid(), writeset()}], writeset()) -> boolean().
-is_ws_disputed([], _) ->
-    false;
-
-is_ws_disputed([{_TxId, OtherWS} | Rest], WS) ->
-    case ws_intersect(OtherWS, maps:keys(WS)) of
-        true ->
-            true;
-        false ->
-            is_ws_disputed(Rest, WS)
-    end.
-
-ws_intersect(_Map1, []) -> false;
-ws_intersect(Map1, [Key | Keys]) ->
-    maps:is_key(Key, Map1) orelse ws_intersect(Map1, Keys).
-
 -ifdef(TEST).
-
-pvc_commit_queue_conflict_test() ->
-    TestWS = #{key_a => ignore},
-    TestWS1 = #{key_b => ignore},
-
-    CQ = pvc_commit_queue:new(),
-
-    %% Empty queues can't conflict
-    ?assertEqual(false, pvc_commit_queue:contains_disputed(TestWS, CQ)),
-
-    CQ1 = pvc_commit_queue:enqueue(id, TestWS, CQ),
-
-    %% Empty WS can't conflict
-    ?assertEqual(false, pvc_commit_queue:contains_disputed(#{}, CQ1)),
-
-    %% Intersect on key_a
-    ?assertEqual(true, pvc_commit_queue:contains_disputed(TestWS, CQ1)),
-
-    %% Intersect happens even after marking as ready
-    CQ2 = pvc_commit_queue:ready(id, [], ignore, CQ1),
-    ?assertEqual(true, pvc_commit_queue:contains_disputed(TestWS, CQ2)),
-
-    CQ3 = pvc_commit_queue:enqueue(id2, TestWS1, CQ2),
-    %% Intersect does not take removed ids into account
-    {_, CQ4} = pvc_commit_queue:remove(id2, CQ3),
-    ?assertEqual(false, pvc_commit_queue:contains_disputed(TestWS1, CQ4)).
 
 pvc_commit_queue_ready_same_test() ->
     CQ = pvc_commit_queue:new(),
