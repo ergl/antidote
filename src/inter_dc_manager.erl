@@ -19,6 +19,7 @@
 %% -------------------------------------------------------------------
 -module(inter_dc_manager).
 -include("antidote.hrl").
+-include("log_version_miss.hrl").
 -include("inter_dc_repl.hrl").
 
 %% ===================================================================
@@ -28,10 +29,15 @@
 -define(DC_CONNECT_RETRIES, 5).
 -define(DC_CONNECT_RETY_SLEEP, 1000).
 
+-ignore_xref([flush_pvc_commit_queues/0,
+              stop_read_replicas/0,
+              report_vlog_misses/0]).
+
 -export([get_descriptor/0,
          start_bg_processes/1,
          stop_read_replicas/0,
          flush_pvc_commit_queues/0,
+         report_vlog_misses/0,
          observe_dcs_sync/1,
          dc_successfully_started/0,
          check_node_restart/0,
@@ -133,6 +139,7 @@ start_bg_processes(MetaDataName) ->
     ok = lists:foreach(fun({_, ok}) -> ok end, TimerReply),
 
     ok = start_read_replicas(),
+    ok = init_vlog_miss_table(),
 
     ok.
 
@@ -148,6 +155,13 @@ start_read_replicas() ->
             dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers)
     end,
     ok = lists:foreach(fun({_, true}) -> ok end, Response).
+
+%% @doc Init the version miss table
+%%      Will track how many key version misses we do by aggressive GC
+-spec init_vlog_miss_table() -> ok.
+init_vlog_miss_table() ->
+    _ = ets:new(?LOG_MISS_TABLE, [set, named_table, public, {write_concurrency, true}]),
+    ok.
 
 -spec stop_read_replicas() -> ok.
 stop_read_replicas() ->
@@ -170,6 +184,10 @@ flush_pvc_commit_queues() ->
         _ ->
             ok
     end.
+
+-spec report_vlog_misses() -> [tuple()].
+report_vlog_misses() ->
+    ets:tab2list(?LOG_MISS_TABLE).
 
 %% This should be called once the DC is up and running successfully
 %% It sets a flag on disk to true.  When this is true on fail and
