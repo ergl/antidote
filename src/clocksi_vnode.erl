@@ -93,11 +93,19 @@
     read_servers :: non_neg_integer(),
     prepared_dict :: orddict:orddict(),
 
+    %% This ETS table holds state for the parition that needs to be accessible
+    %% from outside the virtual node. The keys in the table are:
+    %% seq_number -> non_neg_integer()
+    %%      Holds the LastPrep number for the partition
+    %%      TODO(borja): This could be moved to a normal field in the state
+    %% mrvc -> pvc_vclock:vc()
+    %%      Holds the MostRecentVC clock, the maximum of all version clocks
+    %%      committed in this parition. Used to determine the upper bound
+    %%      for reads.
+    %% default_last_version -> non_neg_integer()
+    %%      The default version to return on missed reads. Used for synthetic
+    %%      load testing (returns fake VLog.last(key).vid[partition])
     pvc_atomic_state :: cache_id(),
-    %% The default VLog.last(key).vid[partition],
-    %% useful for emulating database load.
-    %% Tells the client what is the most recent version of a key.
-    pvc_key_miss_default_version :: non_neg_integer(),
     pvc_commitqueue :: pvc_commit_queue:cqueue(),
     %% A set populated with all the transactions currently sitting in the commit
     %% queue, together with their writeset: so the mapping is tx_id() => ws().
@@ -164,6 +172,15 @@ pvc_get_most_recent_vc(Node, TableName) ->
         lager:info("MRVC miss at ~p", [Node]),
         riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER)
     end.
+
+%% @doc Get the default
+-spec pvc_get_default_last_version(partition_id()) -> non_neg_integer().
+pvc_get_default_last_version(Partition) ->
+    pvc_default_version(get_cache_name(Partition, ?PARTITION_STATE_TABLE)).
+
+-spec pvc_default_version(cache_id()) -> non_neg_integer().
+pvc_default_version(StateTable) ->
+    ets:lookup_element(StateTable, default_last_version, 2).
 
 %% @doc Schedule a dequeue event in the vnode
 %%
@@ -253,12 +270,43 @@ prepare(ListofNodes, TxId) ->
 
 -spec pvc_prepare(pid(), partition_id(), term(), term(), non_neg_integer()) -> ok.
 pvc_prepare(ReplyTo, Partition, TxId, Writeset, Version) ->
-    %% Will return like ReplyTo ! Msg
-    riak_core_vnode_master:command(
-        {Partition, node()},
-        {pvc_prepare, ReplyTo, TxId, Writeset, Version},
-        ?CLOCKSI_MASTER
-    ).
+    Valid = pvc_early_abort_check(Partition, Writeset, Version),
+    case Valid of
+        {error, _}=Err ->
+            ?LAGER_LOG("early prepare abort @ ~p = ~p", [Partition, Err]),
+            ReplyTo ! Err,
+            ok;
+        true ->
+            riak_core_vnode_master:command({Partition, node()},
+                                           {pvc_prepare, ReplyTo, TxId, Writeset, Version},
+                                           ?CLOCKSI_MASTER)
+    end.
+
+%% @doc Duplicate logic of the prepare check inside the virtual node state
+%%
+%%      This check MIGHT return true even if a transaction will end up aborting,
+%%      but it will NEVER return `abort` for a transaction that wouldn't abort
+%%      anyway. In that sense, even if this check says that the transaction will
+%%      be allowed to commit, we have to double check inside the virtual node,
+%%      just in case there is some data race.
+%%
+%%      This check is done so that transactions that would abort anyway don't even
+%%      bother with paying the price of going through the virtual node. This also
+%%      saves us some messages that would otherwise fill the vnode message inbox.
+%%
+-spec pvc_early_abort_check(Partition :: partition_id(),
+                            Writeset :: #{key() => val()},
+                            Version :: non_neg_integer()) -> true | {error, atom()}.
+
+pvc_early_abort_check(Partition, Writeset, Version) ->
+    PendingKeysTable = get_cache_name(Partition, ?WRITESET_TABLE_INDEX),
+    VLogLastCache = get_cache_name(Partition, committed_tx),
+    DefaultLastVersion = pvc_get_default_last_version(Partition),
+    pvc_valid_tx_keys(maps:keys(Writeset),
+                      Version,
+                      PendingKeysTable,
+                      VLogLastCache,
+                      DefaultLastVersion).
 
 %% @deprecated
 decide(_, _, _, _) -> erlang:error(gone).
@@ -394,7 +442,6 @@ init([Partition]) ->
         prepared_dict = orddict:new(),
 
         pvc_atomic_state = PVCTable,
-        pvc_key_miss_default_version = 0,
         pvc_commitqueue = CommitQueue,
         pvc_pending_writesets = WritesetTable,
         pvc_pending_keys = PendingKeys,
@@ -522,9 +569,9 @@ handle_command(pvc_refresh_replicas, _Sender, State = #state{partition=Partition
     {reply, Result, State};
 
 handle_command({pvc_unsafe_set_clock, Seq, MRVC}, _Sender, State = #state{partition=Partition, pvc_atomic_state=PVCState}) ->
-    true = ets:insert(PVCState, [{seq_number, Seq}, {mrvc, MRVC}]),
+    true = ets:insert(PVCState, [{seq_number, Seq}, {mrvc, MRVC}, {default_last_version, Seq}]),
     ok = logging_vnode:pvc_insert_to_commit_log(Partition, MRVC),
-    {reply, ok, State#state{pvc_key_miss_default_version=Seq}};
+    {reply, ok, State};
 
 %% @doc Start PVC-only read replicas
 handle_command(start_pvc_servers, _From, SD0=#state{partition=Partition, read_servers=Num, pvc_dequeue_timer=undefined}) ->
@@ -559,7 +606,6 @@ handle_command(pvc_mostrecentvc, _Sender, State) ->
     {reply, pvc_get_mrvc(State#state.pvc_atomic_state), State};
 
 handle_command({pvc_prepare, ReplyTo, TxId, Writeset, Version}, _Sender, State) ->
-    ?LAGER_LOG("{prepare, ~p, ~p, ~p, ~p}", [ReplyTo, TxId, Writeset, Version]),
     NewState = pvc_prepare_internal(ReplyTo, TxId, Writeset, Version, State),
     {noreply, NewState};
 
@@ -662,8 +708,10 @@ terminate(_Reason, #state{partition=Partition, read_servers=Serv}) ->
 
 -spec pvc_atomic_state_init(partition_id()) -> cache_id().
 pvc_atomic_state_init(Partition) ->
-    PVCTable = open_table(Partition, pvc_state_table),
-    true = ets:insert(PVCTable, [{seq_number, 0}, {mrvc, pvc_vclock:new()}]),
+    PVCTable = open_table(Partition, ?PARTITION_STATE_TABLE),
+    true = ets:insert(PVCTable, [{seq_number, 0},
+                                 {mrvc, pvc_vclock:new()},
+                                 {default_last_version, 0}]),
     PVCTable.
 
 -spec pvc_faa_lastprep(cache_id()) -> non_neg_integer().
@@ -742,11 +790,11 @@ pvc_prepare_internal(ReplyTo, TxId, Writeset, Version, State = #state{
     pvc_pending_keys = PendingKeys,
     pvc_pending_writesets = WritesetTable,
     pvc_atomic_state = PartitionState,
-    pvc_key_miss_default_version = DefaultLastVersion,
     committed_tx = VLogLastCache
 }) ->
 
     WriteSetKeys = maps:keys(Writeset),
+    DefaultLastVersion = pvc_default_version(PartitionState),
     Valid = pvc_valid_tx_keys(WriteSetKeys,
                               Version,
                               PendingKeys,

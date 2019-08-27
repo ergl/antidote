@@ -23,6 +23,7 @@
 -behavior(gen_server).
 
 -include("antidote.hrl").
+-include("pvc.hrl").
 -include("debug_log.hrl").
 
 %% supervision tree
@@ -142,7 +143,7 @@ init([Partition, Id]) ->
     {BottomValue, BottomClock} = materializer_vnode:pvc_get_default_value({Partition, node()}),
 
     %% Partition replica
-    StateReplica = clocksi_vnode:get_cache_name(Partition, pvc_state_table),
+    StateReplica = clocksi_vnode:get_cache_name(Partition, ?PARTITION_STATE_TABLE),
     %% TODO(borja/pvc-ccoord): Change name of ETS table
     Committed = clocksi_vnode:get_cache_name(Partition, committed_tx),
 
