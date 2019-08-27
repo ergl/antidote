@@ -26,208 +26,103 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--record(cqueue, {
-    %% The main commit TxId queue
-    q :: queue:queue(txid()),
-    %% Mapping between txids and their write sets
-    write_sets :: #{txid() => writeset()},
-    %% For the ready tx, put their ids with their commit VC
-    %% and their index key list here
-    ready_tx :: #{txid() => {pvc_vc(), list()}},
-    %% A set of txids that have been discarded
-    discarded_tx :: sets:set(txid())
-}).
-
--opaque cqueue() :: #cqueue{}.
-
 -type writeset() :: #{key() => val()}.
-
--export_type([cqueue/0]).
+-opaque cqueue() :: queue:queue(txid()).
+-export_type([cqueue/0, writeset/0]).
 
 -export([new/0,
-         enqueue/3,
-         dequeue_ready/1,
-         ready/4,
-         remove/2,
-         contains_disputed/2]).
-
-%% @deprecated See pvc_pending_keys on clocksi_vnode
--spec contains_disputed(writeset(), cqueue()) -> boolean().
-contains_disputed(WS, #cqueue{write_sets = WriteSets}) ->
-    is_ws_disputed(maps:to_list(WriteSets), WS).
+         enqueue/2,
+         dequeue_ready/3]).
 
 -spec new() -> cqueue().
-new() ->
-    #cqueue{q = queue:new(),
-            ready_tx = #{},
-            write_sets = #{},
-            discarded_tx = sets:new()}.
+new() -> queue:new().
 
--spec enqueue(txid(), writeset(), cqueue()) -> cqueue().
-enqueue(TxId, WS, CQueue = #cqueue{q = Queue, write_sets = WriteSets}) ->
-    CQueue#cqueue{q = queue:in(TxId, Queue),
-                  write_sets = WriteSets#{TxId => WS}}.
+-spec enqueue(txid(), cqueue()) -> cqueue().
+enqueue(TxId, Queue) ->
+    queue:in(TxId, Queue).
 
--spec ready(txid(), list(), pvc_vc(), cqueue()) -> cqueue().
-ready(TxId, IndexList, VC, CQueue = #cqueue{
-    q = Queue,
-    ready_tx = ReadyMap
-}) ->
-    case queue:member(TxId, Queue) of
-        false ->
-            CQueue;
-        true ->
-            CQueue#cqueue{ready_tx = ReadyMap#{TxId => {VC, IndexList}}}
-    end.
-
-%% @doc Remove a transaction from the queue.
-%%      If the transaction is present, also return its writeset,
-%%      so we can remove it from the pending key table.
-%%
--spec remove(txid(), cqueue()) -> {writeset(), cqueue()}.
-remove(TxId, CQueue = #cqueue{
-    q = Queue,
-    write_sets = WriteSets,
-    discarded_tx = DiscardedSet
-}) ->
-    case queue:member(TxId, Queue) of
-        false ->
-            {#{}, CQueue};
-        true ->
-            {WriteSet, NewWriteSet} = maps:take(TxId, WriteSets),
-            {WriteSet, CQueue#cqueue{write_sets = NewWriteSet,
-                                     discarded_tx = sets:add_element(TxId, DiscardedSet)}}
-    end.
-
--spec dequeue_ready(cqueue()) -> {[{txid(), writeset(), pvc_vc(), list()}], cqueue()}.
-dequeue_ready(#cqueue{q = Queue,
-                      write_sets = WriteSets,
-                      ready_tx = ReadyMap,
-                      discarded_tx = DiscardedSet}) ->
-
-    {Acc, NewCQueue} = get_ready(queue:out(Queue), WriteSets, ReadyMap, DiscardedSet, []),
+-spec dequeue_ready(cqueue(), cache_id(), cache_id()) -> {[{txid(), writeset(), pvc_vc()}], cqueue()}.
+dequeue_ready(Queue, DecideTable, WritesetTable) ->
+    {Acc, NewCQueue} = get_ready(queue:out(Queue), DecideTable, WritesetTable, []),
     {lists:reverse(Acc), NewCQueue}.
 
-get_ready({empty, Queue}, WriteSets, ReadyMap, DiscardedSet, Acc) ->
-    {Acc, from(Queue, WriteSets, ReadyMap, DiscardedSet)};
+get_ready({empty, Queue}, _DecideTable, _WritesetTable, Acc) ->
+    {Acc, Queue};
 
-get_ready({{value, TxId}, Queue}, WriteSets, ReadyMap, DiscardedSet, Acc) ->
-    case sets:is_element(TxId, DiscardedSet) of
-        true ->
-            DeleteDiscard = sets:del_element(TxId, DiscardedSet),
-            get_ready(queue:out(Queue), WriteSets, ReadyMap, DeleteDiscard, Acc);
-
-        false ->
-            case maps:is_key(TxId, ReadyMap) of
-                false ->
-                    {Acc, from(queue:in_r(TxId, Queue), WriteSets, ReadyMap, DiscardedSet)};
-
-                true ->
-                    %% Get WS and remove it
-                    {WS, NewWriteSets} = maps:take(TxId, WriteSets),
-
-                    %% Get VC and remove it
-                    {{VC, IndexList}, NewReadyMap} = maps:take(TxId, ReadyMap),
-
-                    %% Append entry to the Acc
-                    NewAcc = [{TxId, WS, VC, IndexList} | Acc],
-                    get_ready(queue:out(Queue), NewWriteSets, NewReadyMap, DiscardedSet, NewAcc)
-            end
+get_ready({{value, TxId}, Queue}, DecideTable, WritesetTable, Acc) ->
+    case ets:take(DecideTable, TxId) of
+        [{TxId, abort}] ->
+            get_ready(queue:out(Queue), DecideTable, WritesetTable, Acc);
+        [{TxId, ready, VC}] ->
+            [{TxId, WriteSet}] = ets:take(WritesetTable, TxId),
+            NewAcc = [{TxId, WriteSet, VC} | Acc],
+            get_ready(queue:out(Queue), DecideTable, WritesetTable, NewAcc);
+        [] ->
+            %% Queue head is still pending, put it back in
+            {Acc, queue:in_r(TxId, Queue)}
     end.
-
-%% Internal
-
-from(Queue, WriteSets, ReadyMap, DiscardedDict) ->
-    #cqueue{q = Queue,
-            write_sets = WriteSets,
-            ready_tx = ReadyMap,
-            discarded_tx = DiscardedDict}.
-
--spec is_ws_disputed([{txid(), writeset()}], writeset()) -> boolean().
-is_ws_disputed([], _) ->
-    false;
-
-is_ws_disputed([{_TxId, OtherWS} | Rest], WS) ->
-    case ws_intersect(OtherWS, maps:keys(WS)) of
-        true ->
-            true;
-        false ->
-            is_ws_disputed(Rest, WS)
-    end.
-
-ws_intersect(_Map1, []) -> false;
-ws_intersect(Map1, [Key | Keys]) ->
-    maps:is_key(Key, Map1) orelse ws_intersect(Map1, Keys).
 
 -ifdef(TEST).
 
-pvc_commit_queue_conflict_test() ->
-    TestWS = #{key_a => ignore},
-    TestWS1 = #{key_b => ignore},
-
-    CQ = pvc_commit_queue:new(),
-
-    %% Empty queues can't conflict
-    ?assertEqual(false, pvc_commit_queue:contains_disputed(TestWS, CQ)),
-
-    CQ1 = pvc_commit_queue:enqueue(id, TestWS, CQ),
-
-    %% Empty WS can't conflict
-    ?assertEqual(false, pvc_commit_queue:contains_disputed(#{}, CQ1)),
-
-    %% Intersect on key_a
-    ?assertEqual(true, pvc_commit_queue:contains_disputed(TestWS, CQ1)),
-
-    %% Intersect happens even after marking as ready
-    CQ2 = pvc_commit_queue:ready(id, [], ignore, CQ1),
-    ?assertEqual(true, pvc_commit_queue:contains_disputed(TestWS, CQ2)),
-
-    CQ3 = pvc_commit_queue:enqueue(id2, TestWS1, CQ2),
-    %% Intersect does not take removed ids into account
-    {_, CQ4} = pvc_commit_queue:remove(id2, CQ3),
-    ?assertEqual(false, pvc_commit_queue:contains_disputed(TestWS1, CQ4)).
-
 pvc_commit_queue_ready_same_test() ->
+    Decide = ets:new(decide_table, [set]),
+    WriteSets = ets:new(writeset_table, [set]),
+
     CQ = pvc_commit_queue:new(),
 
     %% If there are no ready elements nor deleted, the queue stays the same
-    {Elts, CQ1} = pvc_commit_queue:dequeue_ready(CQ),
+    {Elts, CQ1} = pvc_commit_queue:dequeue_ready(CQ, Decide, WriteSets),
     ?assertEqual([], Elts),
     ?assertEqual(CQ, CQ1),
 
-    CQ2 = pvc_commit_queue:enqueue(id, #{}, CQ1),
-    {Elts1, CQ3} = pvc_commit_queue:dequeue_ready(CQ2),
-    {_, CQ4} = pvc_commit_queue:dequeue_ready(CQ2),
+    CQ2 = pvc_commit_queue:enqueue(id, CQ1),
+    {Elts1, CQ3} = pvc_commit_queue:dequeue_ready(CQ2, Decide, WriteSets),
+    %% Dequeue is idempotent, calling it again will not modify the queue
+    {_, CQ4} = pvc_commit_queue:dequeue_ready(CQ2, Decide, WriteSets),
 
     %% If there are no ready elements nor deleted, the queue stays the same
     ?assertEqual([], Elts1),
-    ?assertEqual(CQ3, CQ4).
+    ?assertEqual(CQ3, CQ4),
+
+    ets:delete(Decide),
+    ets:delete(WriteSets).
 
 pvc_commit_queue_ready_skip_test() ->
+    Decide = ets:new(decide_table, [set]),
+    WriteSets = ets:new(writeset_table, [set]),
+
     CQ = pvc_commit_queue:new(),
-    CQ1 = pvc_commit_queue:enqueue(id, #{}, CQ),
-    CQ2 = pvc_commit_queue:enqueue(id1, #{}, CQ1),
-    CQ3 = pvc_commit_queue:enqueue(id2, #{}, CQ2),
+    CQ1 = pvc_commit_queue:enqueue(id, CQ),
+    CQ2 = pvc_commit_queue:enqueue(id1, CQ1),
+    CQ3 = pvc_commit_queue:enqueue(id2, CQ2),
 
-    CQ4 = pvc_commit_queue:ready(id2, [], ignore, CQ3),
-    {_, CQ5} = pvc_commit_queue:remove(id1, CQ4),
+    %% This would happen atomically during the prepare phase
+    true = ets:insert(WriteSets, [{id, #{}},
+                                  {id1, #{}},
+                                  {id2, #{}}]),
 
-    {Elts, CQ6} = pvc_commit_queue:dequeue_ready(CQ5),
+    %% Mark id1 as aborted, id2 as ready, id is pending (we remove id1's writeset)
+    true = ets:delete(WriteSets, id1),
+    true = ets:insert(Decide, [{id1, abort},
+                               {id2, ready, []}]),
+
+    %% id is still pending, so it will block other transactions in the queue
+    {Elts, CQ4} = pvc_commit_queue:dequeue_ready(CQ3, Decide, WriteSets),
     ?assertEqual([], Elts),
 
-    CQ7 = pvc_commit_queue:ready(id, [], ignore, CQ6),
+    %% Marking id as ready should unblock the queue
+    true = ets:insert(Decide, {id, ready, []}),
 
     %% Get ready skips removed entries from the queue
-    {Elts1, CQ8} = pvc_commit_queue:dequeue_ready(CQ7),
+    {Elts1, CQ5} = pvc_commit_queue:dequeue_ready(CQ4, Decide, WriteSets),
     %% The entries are in the same order as we put them into the queue
-    ?assertMatch([{id, #{}, ignore, []}, {id2, #{}, ignore, []}], Elts1),
-
-    %% id1 is gone forever, queue stays the same
-    {_, CQ9} = pvc_commit_queue:remove(id1, CQ8),
-    ?assertEqual(CQ9, CQ8),
+    ?assertMatch([{id, #{}, []}, {id2, #{}, []}], Elts1),
 
     %% the queue should be empty now
     Empty = pvc_commit_queue:new(),
-    ?assertEqual(Empty, CQ9).
+    ?assertEqual(Empty, CQ5),
+
+    ets:delete(Decide),
+    ets:delete(WriteSets).
 
 -endif.
