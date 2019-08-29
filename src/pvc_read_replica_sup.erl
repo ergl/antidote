@@ -24,7 +24,7 @@
 
 %% API
 -export([start_replica/2,
-    start_link/0]).
+         start_link/0]).
 
 -export([init/1]).
 

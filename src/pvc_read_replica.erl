@@ -81,10 +81,8 @@
 %%      Since they replicate ETS tables stored in vnodes, they have
 %%      to be started in the same physical node.
 %%
--spec start_link(
-    partition_id(),
-    non_neg_integer()
-) -> {ok, pid()} | ignore | {error, term()}.
+-spec start_link(Partition :: partition_id(),
+                 Id :: non_neg_integer()) -> {ok, pid()} | ignore | {error, term()}.
 
 start_link(Partition, Id) ->
     Name = {local, generate_replica_name(Partition, Id)},
