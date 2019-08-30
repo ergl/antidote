@@ -351,15 +351,12 @@ wait_until_master_ready(MasterNode) ->
 check_ready(Node) ->
     io:format("[master ready] Checking ~p~n", [Node]),
 
-    VNodeReady = rpc:call(Node, clocksi_vnode, check_tables_ready, []),
-    %% FIXME(borja): Uncomment if using default tx protocol
-    %% ReadServersReady = rpc:call(Node, clocksi_vnode, check_servers_ready, []),
-    ReadReplicasReady = rpc:call(Node, clocksi_vnode, check_pvc_replicas_ready, []),
+    VNodeReady = rpc:call(Node, antidote_pvc_vnode, vnodes_ready, []),
+    ReadReplicasReady = rpc:call(Node, antidote_pvc_vnode, replicas_ready, []),
     MaterializerReady = rpc:call(Node, materializer_vnode, check_tables_ready, []),
     StableMetadataReady = rpc:call(Node, stable_meta_data_server, check_tables_ready, []),
 
     NodeReady = VNodeReady
-        %% andalso ReadServersReady
         andalso ReadReplicasReady
         andalso MaterializerReady
         andalso StableMetadataReady,

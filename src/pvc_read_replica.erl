@@ -51,22 +51,12 @@
     %% Partition that this server is replicating
     partition :: partition_id(),
 
-    %% Read replica of
-    %% MostRecentVC
-    %% SeqNumber
-    partition_state_replica :: atom(),
-
     %% Read replica of the VLog ETS table
     vlog_replica :: atom(),
 
     %% Default value and clock for empty keys
     default_bottom_value = <<>> :: any(),
-    default_bottom_clock = pvc_vclock:new() :: pvc_vc(),
-
-    %% Read replica of the last version committed by a key
-    %% This is useful to compute VLog.last(key) without
-    %% traversing the entire VLog
-    committed_cache_replica :: atom()
+    default_bottom_clock = pvc_vclock:new() :: pvc_vc()
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -139,20 +129,12 @@ init([Partition, Id]) ->
     VLog = materializer_vnode:get_cache_name(Partition, pvc_snapshot_cache),
     {BottomValue, BottomClock} = materializer_vnode:pvc_get_default_value({Partition, node()}),
 
-    %% Partition replica
-    StateReplica = clocksi_vnode:get_cache_name(Partition, pvc_state_table),
-    %% TODO(borja/pvc-ccoord): Change name of ETS table
-    Committed = clocksi_vnode:get_cache_name(Partition, committed_tx),
-
     Self = generate_replica_name(Partition, Id),
-
     {ok, #state{self = Self,
                 partition = Partition,
                 vlog_replica = VLog,
                 default_bottom_value = BottomValue,
-                default_bottom_clock = BottomClock,
-                committed_cache_replica = Committed,
-                partition_state_replica = StateReplica}}.
+                default_bottom_clock = BottomClock}}.
 
 handle_call(ready, _From, State) ->
     {reply, ready, State};
@@ -195,15 +177,10 @@ handle_info(Info, State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec read_scan_internal(pid(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
-read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State) ->
-    #state{partition=Partition,
-           partition_state_replica=ReplicaState} = State,
+read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State=#state{partition=Partition}) ->
+    ?LAGER_LOG("most_recent_vc(~p)", [Partition]),
 
-    %% FIXME(borja): Remove hack {Partition, node()}
-    %% Table should be at this node
-    ?LAGER_LOG("get_mrvc({~p,~p})", [Partition, node()]),
-
-    MRVC = clocksi_vnode:pvc_get_most_recent_vc({Partition, node()}, ReplicaState),
+    MRVC = antidote_pvc_vnode:most_recent_vc(Partition),
     ?LAGER_LOG("MRVC = ~p", [MRVC]),
     case check_time(Partition, MRVC, VCaggr) of
         {not_ready, WaitTime} ->
@@ -224,11 +201,10 @@ read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State) ->
 scan_and_read(ReplyTo, Key, HasRead, VCaggr, #state{partition=Partition,
                                                     vlog_replica=VLog,
                                                     default_bottom_value=BottomValue,
-                                                    default_bottom_clock=ClockValue,
-                                                    partition_state_replica=ReplicaState}) ->
+                                                    default_bottom_clock=ClockValue}) ->
 
     ?LAGER_LOG("scan_and_read(~p, ~p, ~p, ~p)", [ReplyTo, Key, HasRead, VCaggr]),
-    MaxVCRes = find_max_vc(Partition, HasRead, VCaggr, ReplicaState),
+    MaxVCRes = find_max_vc(Partition, HasRead, VCaggr),
     ?LAGER_LOG("MaxVC = ~p", [MaxVCRes]),
     case MaxVCRes of
         {error, Reason} ->
@@ -238,22 +214,17 @@ scan_and_read(ReplyTo, Key, HasRead, VCaggr, #state{partition=Partition,
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
--spec find_max_vc(
-    partition_id(),
-    ordsets:ordset(),
-    pvc_vc(),
-    atom()
-) -> {ok, pvc_vc()} | {error, reason()}.
+-spec find_max_vc(Partition :: partition_id(),
+                  HasRead :: ordsets:ordset(),
+                  VCaggr :: pvc_vc()) -> {ok, pvc_vc()} | {error, reason()}.
 
-find_max_vc(Partition, HasRead, VCaggr, ReplicaState) ->
+find_max_vc(Partition, HasRead, VCaggr) ->
     %% If this is the first partition we're reading, our MaxVC will be
     %% the current MostRecentVC at this partition
     MaxVC = case ordsets:size(HasRead) of
         0 ->
-            %% FIXME(borja): Remove hack {Partition, node()}
-            %% Table should be at this node
-            ?LAGER_LOG("get_mrvc({~p,~p})", [Partition, node()]),
-            clocksi_vnode:pvc_get_most_recent_vc({Partition, node()}, ReplicaState);
+            ?LAGER_LOG("get_mrvc(~p)", [Partition]),
+            antidote_pvc_vnode:most_recent_vc(Partition);
         _ ->
             ?LAGER_LOG("logging_vnode:pvc_get_max_vc({~p,~p})", [Partition, node()]),
             logging_vnode:pvc_get_max_vc({Partition, node()}, ordsets:to_list(HasRead), VCaggr)

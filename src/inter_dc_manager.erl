@@ -114,6 +114,7 @@ start_bg_processes(MetaDataName) ->
     ok = dc_utilities:ensure_all_vnodes_running_master(clocksi_vnode_master),
     ok = dc_utilities:ensure_all_vnodes_running_master(logging_vnode_master),
     ok = dc_utilities:ensure_all_vnodes_running_master(materializer_vnode_master),
+    ok = dc_utilities:ensure_all_vnodes_running_master(antidote_pvc_vnode_master),
 
     %% Check DC health
     lists:foreach(fun(Node) ->
@@ -147,7 +148,7 @@ start_read_replicas() ->
     Response = case application:get_env(antidote, txn_prot) of
         {ok, pvc} ->
             lager:info("Starting pvc read replicas"),
-            dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, start_pvc_servers);
+            dc_utilities:bcast_my_vnode_sync(antidote_pvc_vnode_master, start_replicas);
         _ ->
             lager:info("Starting read servers"),
             dc_utilities:bcast_vnode_sync(clocksi_vnode_master, start_read_servers)
@@ -159,7 +160,7 @@ stop_read_replicas() ->
     case application:get_env(antidote, txn_prot) of
         {ok, pvc} ->
             lager:info("Stopping pvc read replicas"),
-            Resp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, stop_pvc_servers),
+            Resp = dc_utilities:bcast_my_vnode_sync(antidote_pvc_vnode_master, stop_replicas),
             lists:foreach(fun({_, ok}) -> ok end, Resp);
         _ ->
             ok
@@ -169,8 +170,8 @@ stop_read_replicas() ->
 flush_pvc_commit_queues() ->
     case application:get_env(antidote, txn_prot) of
         {ok, pvc} ->
-            lager:info("Stopping pvc read replicas"),
-            Resp = dc_utilities:bcast_my_vnode_sync(clocksi_vnode_master, pvc_flush_commit_queue),
+            lager:info("Flushing pvc commit queues"),
+            Resp = dc_utilities:bcast_my_vnode_sync(antidote_pvc_vnode_master, flush_queue),
             lists:foreach(fun({_, ok}) -> ok end, Resp);
         _ ->
             ok
@@ -199,6 +200,7 @@ check_node_restart() ->
             ok = dc_utilities:ensure_local_vnodes_running_master(clocksi_vnode_master),
             ok = dc_utilities:ensure_local_vnodes_running_master(logging_vnode_master),
             ok = dc_utilities:ensure_local_vnodes_running_master(materializer_vnode_master),
+            ok = dc_utilities:ensure_all_vnodes_running_master(antidote_pvc_vnode_master),
             wait_init:wait_ready(MyNode),
             ok = dc_utilities:check_registered(meta_data_sender_sup),
             ok = dc_utilities:check_registered(meta_data_manager_sup),

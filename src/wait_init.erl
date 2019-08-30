@@ -21,8 +21,7 @@
 
 -export([check_ready_nodes/1,
          wait_ready/1,
-         check_ready/1
-        ]).
+         check_ready/1]).
 
 %% @doc This function takes a list of pysical nodes connected to the an
 %% instance of the antidote distributed system.  For each of the phyisical nodes
@@ -50,27 +49,28 @@ wait_ready(Node) ->
 %% except it takes as input a sinlge physical node instead of a list
 -spec check_ready(node()) -> boolean().
 check_ready(Node) ->
-    lager:debug("Checking if node ~w is ready ~n", [Node]),
-    check_all(Node, [
-        check_node(Node, clocksi_vnode, check_tables_ready),
-        check_node(Node, materializer_vnode, check_tables_ready),
-        check_node(Node, stable_meta_data_server, check_tables_ready)
-    ]).
+    lager:info("Checking if node ~w is ready ~n", [Node]),
 
--spec check_node(node(), atom(), atom()) -> fun(() -> boolean()).
-check_node(Node, Module, Function) ->
-    fun() -> rpc:call(Node, Module, Function, []) end.
+    %% PVC
+    VNodeReady = rpc:call(Node, antidote_pvc_vnode, vnodes_ready, []),
 
--spec check_all(node(), [fun(() -> boolean())]) -> boolean().
-check_all(Node, []) ->
-    lager:debug("Node ~w is ready! ~n", [Node]),
-    true;
+    %% ClockSI
+    ClockSITablesReady = rpc:call(Node, clocksi_vnode, check_tables_ready, []),
 
-check_all(Node, [FunHead | Rest]) ->
-    case FunHead() of
-        false ->
-            lager:debug("Node ~w is not ready ~n", [Node]),
-            false;
+    %% Internal
+    MaterializerReady = rpc:call(Node, materializer_vnode, check_tables_ready, []),
+    StableMetadataReady = rpc:call(Node, stable_meta_data_server, check_tables_ready, []),
+
+    NodeReady = VNodeReady
+        andalso ClockSITablesReady
+        andalso MaterializerReady
+        andalso StableMetadataReady,
+
+    case NodeReady of
         true ->
-            check_all(Node, Rest)
-    end.
+            lager:info("Node ~w is ready! ~n", [Node]);
+        false ->
+            lager:info("Node ~w is not ready ~n", [Node])
+    end,
+
+    NodeReady.

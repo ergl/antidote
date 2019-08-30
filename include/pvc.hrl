@@ -34,3 +34,9 @@
 -define(WRITESET_TABLE_INDEX, pvc_queue_index).
 %% Decide ETS table name inside clocksi_vnode
 -define(DECIDE_TABLE, pvc_decide_table).
+
+-define(MRVC_TABLE, most_recent_vc).
+-define(LAST_VSN_TABLE, last_vsn).
+-define(PENDING_DATA_TABLE, pending_tx_data).
+-define(PENDING_READS_TABLE, pending_reads).
+-define(PENDING_WRITES_TABLE, pending_writes).
