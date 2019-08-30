@@ -64,7 +64,7 @@ start(_StartType, _StartArgs) ->
             _IsRestart = inter_dc_manager:check_node_restart(),
             case application:get_env(antidote, collect_metric_staleness) of
               {ok, true} ->
-                  antidote_sup:start_metrics_collection();
+                  ok = antidote_stats_collector:init_stale_metrics();
               _ ->
                   ok
             end,

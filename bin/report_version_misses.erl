@@ -41,7 +41,7 @@ validate(error) ->
 validate({ok, Nodes}) when is_list(Nodes) ->
     io:format("Getting report on vlog misses for nodes ~p~n", [Nodes]),
     lists:foreach(fun(N) -> erlang:set_cookie(N, antidote) end, Nodes),
-    {Results, BadNodes} = rpc:multicall(Nodes, inter_dc_manager, report_vlog_misses, [], infinity),
+    {Results, BadNodes} = rpc:multicall(Nodes, antidote_stats_collector, report_vlog_misses, [], infinity),
 
     BadNodes =:= [] orelse begin
         io:fwrite(standard_error, "report_version_misses failed on ~p~n", [BadNodes]),

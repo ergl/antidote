@@ -24,9 +24,7 @@
 -include("antidote.hrl").
 
 %% API
--export([start_link/0,
-         start_metrics_collection/0
-        ]).
+-export([start_link/0]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -42,15 +40,6 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-%% Stats collector is not started with the supervisor. It has to be explicitly started
-start_metrics_collection() ->
-     StatsCollector = {
-                        antidote_stats_collector,
-                        {antidote_stats_collector, start_link, []},
-                        permanent, 5000, worker, [antidote_stats_collector]
-                      },
-    supervisor:start_child(?MODULE, StatsCollector).
-
 %% ===================================================================
 %% Supervisor callbacks
 %% ===================================================================
@@ -63,7 +52,11 @@ init(_Args) ->
     %% RUBIS Key Generator Oracle, one per partition
     RubisKeyGen = ?VNODE(rubis_keygen_vnode_master, rubis_keygen_vnode),
 
+    %% PVC read replicas
     PVCReplicaSup = ?CHILD(pvc_read_replica_sup, supervisor, []),
+
+    %% Exometer and other metrics collector
+    StatsCollector = ?CHILD(antidote_stats_collector, worker, []),
 
     ClockSIMaster = ?VNODE(clocksi_vnode_master, clocksi_vnode),
     ClockSIiTxCoordSup = {clocksi_interactive_tx_coord_sup,
@@ -108,6 +101,7 @@ init(_Args) ->
       [LoggingMaster,
        RubisKeyGen,
        PVCReplicaSup,
+       StatsCollector,
        ClockSIMaster,
        ClockSIiTxCoordSup,
        ClockSIReadSup,

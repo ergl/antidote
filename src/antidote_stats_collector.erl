@@ -23,43 +23,79 @@
 
 -module(antidote_stats_collector).
 
+-include("log_version_miss.hrl").
+
 -behaviour(gen_server).
+
 %% Interval to collect metrics
 -define(INTERVAL, 10000). %% 10 sec
-%% Metrics collection will be started after INIT_INTERVAL after application startup.
--define(INIT_INTERVAL, 10000). %% 10 seconds
+
+%% Called by rpc
+-ignore_xref([report_vlog_misses/0]).
 
 %% API
--export([start_link/0]).
+-export([start_link/0,
+         init_stale_metrics/0,
+         init_vlog_miss_table/0,
+         report_vlog_misses/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3]).
+
+-record(state, {
+    update_timer = undefined :: undefined | timer:tref(),
+    log_miss_table = undefined :: undefined | ets:tab()
+}).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+-spec init_stale_metrics() -> ok.
+init_stale_metrics() ->
+    gen_server:cast(?MODULE, init_metrics).
+
+%% @doc Init the version miss table
+%%      Will track how many key version misses we do by aggressive GC
+-spec init_vlog_miss_table() -> ok.
+init_vlog_miss_table() ->
+    gen_server:cast(?MODULE, init_vlog_miss_table).
+
+-spec report_vlog_misses() -> [tuple()].
+report_vlog_misses() ->
+    ets:tab2list(?LOG_MISS_TABLE).
+
 init([]) ->
-    init_metrics(),
-    Timer = erlang:send_after(?INIT_INTERVAL, self(), periodic_update),
-    {ok, Timer}.
+    {ok, #state{}}.
 
 handle_call(_Req, _From, State) ->
     {reply, ok, State}.
 
+handle_cast(init_metrics, State=#state{update_timer=undefined}) ->
+    ok = init_metrics(),
+    {ok, Timer} = timer:send_interval(?INTERVAL, self(), periodic_update),
+    {noreply, State#state{update_timer=Timer}};
+
 handle_cast({update, Metric}, State) ->
-    Val = antidote_stat:get_value(Metric),
+    Val = antidote_stats:get_value(Metric),
     exometer:update(Metric, Val),
     {noreply, State};
+
+handle_cast(init_vlog_miss_table, State=#state{log_miss_table=undefined}) ->
+    lager:info("Initializing ~p ETS table", [?LOG_MISS_TABLE]),
+    Table = ets:new(?LOG_MISS_TABLE, [set, named_table, public, {write_concurrency, true}]),
+    {noreply, State#state{log_miss_table=Table}};
 
 handle_cast(_Req, State) ->
     {noreply, State}.
 
-handle_info(periodic_update, OldTimer) ->
-    erlang:cancel_timer(OldTimer),
+handle_info(periodic_update, State) ->
     update([staleness]),
-    Timer = erlang:send_after(?INTERVAL, self(), periodic_update),
-    {noreply, Timer}.
+    {noreply, State}.
 
 terminate(_Reason, _State) ->
     ok.
@@ -74,5 +110,5 @@ update(Metric) ->
 init_metrics() ->
     Metrics = antidote_stats:stats(),
     lists:foreach(fun(Metric) ->
-                          exometer:new(Metric, histogram, [{time_span, timer:seconds(60)}])
-                  end, Metrics).
+        exometer:new(Metric, histogram, [{time_span, timer:seconds(60)}])
+    end, Metrics).
