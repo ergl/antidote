@@ -317,12 +317,43 @@ conflict_check(Payload=#psi_payload{}, Version, #state{pending_reads=Reads,
             {ok, Data}
     end.
 
--spec valid_readset(Data :: persist_data(),
+-spec valid_readset(Data :: #ser_data{},
                     Writes :: cache(key(), tx_id()),
                     LastVsnCache :: cache(key(), non_neg_integer()),
                     DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
 
-valid_readset(_Data, _Writes, _LastVsnCache, _DefaultVsn) -> true.
+valid_readset(#ser_data{readset=Keys}, Writes, LastVsnCache, DefaultVsn) ->
+    ConflictFunction = fun(Key, Vsn) ->
+        Disputed = ets:member(Writes, Key),
+        case Disputed of
+            true ->
+                {error, pvc_conflict};
+            false ->
+                StoredVersion = try ets:lookup_element(LastVsnCache, Key, 2) catch _:_ -> DefaultVsn end,
+                Stale = StoredVersion > Vsn,
+                case Stale of
+                    true -> {error, pvc_stale_read};
+                    false -> true
+                end
+        end
+    end,
+    valid_readset_inernal(Keys, ConflictFunction).
+
+-spec valid_readset_inernal(
+    Versions :: [{key(), non_neg_integer()}],
+    ConflictFun :: fun((key(), non_neg_integer()) -> true | {error, reason()})
+) -> true | {error, reason()}.
+
+valid_readset_inernal([], _Fun) ->
+    true;
+
+valid_readset_inernal([{Key, Vsn} | Rest], ConflictFun) ->
+    case ConflictFun(Key, Vsn) of
+        {error, _}=Err ->
+            Err;
+        true ->
+            valid_readset_inernal(Rest, ConflictFun)
+    end.
 
 
 -spec valid_writeset(Data :: persist_data(),
