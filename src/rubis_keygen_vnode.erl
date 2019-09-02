@@ -72,7 +72,7 @@ table_name(Partition, Name) ->
         list_to_atom(atom_to_list(Name) ++ "-" ++ integer_to_list(Partition))
     end.
 
--spec faa(atom(), ets:tid()) -> non_neg_integer().
+-spec faa(atom(), ets:tab()) -> non_neg_integer().
 faa(RubisTable, KeyTable) ->
     %% Update the id for the given table
     %% If no such `Table` key exists, then insert {Table, 0}
