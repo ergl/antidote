@@ -69,8 +69,8 @@ process_request_internal('PrepareNode', Args) ->
      end || Prepare <- PrepareMsgs];
 
 process_request_internal('Decide', Args) ->
-    #{partition := Partition, transaction_id := TxId, protocol := Protocol, payload := Outcome} = Args,
-    ok = antidote_pvc_protocol:decide(Partition, Protocol, TxId, Outcome),
+    #{partition := Partition, transaction_id := TxId, payload := Outcome} = Args,
+    ok = antidote_pvc_protocol:decide(Partition, TxId, Outcome),
     noreply;
 
 %% Used for rubis load

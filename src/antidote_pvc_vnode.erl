@@ -32,7 +32,7 @@
 
 %% Protocol API
 -export([prepare/5,
-         decide/4]).
+         decide/3]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -59,16 +59,23 @@
 -define(WRITE_HEAVY_OPTS, [set, public, named_table, {write_concurrency, true}]).
 -define(PENDING_OPTS, [bag, public, named_table, {read_concurrency, true}, {write_concurrency, true}]).
 
--record(psi_payload, {writeset :: #{key() => val()}}).
--record(psi_data, {keys :: [key()]}).
+-record(psi_payload, {
+    writeset :: #{key() => val()}
+}).
 
 -record(ser_payload, {
     writeset :: #{key() => val()},
     readset :: #{key() => non_neg_integer()}
 }).
 
+-record(psi_data, {
+    write_keys :: [key()],
+    writeset :: #{key() => val()}
+}).
+
 -record(ser_data, {
     write_keys :: [key()],
+    writeset :: #{key() => val()},
     readset :: [{key(), non_neg_integer()}]
 }).
 
@@ -167,12 +174,11 @@ prepare(Partition, Protocol, TxId, Payload, Version) ->
 
 %% FIXME(borja): Implement decide
 -spec decide(Partition :: partition_id(),
-             Protocol :: protocol(),
              TxId :: tx_id(),
              Outcome :: decision()) -> ok.
 
-decide(_Partition, _Protocol, _TxId, _Outcome) ->
-    ok.
+decide(Partition, TxId, Outcome) ->
+    decide_internal(Partition, TxId, Outcome).
 
 %%%===================================================================
 %%% riak_core callbacks
@@ -338,14 +344,14 @@ valid_writeset(#ser_data{write_keys=WKeys}, Reads, Writes, Version, LastVsnCache
     end,
     valid_writeset_internal(WKeys, ConflictFun);
 
-valid_writeset(#psi_data{keys=WKeys}, _Reads, Writes, Version, LastVsnCache, DefaultVsn) ->
+valid_writeset(#psi_data{write_keys=WKeys}, _Reads, Writes, Version, LastVsnCache, DefaultVsn) ->
     ConflictFun = fun(Key) ->
         check_key_overlap(Key, Version, Writes, LastVsnCache, DefaultVsn)
     end,
     valid_writeset_internal(WKeys, ConflictFun).
 
 -spec persist_data(TxId :: tx_id(), Data :: persist_data(), State :: #state{}) -> ok.
-persist_data(TxId, Data=#psi_data{keys=Keys}, State) ->
+persist_data(TxId, Data=#psi_data{write_keys=Keys}, State) ->
     true = ets:insert(State#state.pending_tx_data, Data),
     true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- Keys]),
     ok;
@@ -364,11 +370,16 @@ persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
 make_payload(psi, WS) -> #psi_payload{writeset=WS};
 make_payload(set, {RS, WS}) -> #ser_payload{readset=RS, writeset=WS}.
 
+%% @doc Memoize keys so we don't need to compute them each time
 -spec make_data(protocol_payload()) -> persist_data().
 make_data(#ser_payload{writeset=WS, readset=RS}) ->
-    #ser_data{write_keys=maps:keys(WS), readset=maps:to_list(RS)};
+    #ser_data{writeset=WS,
+              readset=maps:to_list(RS),
+              write_keys=maps:keys(WS)};
+
 make_data(#psi_payload{writeset=WS}) ->
-    #psi_data{keys=maps:keys(WS)}.
+    #psi_data{writeset=WS,
+              write_keys=maps:keys(WS)}.
 
 -spec check_key_overlap(Key :: key(),
                         Version :: non_neg_integer(),
@@ -421,6 +432,50 @@ valid_writeset_internal([Key | Rest], ConflictFun) ->
         {error, _}=Err -> Err;
         true -> valid_writeset_internal(Rest, ConflictFun)
     end.
+
+%%%===================================================================
+%%% Decide Internal Functions
+%%%===================================================================
+
+-spec decide_internal(Partition :: partition_id(),
+                      TxId :: tx_id(),
+                      Outcome :: {ok, pvc_vc()} | abort) -> ok.
+
+decide_internal(Partition, TxId, {ok, VC}) ->
+    ?LAGER_LOG("Commit: Mark ~p as ready", [TxId]),
+    ets:insert(cache_name(Partition, ?DECIDE_TABLE), {TxId, ready, VC}),
+    ok;
+
+decide_internal(Partition, TxId, abort) ->
+    ?LAGER_LOG("Abort: Removing ~p from CommitQueue", [TxId]),
+    case ets:take(cache_name(Partition, ?PENDING_DATA_TABLE), TxId) of
+        [{TxId, Payload}] ->
+            true = ets:insert(cache_name(Partition, ?DECIDE_TABLE), {TxId, abort}),
+            ok = clear_pending(Partition, TxId, Payload);
+        _ ->
+            ok
+    end.
+
+-spec clear_pending(Partition :: partition_id(),
+                    TxId :: tx_id(),
+                    Data :: persist_data()) -> ok.
+
+clear_pending(Partition, TxId, #psi_data{write_keys=WKeys}) ->
+    clear_writes(TxId, WKeys, cache_name(Partition, ?PENDING_WRITES_TABLE));
+
+clear_pending(Partition, TxId, #ser_data{write_keys=WKeys, readset=RS}) ->
+    clear_reads(TxId, RS, cache_name(Partition, ?PENDING_READS_TABLE)),
+    clear_writes(TxId, WKeys, cache_name(Partition, ?PENDING_WRITES_TABLE)).
+
+-spec clear_reads(tx_id(), [{key(), non_neg_integer()}], cache(key(), tx_id())) -> ok.
+clear_reads(TxId, ReadKeys, Reads) ->
+    _ = [ets:delete_object(Reads, {Key, TxId}) || {Key, _} <- ReadKeys],
+    ok.
+
+-spec clear_writes(tx_id(), [key()], cache(key(), tx_id())) -> ok.
+clear_writes(TxId, WriteKeys, Writes) ->
+    _ = [ets:delete_object(Writes, {Key, TxId}) || Key <- WriteKeys],
+    ok.
 
 %%%===================================================================
 %%% Util Functions

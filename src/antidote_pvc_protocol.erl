@@ -26,7 +26,7 @@
          load/1,
          read_request/4,
          prepare/5,
-         decide/4]).
+         decide/3]).
 
 %% Old API, deprecated
 -export([start_transaction/0,
@@ -108,8 +108,8 @@ prepare(Partition, Protocol, TxId, Payload, PartitionVersion) ->
             {ok, Partition, SeqNumber}
     end.
 
-decide(Partition, Protocol, TxId, Outcome) ->
-    antidote_pvc_vnode:decide(Partition, Protocol, TxId, Outcome).
+decide(Partition, TxId, Outcome) ->
+    antidote_pvc_vnode:decide(Partition, TxId, Outcome).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
