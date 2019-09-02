@@ -244,8 +244,8 @@ handle_command({prepare, TxId, Payload, Version}, _From, State) ->
     {reply, Reply, NewState};
 
 handle_command(dequeue_event, _From, State) ->
-    %% FIXME(borja): Implement dequeue
-    {noreply, State}.
+    NewQueue = dequeue_event_internal(State),
+    {noreply, State#state{commit_queue=NewQueue}}.
 
 %%%===================================================================
 %%% Prepare Internal Functions
@@ -475,6 +475,80 @@ clear_reads(TxId, ReadKeys, Reads) ->
 -spec clear_writes(tx_id(), [key()], cache(key(), tx_id())) -> ok.
 clear_writes(TxId, WriteKeys, Writes) ->
     _ = [ets:delete_object(Writes, {Key, TxId}) || Key <- WriteKeys],
+    ok.
+
+%%%===================================================================
+%%% Dequeue Functions
+%%%===================================================================
+
+-spec dequeue_event_internal(#state{}) -> pvc_commit_queue:cqueue().
+dequeue_event_internal(#state{partition = Partition,
+                              commit_queue = Queue,
+                              most_recent_vc = MRVCTable,
+                              decision_cache = DecideTable,
+                              last_vsn_cache = LastVsnCache,
+                              pending_tx_data = PendingData}) ->
+
+    {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(Queue, DecideTable, PendingData),
+    case ReadyTx of
+        [] ->
+            ok;
+        Entries ->
+            lists:foreach(fun({TxId, TxData, CommitVC}) ->
+                ?LAGER_LOG("Processing ~p, update materializer", [TxId]),
+                %% Persist the writeset in storage
+                ok = update_materializer(Partition, TxData, CommitVC),
+
+                %% Update current MRVC
+                ?LAGER_LOG("Processing ~p, update MRVC", [TxId]),
+                ok = update_mrvc(CommitVC, MRVCTable),
+
+                %% Update Commit Log
+                ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
+                ok = logging_vnode:pvc_insert_to_commit_log(Partition, CommitVC),
+
+                ?LAGER_LOG("Processing ~p, cache VLog.last", [TxId]),
+                CommitTime = pvc_vclock:get_time(Partition, CommitVC),
+                ok = cache_last_vsn(TxData, CommitTime, LastVsnCache),
+
+                %% Remove the keys from the pending table
+                %% NOTE: Don't try to optimize by fusing this loop with the previous
+                %% function. We want the changes to the VLog to be visible before
+                %% removing the key from the pending table. Since Erlang doesn't offer
+                %% an atomic multi-object ets:delete_object/2, we have to do it the old way.
+                ok = clear_pending(Partition, TxId, TxData)
+            end, Entries)
+    end,
+    NewQueue.
+
+-spec update_materializer(Partition :: partition_id(),
+                          TxData :: persist_data(),
+                          CommitVC :: pvc_vc()) -> ok.
+
+update_materializer(Partition, TxData, CommitVC) ->
+    WS = case TxData of
+        #ser_data{} -> TxData#ser_data.writeset;
+        #psi_data{} -> TxData#psi_data.writeset
+    end,
+    materializer_vnode:pvc_update_keys(Partition, WS, CommitVC).
+
+-spec update_mrvc(CommitVC :: pvc_vc(), MRVCTable :: cache(mrvc, pvc_vc())) -> ok.
+update_mrvc(CommitVC, MRVCTable) ->
+    OldMRVC = ets:lookup_element(MRVCTable, mrvc, 2),
+    true = ets:update_element(MRVCTable, mrvc, {2, pvc_vclock:max(CommitVC, OldMRVC)}),
+    ok.
+
+-spec cache_last_vsn(TxData :: persist_data(),
+                     CommitTime :: non_neg_integer(),
+                     LastVsnCache :: cache(key(), non_neg_integer())) -> ok.
+
+cache_last_vsn(TxData, CommitTime, LastVsnCache) ->
+    WKeys = case TxData of
+        #ser_data{} -> TxData#ser_data.write_keys;
+        #psi_data{} -> TxData#psi_data.write_keys
+    end,
+    Objects = [{Key, CommitTime} || Key <- WKeys],
+    true = ets:insert(LastVsnCache, Objects),
     ok.
 
 %%%===================================================================
