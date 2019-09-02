@@ -59,6 +59,22 @@
 -define(WRITE_HEAVY_OPTS, [set, public, named_table, {write_concurrency, true}]).
 -define(PENDING_OPTS, [bag, public, named_table, {read_concurrency, true}, {write_concurrency, true}]).
 
+-record(psi_payload, {writeset :: #{key() => val()}}).
+-record(psi_data, {keys :: [key()]}).
+
+-record(ser_payload, {
+    writeset :: #{key() => val()},
+    readset :: #{key() => non_neg_integer()}
+}).
+
+-record(ser_data, {
+    write_keys :: [key()],
+    readset :: [{key(), non_neg_integer()}]
+}).
+
+-type protocol_payload() :: #psi_payload{} | #ser_payload{}.
+-type persist_data() :: #psi_data{} | #ser_data{}.
+
 %% Called internally by riak_core, or via rpc
 -ignore_xref([start_vnode/1,
               replicas_ready/0,
@@ -84,7 +100,7 @@
 
     %% Holds temporary data for the transactions while they sit
     %% on the commit queue. Used to offload memory to an ETS.
-    pending_tx_data :: cache(tx_id(), term()),
+    pending_tx_data :: cache(tx_id(), persist_data()),
 
     %% A pair of inverted indices over the transactions read/write sets
     %% Used to compute write-write and read-write conflicts in a quick way.
@@ -145,7 +161,7 @@ replicas_ready() ->
 
 prepare(Partition, Protocol, TxId, Payload, Version) ->
     riak_core_vnode_master:sync_command({Partition, node()},
-                                        {prepare, Protocol, TxId, Payload, Version},
+                                        {prepare, TxId, make_payload(Protocol, Payload), Version},
                                         ?VNODE_MASTER,
                                         infinity).
 
@@ -216,18 +232,121 @@ handle_command(flush_queue, _From, State) ->
 
     {reply, ok, State#state{commit_queue=pvc_commit_queue:new()}};
 
-handle_command({prepare, Protocol, TxId, Payload, Version}, _From, State) ->
-    %% FIXME(borja): Implement prepare
-    ?LAGER_LOG("{prepare, ~p, ~p, ~p, ~p}", [Protocol, TxId, Payload, Version]),
-    {reply, {ok, State#state.last_prepared}, State};
+handle_command({prepare, TxId, Payload, Version}, _From, State) ->
+    ?LAGER_LOG("{prepare, p, ~p, ~p}", [TxId, Payload, Version]),
+    {Reply, NewState} = prepare_internal(TxId, Payload, Version, State),
+    {reply, Reply, NewState};
 
 handle_command(dequeue_event, _From, State) ->
     %% FIXME(borja): Implement dequeue
     {noreply, State}.
 
 %%%===================================================================
+%%% Prepare Internal Functions
+%%%===================================================================
+
+-spec prepare_internal(TxId :: tx_id(),
+                       Payload :: protocol_payload(),
+                       Version :: non_neg_integer(),
+                       State :: #state{}) -> {term(), #state{}}.
+
+prepare_internal(TxId, Payload, Version, State = #state{commit_queue=Queue,
+                                                        last_prepared=LastPrep}) ->
+    Valid = conflict_check(Payload, Version, State),
+    case Valid of
+        {error, _}=Err ->
+            ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, Err]),
+            {Err, State};
+
+        {ok, PersistData} ->
+            Seq = LastPrep + 1,
+            NewQueue = pvc_commit_queue:enqueue(TxId, Queue),
+            ok = persist_data(TxId, PersistData, State),
+
+            ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {ok, Seq}]),
+            Reply = {ok, Seq},
+            NewState = State#state{last_prepared=Seq, commit_queue=NewQueue},
+            {Reply, NewState}
+    end.
+
+-spec persist_data(TxId :: tx_id(), Data :: persist_data(), State :: #state{}) -> ok.
+persist_data(TxId, Data=#psi_data{keys=Keys}, State) ->
+    true = ets:insert(State#state.pending_tx_data, Data),
+    true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- Keys]),
+    ok;
+
+persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
+    true = ets:insert(State#state.pending_tx_data, Data),
+    true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- WKeys]),
+    true = ets:insert(State#state.pending_reads, [{Key, TxId} || {Key, _} <- RS]),
+    ok.
+
+-spec conflict_check(Payload :: protocol_payload(),
+                     Version :: non_neg_integer(),
+                     State :: #state{}) -> {ok, persist_data()} | {error, reason()}.
+
+conflict_check(Payload=#ser_payload{}, Version, #state{pending_reads=Reads,
+                                                       pending_writes=Writes,
+                                                       last_vsn_cache=LastVsnCache,
+                                                       default_last_vsn=DefaultVsn}) ->
+    Data = make_data(Payload),
+    ValidReadset = valid_readset(Data, Writes, LastVsnCache, DefaultVsn),
+    case ValidReadset of
+        {error, _}=ReadErr ->
+            ReadErr;
+        true ->
+            ValidWriteset = valid_writeset(Data, Reads, Writes, Version, LastVsnCache, DefaultVsn),
+            case ValidWriteset of
+                {error, _}=WriteErr ->
+                    WriteErr;
+                true ->
+                    {ok, Data}
+            end
+    end;
+
+conflict_check(Payload=#psi_payload{}, Version, #state{pending_reads=Reads,
+                                                       pending_writes=Writes,
+                                                       last_vsn_cache=LastVsnCache,
+                                                       default_last_vsn=DefaultVsn}) ->
+    Data = make_data(Payload),
+    ValidWriteset = valid_writeset(Data, Reads, Writes, Version, LastVsnCache, DefaultVsn),
+    case ValidWriteset of
+        {error, _}=WriteErr ->
+            WriteErr;
+        true ->
+            {ok, Data}
+    end.
+
+-spec valid_readset(Data :: persist_data(),
+                    Writes :: cache(key(), tx_id()),
+                    LastVsnCache :: cache(key(), non_neg_integer()),
+                    DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
+
+valid_readset(_Data, _Writes, _LastVsnCache, _DefaultVsn) -> true.
+
+
+-spec valid_writeset(Data :: persist_data(),
+                     Reads :: cache(key(), tx_id()),
+                     Writes :: cache(key(), tx_id()),
+                     Version :: non_neg_integer(),
+                     LastVsnCache :: cache(key(), non_neg_integer()),
+                     DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
+
+valid_writeset(_Data, _Reads, _Writes, _Version, _LastVsnCache, _DefaultVsn) -> true.
+
+%%%===================================================================
 %%% Util Functions
 %%%===================================================================
+
+-spec make_payload(protocol(), term()) -> protocol_payload().
+make_payload(psi, WS) -> #psi_payload{writeset=WS};
+make_payload(set, {RS, WS}) -> #ser_payload{readset=RS, writeset=WS}.
+
+-spec make_data(protocol_payload()) -> persist_data().
+make_data(#ser_payload{writeset=WS, readset=RS}) ->
+    #ser_data{write_keys=maps:keys(WS), readset=maps:to_list(RS)};
+make_data(#psi_payload{writeset=WS}) ->
+    #psi_data{keys=maps:keys(WS)}.
 
 -spec safe_bin_to_atom(binary()) -> atom().
 safe_bin_to_atom(Bin) ->
