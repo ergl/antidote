@@ -60,15 +60,17 @@ process_request_internal('ReadRequest', Args) ->
     antidote_pvc_protocol:read_request(Partition, Key, VC, HasRead);
 
 process_request_internal('PrepareNode', Args) ->
-    #{transaction_id := TxId, prepares := PrepareMsgs} = Args,
+    #{transaction_id := TxId, protocol := Protocol, prepares := PrepareMsgs} = Args,
+    %% TODO(borja): Make this in parallel
+    %% See https://medium.com/@jlouis666/testing-a-parallel-map-implementation-2d9eab47094e
     [begin
-         #{partition := P, writeset := WS, version := Vsn} = Prepare,
-         antidote_pvc_protocol:prepare(P, TxId, WS, Vsn)
+         #{partition := P, keydata := Payload, version := Vsn} = Prepare,
+         antidote_pvc_protocol:prepare(P, Protocol, TxId, Payload, Vsn)
      end || Prepare <- PrepareMsgs];
 
 process_request_internal('Decide', Args) ->
-    #{partition := Partition, transaction_id := TxId, payload := Outcome} = Args,
-    ok = antidote_pvc_protocol:decide(Partition, TxId, Outcome),
+    #{partition := Partition, transaction_id := TxId, protocol := Protocol, payload := Outcome} = Args,
+    ok = antidote_pvc_protocol:decide(Partition, Protocol, TxId, Outcome),
     noreply;
 
 %% Used for rubis load

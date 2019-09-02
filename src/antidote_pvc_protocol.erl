@@ -25,8 +25,8 @@
 -export([connect/0,
          load/1,
          read_request/4,
-         prepare/4,
-         decide/3]).
+         prepare/5,
+         decide/4]).
 
 %% Old API, deprecated
 -export([start_transaction/0,
@@ -97,9 +97,9 @@ read_request(Partition, Key, VCaggr, HasRead) ->
     end.
 -endif.
 
-prepare(Partition, TxId, WriteSet, PartitionVersion) ->
-    ok = clocksi_vnode:pvc_prepare(self(), Partition, TxId, WriteSet, PartitionVersion),
-    receive
+prepare(Partition, Protocol, TxId, Payload, PartitionVersion) ->
+    Vote = antidote_pvc_vnode:prepare(Partition, Protocol, TxId, Payload, PartitionVersion),
+    case Vote of
         {error, Reason} ->
             ?LAGER_LOG("Received ~p", [{error, Reason}]),
             {error, Partition, Reason};
@@ -108,8 +108,8 @@ prepare(Partition, TxId, WriteSet, PartitionVersion) ->
             {ok, Partition, SeqNumber}
     end.
 
-decide(Partition, TxId, Outcome) ->
-    clocksi_vnode:pvc_decide(Partition, TxId, Outcome).
+decide(Partition, Protocol, TxId, Outcome) ->
+    antidote_pvc_vnode:decide(Partition, Protocol, TxId, Outcome).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 

@@ -251,6 +251,7 @@ prepare(ListofNodes, TxId) ->
         )
     end, ok, ListofNodes).
 
+%% @deprecated
 -spec pvc_prepare(pid(), partition_id(), term(), term(), non_neg_integer()) -> ok.
 pvc_prepare(ReplyTo, Partition, TxId, Writeset, Version) ->
     %% Will return like ReplyTo ! Msg
@@ -263,6 +264,7 @@ pvc_prepare(ReplyTo, Partition, TxId, Writeset, Version) ->
 %% @deprecated
 decide(_, _, _, _) -> erlang:error(gone).
 
+%% @deprecated
 -spec pvc_decide(Partition :: partition_id(),
                  TxId :: term(),
                  Outcome :: abort | {ok, pvc_vc()}) -> ok.

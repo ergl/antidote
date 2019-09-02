@@ -269,18 +269,6 @@ prepare_internal(TxId, Payload, Version, State = #state{commit_queue=Queue,
             {Reply, NewState}
     end.
 
--spec persist_data(TxId :: tx_id(), Data :: persist_data(), State :: #state{}) -> ok.
-persist_data(TxId, Data=#psi_data{keys=Keys}, State) ->
-    true = ets:insert(State#state.pending_tx_data, Data),
-    true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- Keys]),
-    ok;
-
-persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
-    true = ets:insert(State#state.pending_tx_data, Data),
-    true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- WKeys]),
-    true = ets:insert(State#state.pending_reads, [{Key, TxId} || {Key, _} <- RS]),
-    ok.
-
 -spec conflict_check(Payload :: protocol_payload(),
                      Version :: non_neg_integer(),
                      State :: #state{}) -> {ok, persist_data()} | {error, reason()}.
@@ -317,44 +305,20 @@ conflict_check(Payload=#psi_payload{}, Version, #state{pending_reads=Reads,
             {ok, Data}
     end.
 
+%%%===================================================================
+%%% Prepare Conflict Check Functions
+%%%===================================================================
+
 -spec valid_readset(Data :: #ser_data{},
                     Writes :: cache(key(), tx_id()),
                     LastVsnCache :: cache(key(), non_neg_integer()),
                     DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
 
 valid_readset(#ser_data{readset=Keys}, Writes, LastVsnCache, DefaultVsn) ->
-    ConflictFunction = fun(Key, Vsn) ->
-        Disputed = ets:member(Writes, Key),
-        case Disputed of
-            true ->
-                {error, pvc_conflict};
-            false ->
-                StoredVersion = try ets:lookup_element(LastVsnCache, Key, 2) catch _:_ -> DefaultVsn end,
-                Stale = StoredVersion > Vsn,
-                case Stale of
-                    true -> {error, pvc_stale_read};
-                    false -> true
-                end
-        end
+    ConflictFunction = fun(Key, Version) ->
+        check_key_overlap(Key, Version, Writes, LastVsnCache, DefaultVsn)
     end,
     valid_readset_inernal(Keys, ConflictFunction).
-
--spec valid_readset_inernal(
-    Versions :: [{key(), non_neg_integer()}],
-    ConflictFun :: fun((key(), non_neg_integer()) -> true | {error, reason()})
-) -> true | {error, reason()}.
-
-valid_readset_inernal([], _Fun) ->
-    true;
-
-valid_readset_inernal([{Key, Vsn} | Rest], ConflictFun) ->
-    case ConflictFun(Key, Vsn) of
-        {error, _}=Err ->
-            Err;
-        true ->
-            valid_readset_inernal(Rest, ConflictFun)
-    end.
-
 
 -spec valid_writeset(Data :: persist_data(),
                      Reads :: cache(key(), tx_id()),
@@ -363,10 +327,37 @@ valid_readset_inernal([{Key, Vsn} | Rest], ConflictFun) ->
                      LastVsnCache :: cache(key(), non_neg_integer()),
                      DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
 
-valid_writeset(_Data, _Reads, _Writes, _Version, _LastVsnCache, _DefaultVsn) -> true.
+valid_writeset(#ser_data{write_keys=WKeys}, Reads, Writes, Version, LastVsnCache, DefaultVsn) ->
+    ConflictFun = fun(Key) ->
+    Disputed = ets:member(Reads, Key) orelse
+               ets:member(Writes, Key),
+    case Disputed of
+        true -> {error, pvc_conflict};
+        false -> stale_version(Key, Version, LastVsnCache, DefaultVsn)
+    end
+    end,
+    valid_writeset_internal(WKeys, ConflictFun);
+
+valid_writeset(#psi_data{keys=WKeys}, _Reads, Writes, Version, LastVsnCache, DefaultVsn) ->
+    ConflictFun = fun(Key) ->
+        check_key_overlap(Key, Version, Writes, LastVsnCache, DefaultVsn)
+    end,
+    valid_writeset_internal(WKeys, ConflictFun).
+
+-spec persist_data(TxId :: tx_id(), Data :: persist_data(), State :: #state{}) -> ok.
+persist_data(TxId, Data=#psi_data{keys=Keys}, State) ->
+    true = ets:insert(State#state.pending_tx_data, Data),
+    true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- Keys]),
+    ok;
+
+persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
+    true = ets:insert(State#state.pending_tx_data, Data),
+    true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- WKeys]),
+    true = ets:insert(State#state.pending_reads, [{Key, TxId} || {Key, _} <- RS]),
+    ok.
 
 %%%===================================================================
-%%% Util Functions
+%%% Prepare Util Functions
 %%%===================================================================
 
 -spec make_payload(protocol(), term()) -> protocol_payload().
@@ -378,6 +369,62 @@ make_data(#ser_payload{writeset=WS, readset=RS}) ->
     #ser_data{write_keys=maps:keys(WS), readset=maps:to_list(RS)};
 make_data(#psi_payload{writeset=WS}) ->
     #psi_data{keys=maps:keys(WS)}.
+
+-spec check_key_overlap(Key :: key(),
+                        Version :: non_neg_integer(),
+                        Writes :: cache(key(), tx_id()),
+                        LastVsnCache :: cache(key(), non_neg_integer()),
+                        DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
+
+check_key_overlap(Key, Version, Writes, LastVsnCache, DefaultVsn) ->
+    Disputed = ets:member(Writes, Key),
+    case Disputed of
+        true -> {error, pvc_conflict};
+        false -> stale_version(Key, Version, LastVsnCache, DefaultVsn)
+    end.
+
+-spec stale_version(Key :: key(),
+                    Version :: non_neg_integer(),
+                    LastVsnCache :: cache(key(), non_neg_integer()),
+                    DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
+
+stale_version(Key, Version, LastVsnCache, DefaultVsn) ->
+    StoredVersion = try ets:lookup_element(LastVsnCache, Key, 2) catch _:_ -> DefaultVsn end,
+    Stale = StoredVersion > Version,
+    case Stale of
+        true ->
+            {error, pvc_stale_tx};
+        false ->
+            true
+    end.
+
+-spec valid_readset_inernal(
+    Versions :: [{key(), non_neg_integer()}],
+    ConflictFun :: fun((key(), non_neg_integer()) -> true | {error, reason()})
+) -> true | {error, reason()}.
+
+valid_readset_inernal([], _Fun) -> true;
+valid_readset_inernal([{Key, Vsn} | Rest], ConflictFun) ->
+    case ConflictFun(Key, Vsn) of
+        {error, _}=Err -> Err;
+        true -> valid_readset_inernal(Rest, ConflictFun)
+    end.
+
+-spec valid_writeset_internal(
+    Versions :: [{key(), non_neg_integer()}],
+    ConflictFun :: fun((key()) -> true | {error, reason()})
+) -> true | {error, reason()}.
+
+valid_writeset_internal([], _Fun) -> true;
+valid_writeset_internal([Key | Rest], ConflictFun) ->
+    case ConflictFun(Key) of
+        {error, _}=Err -> Err;
+        true -> valid_writeset_internal(Rest, ConflictFun)
+    end.
+
+%%%===================================================================
+%%% Util Functions
+%%%===================================================================
 
 -spec safe_bin_to_atom(binary()) -> atom().
 safe_bin_to_atom(Bin) ->
