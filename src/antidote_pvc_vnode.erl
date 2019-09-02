@@ -368,7 +368,7 @@ persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
 
 -spec make_payload(protocol(), term()) -> protocol_payload().
 make_payload(psi, WS) -> #psi_payload{writeset=WS};
-make_payload(set, {RS, WS}) -> #ser_payload{readset=RS, writeset=WS}.
+make_payload(ser, {RS, WS}) -> #ser_payload{readset=RS, writeset=WS}.
 
 %% @doc Memoize keys so we don't need to compute them each time
 -spec make_data(protocol_payload()) -> persist_data().
