@@ -239,7 +239,7 @@ handle_command(flush_queue, _From, State) ->
     {reply, ok, State#state{commit_queue=pvc_commit_queue:new()}};
 
 handle_command({prepare, TxId, Payload, Version}, _From, State) ->
-    ?LAGER_LOG("{prepare, p, ~p, ~p}", [TxId, Payload, Version]),
+    ?LAGER_LOG("{prepare, ~p, ~p, ~p}", [TxId, Payload, Version]),
     {Reply, NewState} = prepare_internal(TxId, Payload, Version, State),
     {reply, Reply, NewState};
 
@@ -352,12 +352,12 @@ valid_writeset(#psi_data{write_keys=WKeys}, _Reads, Writes, Version, LastVsnCach
 
 -spec persist_data(TxId :: tx_id(), Data :: persist_data(), State :: #state{}) -> ok.
 persist_data(TxId, Data=#psi_data{write_keys=Keys}, State) ->
-    true = ets:insert(State#state.pending_tx_data, Data),
+    true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
     true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- Keys]),
     ok;
 
 persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
-    true = ets:insert(State#state.pending_tx_data, Data),
+    true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
     true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- WKeys]),
     true = ets:insert(State#state.pending_reads, [{Key, TxId} || {Key, _} <- RS]),
     ok.
