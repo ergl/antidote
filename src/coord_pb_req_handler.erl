@@ -786,6 +786,7 @@ get_authored_comments(UserId, TxId) ->
 
 %% Util functions
 
+%% TODO(borja): Update to new errors
 -spec map_error(fun((any()) -> any()), [any()]) -> {ok, [any()]} | {error, term()}.
 map_error(Fun, List) ->
     try
