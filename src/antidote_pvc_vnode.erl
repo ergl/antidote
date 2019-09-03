@@ -222,7 +222,7 @@ handle_command(start_replicas, _From, S = #state{partition=P, replicas_n=N}) ->
     {reply, Result, S#state{dequeue_timer=TRef}};
 
 handle_command(stop_replicas, _From, S = #state{partition=P, replicas_n=N, dequeue_timer=TRef}) ->
-    ok = pvc_read_replica:start_replicas(P, N),
+    ok = pvc_read_replica:stop_replicas(P, N),
     ok = stop_dequeue_interval(TRef),
     {reply, ok, S#state{dequeue_timer=undefined}};
 

@@ -45,6 +45,8 @@
          terminate/2,
          code_change/3]).
 
+-ignore_xref([start_link/2]).
+
 -record(state, {
     %% Name of this read replica
     self :: atom(),
@@ -70,6 +72,10 @@
 %%
 %%      Since they replicate ETS tables stored in vnodes, they have
 %%      to be started in the same physical node.
+%%
+%%
+%%      This function is called from the supervisor dynamically
+%%      (see pvc_read_replica_sup:start_replica/2)
 %%
 -spec start_link(Partition :: partition_id(),
                  Id :: non_neg_integer()) -> {ok, pid()} | ignore | {error, term()}.

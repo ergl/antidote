@@ -28,6 +28,7 @@
 
 -export([init/1]).
 
+-ignore_xref([start_link/0]).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
