@@ -54,13 +54,6 @@
          single_commit_sync/2,
          reverse_and_filter_updates_per_key/2]).
 
-%% PVC-only exports
--export([decide/4,
-         pvc_prepare/5,
-         pvc_decide/3,
-         pvc_get_most_recent_vc/2,
-         check_pvc_replicas_ready/0]).
-
 %% health check export
 -export([check_tables_ready/0,
          check_servers_ready/0]).
@@ -76,8 +69,7 @@
 %%
 -ignore_xref([start_vnode/1,
               check_servers_ready/0,
-              check_tables_ready/0,
-              check_pvc_replicas_ready/0]).
+              check_tables_ready/0]).
 
 -record(state, {
     %% the partition that the vnode is responsible for.
@@ -91,34 +83,7 @@
     %% transaction for each key.
     committed_tx :: cache_id(),
     read_servers :: non_neg_integer(),
-    prepared_dict :: orddict:orddict(),
-
-    pvc_atomic_state :: cache_id(),
-    %% The default VLog.last(key).vid[partition],
-    %% useful for emulating database load.
-    %% Tells the client what is the most recent version of a key.
-    pvc_key_miss_default_version :: non_neg_integer(),
-    pvc_commitqueue :: pvc_commit_queue:cqueue(),
-    %% A set populated with all the transactions currently sitting in the commit
-    %% queue, together with their writeset: so the mapping is tx_id() => ws().
-    %% We pulled this out of the commit queue to move the storage off-heap, and
-    %% to be able to perform the entire decide procedure from outside the virtual
-    %% node.
-    pvc_pending_writesets :: cache_id(),
-    %% A bag populated with all the keys currently present in the commit queue
-    %% mapping key() => tx_id(), Cleaned on marking a transaction as aborted,
-    %% or when it gets dequeued.
-    pvc_pending_keys :: cache_id(),
-    %% This table contains the decisions that clients make about transactions
-    %% after a voting phase. Clients will write to this table from outside of
-    %% the virtual node, to avoid serialization overhead. Since other processes
-    %% will be able to write to this table, we need to set it to public.
-    %%
-    %% The mapping is tx_id() => abort | {ready, pvc_vc(), ...}
-    pvc_decide_table :: cache_id(),
-
-    %% Timer reference for periodic dequeue
-    pvc_dequeue_timer = undefined :: timer:tref() | undefined
+    prepared_dict :: orddict:orddict()
 }).
 
 %%%===================================================================
@@ -149,37 +114,6 @@ async_read_data_item(Node, Transaction, Key, Type) ->
         Transaction,
         {fsm, self()}
     ).
-
-%% @doc Hack-ish way to get the most recent vc in this partition
-%%
-%% Called from clocksi_readitem_server, couples them together,
-%% but this is the least complicated way I could come up with
-%% to get around blocking the virtual node while waiting for
-%% the clock to catch up.
--spec pvc_get_most_recent_vc(index_node(), atom()) -> pvc_vc().
-pvc_get_most_recent_vc(Node, TableName) ->
-    try
-        pvc_get_mrvc(TableName)
-    catch _:_ ->
-        lager:info("MRVC miss at ~p", [Node]),
-        riak_core_vnode_master:sync_command(Node, pvc_mostrecentvc, ?CLOCKSI_MASTER)
-    end.
-
-%% @doc Schedule a dequeue event in the vnode
-%%
-%%      This function will send a message to the Partition's vnode every
-%%      DEQUEUE_INTERVAL ms
--spec schedule_dequeue_interval(partition_id()) -> {ok, timer:tref()}.
-schedule_dequeue_interval(Partition) ->
-    Args = [{Partition, node()}, pvc_dequeue_event, ?CLOCKSI_MASTER],
-    timer:apply_interval(?DEQUEUE_INTERVAL, riak_core_vnode_master,
-                                            command,
-                                            Args).
-
--spec stop_dequeue_interval(timer:tref()) -> ok.
-stop_dequeue_interval(TRef) ->
-    {ok, cancel} = timer:cancel(TRef),
-    ok.
 
 %% @doc Return active transactions in prepare state with their preparetime for a given key
 %% should be run from same physical node
@@ -251,63 +185,6 @@ prepare(ListofNodes, TxId) ->
         )
     end, ok, ListofNodes).
 
-%% @deprecated
--spec pvc_prepare(pid(), partition_id(), term(), term(), non_neg_integer()) -> ok.
-pvc_prepare(ReplyTo, Partition, TxId, Writeset, Version) ->
-    %% Will return like ReplyTo ! Msg
-    riak_core_vnode_master:command(
-        {Partition, node()},
-        {pvc_prepare, ReplyTo, TxId, Writeset, Version},
-        ?CLOCKSI_MASTER
-    ).
-
-%% @deprecated
-decide(_, _, _, _) -> erlang:error(gone).
-
-%% @deprecated
--spec pvc_decide(Partition :: partition_id(),
-                 TxId :: term(),
-                 Outcome :: abort | {ok, pvc_vc()}) -> ok.
-
-pvc_decide(Partition, TxId, {ok, VC}) ->
-    ?LAGER_LOG("Commit: Mark ~p as ready", [TxId]),
-    %% TODO(borja): Pass index info in the tuple
-    true = ets:insert(get_cache_name(Partition, ?DECIDE_TABLE), {TxId, ready, VC}),
-    ok;
-
-pvc_decide(Partition, TxId, abort) ->
-    %% TODO(borja): Rethink abort flow
-    %% Maybe we should just mark the transaction as aborted and let the vnode
-    %% clean up any state during the dequeue interval (or at least the cleaning
-    %% up of the pending keys). Since ETS doesn't offer an atomic multi-delete
-    %% operation, we might find a case where a transaction is aborted in parallel
-    %% with another being in the prepare phase and checking for potential overlaps
-    %% in the pending keys table. Since we're doing one delete at a time, it might
-    %% be the case where a transaction has been aborted, but haven't deleted all the
-    %% keys from the pending table just yet. An overlapping transaction will abort
-    %% in a write-write conflict when it shouldn't have.
-    %%
-    %% Of course, marking the transaction as aborted but not yet removed until the
-    %% next dequeue event offers the same scenario, where a transaction is aborted,
-    %% but concurrent transactions won't learn about until the next dequeue event.
-    %%
-    %% In any case, it's not a correctness problem, since clients will retry
-    %% aborted transactions, and we're not sacrifing correctness (invalid state will
-    %% never reach the storage layer), but we can be overly strict.
-    ?LAGER_LOG("Abort: Removing ~p from CommitQueue", [TxId]),
-    case ets:take(get_cache_name(Partition, ?WRITESET_TABLE), TxId) of
-        [{TxId, Writeset}] ->
-            true = ets:insert(get_cache_name(Partition, ?DECIDE_TABLE), {TxId, abort}),
-            ok = pvc_remove_pending(maps:keys(Writeset),
-                                    TxId,
-                                    get_cache_name(Partition, ?WRITESET_TABLE_INDEX));
-        _ ->
-            %% If this transaction was marked as aborted by this partition, no state will be kept,
-            %% the transaction won't even be in the commit queue, so there's no need to store the
-            %% decision in the decide table, otherwise we would have a memory leak
-            ok
-    end.
-
 %% @doc Sends prepare+commit to a single partition
 %%      Called by a Tx coordinator when the tx only
 %%      affects one partition
@@ -337,18 +214,6 @@ commit(ListofNodes, TxId, CommitTime) ->
         )
     end, ok, ListofNodes).
 
-abort(UpdatedPartitions, Tx = #transaction{
-    transactional_protocol = pvc
-}) ->
-    lists:foreach(fun({Node, WriteSet}) ->
-        riak_core_vnode_master:command(
-            Node,
-            {pvc_abort, Tx, WriteSet},
-            {fsm, undefined, self()},
-            ?CLOCKSI_MASTER
-        )
-    end, UpdatedPartitions);
-
 %% @doc Sends an abort request to a Node involved in a tx identified by TxId
 abort(ListofNodes, TxId) ->
     lists:foldl(fun({Node, WriteSet}, _Acc) ->
@@ -376,32 +241,12 @@ init([Partition]) ->
     PreparedTx = open_table(Partition, prepared),
     CommittedTx = open_table(Partition, committed_tx),
 
-    PVCTable = pvc_atomic_state_init(Partition),
-    CommitQueue = pvc_commit_queue:new(),
-
-    %% These two tables are write-only (insert and take)
-    WritesetTable = open_table(Partition, ?WRITESET_TABLE, [set, public, named_table, {write_concurrency, true}]),
-    DecideTable = open_table(Partition, ?DECIDE_TABLE, [set, public, named_table, {write_concurrency, true}]),
-    PendingKeys = open_table(Partition, ?WRITESET_TABLE_INDEX, [bag,
-                                                                public,
-                                                                named_table,
-                                                                {read_concurrency, true},
-                                                                {write_concurrency, true}]),
-
     {ok, #state{
         partition = Partition,
         prepared_tx = PreparedTx,
         committed_tx = CommittedTx,
         read_servers = ?READ_CONCURRENCY,
-        prepared_dict = orddict:new(),
-
-        pvc_atomic_state = PVCTable,
-        pvc_key_miss_default_version = 0,
-        pvc_commitqueue = CommitQueue,
-        pvc_pending_writesets = WritesetTable,
-        pvc_pending_keys = PendingKeys,
-        pvc_decide_table = DecideTable
-    }}.
+        prepared_dict = orddict:new()}}.
 
 %% @doc The table holding the prepared transactions is shared with concurrent
 %%      readers, so they can safely check if a key they are reading is being updated.
@@ -448,26 +293,6 @@ check_servers_ready([IndexNode | Rest]) ->
         true -> check_servers_ready(Rest);
         false -> false
     end.
-
-check_pvc_replicas_ready() ->
-    check_pvc_replicas_ready(dc_utilities:get_all_partitions_nodes()).
-
-check_pvc_replicas_ready([]) ->
-    true;
-
-check_pvc_replicas_ready([IndexNode | Rest]) ->
-    Ready = try
-        riak_core_vnode_master:sync_command(IndexNode, check_pvc_replicas_ready, ?CLOCKSI_MASTER, infinity)
-    catch _:_Reason ->
-        false
-    end,
-    case Ready of
-        true ->
-            check_pvc_replicas_ready(Rest);
-        false ->
-            false
-    end.
-
 -spec open_table(partition_id(), atom()) -> atom() | ets:tid().
 open_table(Partition, Name) ->
     open_table(Partition, Name, [set, protected, named_table, ?TABLE_CONCURRENCY]).
@@ -519,61 +344,8 @@ handle_command(check_servers_ready, _Sender, SD0 = #state{partition=Partition, r
     Result = clocksi_readitem_server:check_partition_ready(node(), Partition, Serv),
     {reply, Result, SD0};
 
-handle_command(pvc_refresh_replicas, _Sender, State = #state{partition=Partition, read_servers = Serv}) ->
-    Result = pvc_read_replica:refresh_default(Partition, Serv),
-    {reply, Result, State};
-
-handle_command({pvc_unsafe_set_clock, Seq, MRVC}, _Sender, State = #state{partition=Partition, pvc_atomic_state=PVCState}) ->
-    true = ets:insert(PVCState, [{seq_number, Seq}, {mrvc, MRVC}]),
-    ok = logging_vnode:pvc_insert_to_commit_log(Partition, MRVC),
-    {reply, ok, State#state{pvc_key_miss_default_version=Seq}};
-
-%% @doc Start PVC-only read replicas
-handle_command(start_pvc_servers, _From, SD0=#state{partition=Partition, read_servers=Num, pvc_dequeue_timer=undefined}) ->
-    ok = pvc_read_replica:start_replicas(Partition, Num),
-    Result = pvc_read_replica:replica_ready(Partition, Num),
-    {ok, TRef} = schedule_dequeue_interval(Partition),
-    {reply, Result, SD0#state{pvc_dequeue_timer=TRef}};
-
-%% @doc Check that PVC-only read replicas are up
-handle_command(check_pvc_replicas_ready, _Sender, SD0=#state{partition=Partition, read_servers=Num}) ->
-    Result = pvc_read_replica:replica_ready(Partition, Num),
-    {reply, Result, SD0};
-
-%% @doc Stop PVC-only read replicas
-handle_command(stop_pvc_servers, _From, SD0=#state{partition=Partition, read_servers=Num, pvc_dequeue_timer=TRef}) ->
-    ok = pvc_read_replica:stop_replicas(Partition, Num),
-    ok = stop_dequeue_interval(TRef),
-    {reply, ok, SD0#state{pvc_dequeue_timer=undefined}};
-
-%% @doc Flush commit queues for easy restart without flushing the main memory
-%%      WARNING: Use only for debugging
-handle_command(pvc_flush_commit_queue, _From, State) ->
-    true = ets:delete_all_objects(State#state.pvc_pending_keys),
-    true = ets:delete_all_objects(State#state.pvc_pending_writesets),
-    true = ets:delete_all_objects(State#state.pvc_decide_table),
-    {reply, ok, State#state{pvc_commitqueue=pvc_commit_queue:new()}};
-
 handle_command({prepare, Transaction, WriteSet}, _Sender, State) ->
     do_prepare(prepare_commit, Transaction, WriteSet, State);
-
-handle_command(pvc_mostrecentvc, _Sender, State) ->
-    {reply, pvc_get_mrvc(State#state.pvc_atomic_state), State};
-
-handle_command({pvc_prepare, ReplyTo, TxId, Writeset, Version}, _Sender, State) ->
-    ?LAGER_LOG("{prepare, ~p, ~p, ~p, ~p}", [ReplyTo, TxId, Writeset, Version]),
-    NewState = pvc_prepare_internal(ReplyTo, TxId, Writeset, Version, State),
-    {noreply, NewState};
-
-handle_command({pvc_abort, Transaction, WriteSet}, _Sender, State = #state{
-    partition = Partition
-}) ->
-    ok = pvc_append_abort(Partition, Transaction#transaction.txn_id, WriteSet),
-    {noreply, State};
-
-handle_command(pvc_dequeue_event, _Sender, State) ->
-    NewQueue = pvc_dequeue_event_internal(State),
-    {noreply, State#state{pvc_commitqueue=NewQueue}};
 
 %% @doc This is the only partition being updated by a transaction,
 %%      thus this function performs both the prepare and commit for the
@@ -662,25 +434,6 @@ terminate(_Reason, #state{partition=Partition, read_servers=Serv}) ->
 %%% Internal Functions
 %%%===================================================================
 
--spec pvc_atomic_state_init(partition_id()) -> cache_id().
-pvc_atomic_state_init(Partition) ->
-    PVCTable = open_table(Partition, pvc_state_table),
-    true = ets:insert(PVCTable, [{seq_number, 0}, {mrvc, pvc_vclock:new()}]),
-    PVCTable.
-
--spec pvc_faa_lastprep(cache_id()) -> non_neg_integer().
-pvc_faa_lastprep(PVCTable) ->
-    ets:update_counter(PVCTable, seq_number, 1).
-
--spec pvc_get_mrvc(cache_id()) -> pvc_vc().
-pvc_get_mrvc(PVCTable) ->
-    ets:lookup_element(PVCTable, mrvc, 2).
-
--spec pvc_update_mrvc(cache_id(), pvc_vc()) -> ok.
-pvc_update_mrvc(PVCTable, NewVC) ->
-    true = ets:update_element(PVCTable, mrvc, {2, NewVC}),
-    ok.
-
 do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
     prepared_dict = PreparedTimes,
     prepared_tx = PreparedTransactions,
@@ -732,177 +485,6 @@ do_prepare(SingleCommit, Transaction, WriteSet, State = #state{
                     end
             end
     end.
-
--spec pvc_prepare_internal(ReplyTo :: pid(),
-                           TxId :: term(),
-                           WriteSet :: #{key() => val()},
-                           Version :: non_neg_integer(),
-                           State :: #state{}) -> #state{}.
-
-pvc_prepare_internal(ReplyTo, TxId, Writeset, Version, State = #state{
-    pvc_commitqueue = CommitQueue,
-    pvc_pending_keys = PendingKeys,
-    pvc_pending_writesets = WritesetTable,
-    pvc_atomic_state = PartitionState,
-    pvc_key_miss_default_version = DefaultLastVersion,
-    committed_tx = VLogLastCache
-}) ->
-
-    WriteSetKeys = maps:keys(Writeset),
-    Valid = pvc_valid_tx_keys(WriteSetKeys,
-                              Version,
-                              PendingKeys,
-                              VLogLastCache,
-                              DefaultLastVersion),
-
-    case Valid of
-        {error, _}=Err ->
-            ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, Err]),
-            ReplyTo ! Err,
-            State;
-
-        true ->
-            SeqNumber = pvc_faa_lastprep(PartitionState),
-            NewCommitQueue = pvc_commit_queue:enqueue(TxId, CommitQueue),
-
-            %% Add the writset to storage and update the pending key index
-            true = ets:insert(WritesetTable, {TxId, Writeset}),
-            true = ets:insert(PendingKeys, [{Key, TxId} || Key <- WriteSetKeys]),
-
-            ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {ok, SeqNumber}]),
-            ReplyTo ! {ok, SeqNumber},
-            State#state{pvc_commitqueue=NewCommitQueue}
-    end.
-
-%% @doc Check if this key is not present in the commit queue, or too stale
-%%      compared to the its stored version in the database.
-%%
--spec pvc_key_clean_check(Key :: key(),
-                          Version :: non_neg_integer(),
-                          PendingKeys :: cache_id(),
-                          VLogLastCache :: cache_id(),
-                          DefaultTime :: non_neg_integer()) -> true | {error, atom()}.
-
-pvc_key_clean_check(Key, Version, PendingKeys, VLogLastCache, DefaultTime) ->
-    Disputed = ets:member(PendingKeys, Key),
-    case Disputed of
-        true ->
-            {error, pvc_conflict};
-        false ->
-            StoredVersion = try ets:lookup_element(VLogLastCache, Key, 2) catch _:_ -> DefaultTime end,
-            Stale = StoredVersion > Version,
-            case Stale of
-                true -> {error, pvc_stale_vc};
-                false -> true
-            end
-    end.
-
--spec pvc_valid_tx_keys([key(), ...], non_neg_integer(), cache_id(), cache_id(), non_neg_integer()) -> true | {error, atom()}.
-pvc_valid_tx_keys([], _Version, _PendingKeys, _VLogLastCache, _DefaultTime) ->
-    true;
-
-pvc_valid_tx_keys([Key | Rest], Version, PendingKeys, VLogLastCache, DefaultTime) ->
-    case pvc_key_clean_check(Key, Version, PendingKeys, VLogLastCache, DefaultTime) of
-        {error, _}=Err ->
-            Err;
-        true ->
-            pvc_valid_tx_keys(Rest, Version, PendingKeys, VLogLastCache, DefaultTime)
-    end.
-
--spec pvc_dequeue_event_internal(#state{}) -> pvc_commit_queue:cqueue().
-pvc_dequeue_event_internal(#state{partition=Partition,
-                                  pvc_commitqueue=CommitQueue,
-                                  pvc_pending_keys=PendingKeys,
-                                  pvc_decide_table=DecideTable,
-                                  pvc_pending_writesets=WritesetTable,
-                                  pvc_atomic_state=PartitionState,
-                                  committed_tx=VLogLastCache}) ->
-
-    {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(CommitQueue, DecideTable, WritesetTable),
-    ok = case ReadyTx of
-        [] ->
-            ok;
-        Entries ->
-            ?LAGER_LOG("Will process ready entries: ~p", [Entries]),
-
-            ok = lists:foreach(fun({TxId, WriteSet, CommitVC}) ->
-                ?LAGER_LOG("Processing ~p, update materializer", [TxId]),
-
-                %% Persist the writeset in storage
-                ok = materializer_vnode:pvc_update_keys(Partition, WriteSet, CommitVC),
-
-                %% Update current MRVC
-                ?LAGER_LOG("Processing ~p, update MRVC", [TxId]),
-                PrevMRVC = pvc_get_mrvc(PartitionState),
-                MRVC = pvc_vclock:max(CommitVC, PrevMRVC),
-                ok = pvc_update_mrvc(PartitionState, MRVC),
-
-                %% Update Commit Log
-                ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
-                ok = logging_vnode:pvc_insert_to_commit_log(Partition, MRVC),
-
-                WriteSetKeys = maps:keys(WriteSet),
-
-                %% Cache VLog.last(key)
-                ?LAGER_LOG("Processing ~p, cache VLog.last", [TxId]),
-                CommitTime = pvc_vclock:get_time(Partition, CommitVC),
-                ok = pvc_cache_last_value(WriteSetKeys, CommitTime, VLogLastCache),
-
-                %% Remove the keys from the pending table
-                %% NOTE: Don't try to optimize by fusing this loop with the previous
-                %% function. We want the changes to the VLog to be visible before
-                %% removing the key from the pending table. Since Erlang doesn't offer
-                %% an atomic multi-object ets:delete_object/2, we have to do it the old way.
-                ok = pvc_remove_pending(WriteSetKeys, TxId, PendingKeys)
-            end, Entries)
-    end,
-    NewQueue.
-
--spec pvc_cache_last_value([key(), ...], non_neg_integer(), cache_id()) -> ok.
-pvc_cache_last_value(Keys, CommitTime, VLogCache) ->
-    Objects = [{Key, CommitTime} || Key <- Keys],
-    true = ets:insert(VLogCache, Objects),
-    ok.
-
--spec pvc_remove_pending([key(), ...], term(), cache_id()) -> ok.
-pvc_remove_pending(Keys, TxId, PendingKeys) ->
-    %% ets:delete_object/2 doesn't support batch deletion like insert
-    _ = [ets:delete_object(PendingKeys, {Key, TxId}) || Key <- Keys],
-    ok.
-
-%% @doc Propagate abort log records for all keys in this partition.
--spec pvc_append_abort(partition_id(), txid(), list()) -> ok.
-pvc_append_abort(SelfPartition, TxnId, WriteSet) ->
-    Record = #log_operation{
-        tx_id = TxnId,
-        op_type = abort,
-        log_payload = #abort_log_payload{}
-    },
-
-    pvc_append_to_logs(SelfPartition, WriteSet, Record).
-
-%% @doc Propagate a log record for all keys in this partition.
--spec pvc_append_to_logs(partition_id(), list(), #log_operation{}) -> ok.
-pvc_append_to_logs(SelfPartition, WriteSet, Record) ->
-    Logs = pvc_get_logs_from_keys(SelfPartition, WriteSet),
-    lists:foreach(fun({IndexNode, LogId}) ->
-        {ok, _} = logging_vnode:append(IndexNode, LogId, Record)
-    end, Logs).
-
-%% @doc Get the list of log identifiers for the keys in this partition.
--spec pvc_get_logs_from_keys(partition_id(), list()) -> list().
-pvc_get_logs_from_keys(SelfPartition, WriteSet) ->
-    lists:foldl(fun({Key, _, _}, Acc) ->
-        IndexNode={Partition, _Node} = log_utilities:get_key_partition(Key),
-        case Partition of
-            SelfPartition ->
-                LogId = log_utilities:get_logid_from_key(Key),
-                ordsets:add_element({IndexNode, LogId}, Acc);
-
-            _ ->
-                Acc
-        end
-    end, ordsets:new(), WriteSet).
 
 prepare(Transaction, TxWriteSet, CommittedTx, PreparedTx, PrepareTime, PreparedDict) ->
     TxId = Transaction#transaction.txn_id,

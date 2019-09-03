@@ -125,8 +125,7 @@ read_objects(Clock, _Properties, Objects, StayAlive) ->
         true -> %% Execute the fast path
             FormattedObjects = format_read_params(Objects),
             [{Key, Type}] = FormattedObjects,
-            {ok, Val, CommitTime} = clocksi_interactive_tx_coord_fsm:
-                perform_singleitem_read(Key, Type),
+            {ok, Val, CommitTime} = clocksi_interactive_tx_coord_fsm:perform_singleitem_read(Key, Type),
             {ok, [Val], CommitTime};
         false ->
             case application:get_env(antidote, txn_prot) of
