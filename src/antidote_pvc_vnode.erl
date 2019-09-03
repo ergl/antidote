@@ -230,6 +230,15 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = pvc_read_replica:replica_ready(P, N),
     {reply, Result, S};
 
+handle_command(refresh_replicas, _From, S = #state{partition=P, replicas_n=N}) ->
+    Result = pvc_read_replica:refresh_default(P, N),
+    {reply, Result, S};
+
+handle_command({unsafe_set_clock, Seq, MRVC}, _From, S = #state{partition=P, most_recent_vc=MRVCTable}) ->
+    ok = logging_vnode:pvc_insert_to_commit_log(P, MRVC),
+    true = ets:insert(MRVCTable, {mrvc, MRVC}),
+    {reply, ok, S#state{default_last_vsn=Seq, last_prepared=Seq}};
+
 handle_command(flush_queue, _From, State) ->
     lists:foreach(fun ets:delete_all_objects/1, [State#state.pending_tx_data,
                                                  State#state.pending_reads,
@@ -453,6 +462,9 @@ decide_internal(Partition, TxId, abort) ->
             true = ets:insert(cache_name(Partition, ?DECIDE_TABLE), {TxId, abort}),
             ok = clear_pending(Partition, TxId, Payload);
         _ ->
+            %% If this transaction was marked as aborted by this partition, no state will be kept,
+            %% the transaction won't even be in the commit queue, so there's no need to store the
+            %% decision in the decide table, otherwise we would have a memory leak
             ok
     end.
 

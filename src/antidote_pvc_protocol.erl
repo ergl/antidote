@@ -58,12 +58,12 @@ load(Size) ->
     ok = all_ok(SetDefaultReply),
 
     %% Refresh all read replicas
-    RefreshReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, pvc_refresh_replicas),
+    RefreshReply = dc_utilities:bcast_vnode_sync(antidote_pvc_vnode_master, refresh_replicas),
     ok = all_ok(RefreshReply),
 
     %% Force advance replica state
-    ForceStateReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master,
-                                                    {pvc_unsafe_set_clock, NewLastPrep, ForceClock}),
+    ForceStateReply = dc_utilities:bcast_vnode_sync(antidote_pvc_vnode_master,
+                                                    {unsafe_set_clock, NewLastPrep, ForceClock}),
     ok = all_ok(ForceStateReply),
     ok.
 
