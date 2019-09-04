@@ -190,7 +190,6 @@ read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State=#state{partition=Partiti
     ?LAGER_LOG("MRVC = ~p", [MRVC]),
     case check_time(Partition, MRVC, VCaggr) of
         {not_ready, WaitTime} ->
-            ?LAGER_LOG("Partition not ready, will wait ~p", [WaitTime]),
             erlang:send_after(WaitTime, self(), {wait_scan, ReplyTo, Key, HasRead, VCaggr}),
             ok;
         ready ->
@@ -280,6 +279,7 @@ check_time(Partition, MostRecentVC, VCaggr) ->
     AggregateTime = pvc_vclock:get_time(Partition, VCaggr),
     case MostRecentTime < AggregateTime of
         true ->
+            lager:info("partition ~p not ready (~p < ~p), will retry", [Partition, MostRecentTime, AggregateTime]),
             {not_ready, ?PVC_WAIT_MS};
         false ->
             ready
