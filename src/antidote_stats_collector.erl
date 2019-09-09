@@ -75,9 +75,9 @@ log_partition_not_ready(P) ->
     _ = ets:update_counter(?MODULE, P, {#stat_entry.not_ready_tries, 1}, fresh_entry(P)),
     ok.
 
--spec report_vlog_misses() -> [tuple()].
+-spec report_vlog_misses() -> [#{}].
 report_vlog_misses() ->
-    ets:tab2list(?MODULE).
+    lists:map(fun entry_to_map/1, ets:tab2list(?MODULE)).
 
 init([]) ->
     lager:info("Initializing ~p ETS table", [?MODULE]),
@@ -128,3 +128,9 @@ init_metrics() ->
 -spec fresh_entry(partition_id()) -> #stat_entry{}.
 fresh_entry(P) ->
     #stat_entry{partition = P, not_ready_tries = 0, log_misses = 0}.
+
+-spec entry_to_map(#stat_entry{}) -> #{atom() => term()}.
+entry_to_map(Entry) ->
+    FieldNames = record_info(fields, stat_entry),
+    [_Name | Fields] = tuple_to_list(Entry),
+    maps:from_list(lists:zip(FieldNames, Fields)).
