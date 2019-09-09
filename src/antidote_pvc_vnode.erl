@@ -172,7 +172,6 @@ prepare(Partition, Protocol, TxId, Payload, Version) ->
                                         ?VNODE_MASTER,
                                         infinity).
 
-%% FIXME(borja): Implement decide
 -spec decide(Partition :: partition_id(),
              TxId :: tx_id(),
              Outcome :: decision()) -> ok.
@@ -271,6 +270,7 @@ prepare_internal(TxId, Payload, Version, State = #state{commit_queue=Queue,
     case Valid of
         {error, _}=Err ->
             ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, Err]),
+            lager:info("[~p] PREPARE ABORT ~p", [TxId, State#state.partition]),
             {Err, State};
 
         {ok, PersistData} ->
@@ -279,6 +279,7 @@ prepare_internal(TxId, Payload, Version, State = #state{commit_queue=Queue,
             ok = persist_data(TxId, PersistData, State),
 
             ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {ok, Seq}]),
+            lager:info("[~p] PREPARE PENDING ~p", [TxId, State#state.partition]),
             Reply = {ok, Seq},
             NewState = State#state{last_prepared=Seq, commit_queue=NewQueue},
             {Reply, NewState}
@@ -452,6 +453,7 @@ valid_writeset_internal([Key | Rest], ConflictFun) ->
 
 decide_internal(Partition, TxId, {ok, VC}) ->
     ?LAGER_LOG("Commit: Mark ~p as ready", [TxId]),
+    lager:info("[~p] DECIDE READY ~p", [TxId, Partition]),
     ets:insert(cache_name(Partition, ?DECIDE_TABLE), {TxId, ready, VC}),
     ok;
 
@@ -459,9 +461,11 @@ decide_internal(Partition, TxId, abort) ->
     ?LAGER_LOG("Abort: Removing ~p from CommitQueue", [TxId]),
     case ets:take(cache_name(Partition, ?PENDING_DATA_TABLE), TxId) of
         [{TxId, Payload}] ->
+            lager:info("[~p] DECIDE ABORT ~p", [TxId, Partition]),
             true = ets:insert(cache_name(Partition, ?DECIDE_TABLE), {TxId, abort}),
             ok = clear_pending(Partition, TxId, Payload);
         _ ->
+            lager:info("[~p] DECIDE DISCARD ~p", [TxId, Partition]),
             %% If this transaction was marked as aborted by this partition, no state will be kept,
             %% the transaction won't even be in the commit queue, so there's no need to store the
             %% decision in the decide table, otherwise we would have a memory leak
@@ -507,6 +511,8 @@ dequeue_event_internal(#state{partition = Partition,
             ok;
         Entries ->
             lists:foreach(fun({TxId, TxData, CommitVC}) ->
+                lager:info("[~p] DEQUEUE ~p", [TxId, Partition]),
+
                 ?LAGER_LOG("Processing ~p, update materializer", [TxId]),
                 %% Persist the writeset in storage
                 ok = update_materializer(Partition, TxData, CommitVC),
