@@ -138,7 +138,6 @@ start_bg_processes(MetaDataName) ->
     ok = lists:foreach(fun({_, ok}) -> ok end, TimerReply),
 
     ok = start_read_replicas(),
-    ok = antidote_stats_collector:init_vlog_miss_table(),
 
     ok.
 
