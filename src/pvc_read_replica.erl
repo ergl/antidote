@@ -279,7 +279,7 @@ check_time(Partition, MostRecentVC, VCaggr) ->
     AggregateTime = pvc_vclock:get_time(Partition, VCaggr),
     case MostRecentTime < AggregateTime of
         true ->
-            lager:info("partition ~p not ready (~p < ~p), will retry", [Partition, MostRecentTime, AggregateTime]),
+            ok = antidote_stats_collector:log_partition_not_ready(Partition),
             {not_ready, ?PVC_WAIT_MS};
         false ->
             ready
