@@ -837,7 +837,7 @@ pvc_dequeue_event_internal(#state{partition=Partition,
 
                 %% Update Commit Log
                 ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
-                ok = logging_vnode:pvc_insert_to_commit_log(Partition, CommitVC),
+                ok = logging_vnode:pvc_insert_to_commit_log(Partition, MRVC),
 
                 WriteSetKeys = maps:keys(WriteSet),
 
