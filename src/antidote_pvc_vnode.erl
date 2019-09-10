@@ -519,11 +519,11 @@ dequeue_event_internal(#state{partition = Partition,
 
                 %% Update current MRVC
                 ?LAGER_LOG("Processing ~p, update MRVC", [TxId]),
-                ok = update_mrvc(CommitVC, MRVCTable),
+                NewMRVC = update_mrvc(CommitVC, MRVCTable),
 
                 %% Update Commit Log
                 ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
-                ok = logging_vnode:pvc_insert_to_commit_log(Partition, CommitVC),
+                ok = logging_vnode:pvc_insert_to_commit_log(Partition, NewMRVC),
 
                 ?LAGER_LOG("Processing ~p, cache VLog.last", [TxId]),
                 CommitTime = pvc_vclock:get_time(Partition, CommitVC),
@@ -550,11 +550,13 @@ update_materializer(Partition, TxData, CommitVC) ->
     end,
     materializer_vnode:pvc_update_keys(Partition, WS, CommitVC).
 
--spec update_mrvc(CommitVC :: pvc_vc(), MRVCTable :: cache(mrvc, pvc_vc())) -> ok.
+%% @doc Update the partition MostRecentVC and return its value
+-spec update_mrvc(CommitVC :: pvc_vc(), MRVCTable :: cache(mrvc, pvc_vc())) -> pvc_vc().
 update_mrvc(CommitVC, MRVCTable) ->
     OldMRVC = ets:lookup_element(MRVCTable, mrvc, 2),
-    true = ets:update_element(MRVCTable, mrvc, {2, pvc_vclock:max(CommitVC, OldMRVC)}),
-    ok.
+    NewMRVC = pvc_vclock:max(CommitVC, OldMRVC),
+    true = ets:update_element(MRVCTable, mrvc, {2, NewMRVC}),
+    NewMRVC.
 
 -spec cache_last_vsn(TxData :: persist_data(),
                      CommitTime :: non_neg_integer(),
