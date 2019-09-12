@@ -69,6 +69,7 @@ handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
                                                 id_len=IDLen}) ->
     <<MessageID:IDLen, Request/binary>> = Data,
     {HandlerMod, Type, Msg} = pvc_proto:decode_client_req(Request),
+    lager:info("CLIENT SENT ~p ~p", [Type, Msg]),
     case coord_pb_req_handler:process_request(Type, Msg) of
         {reply, Result} ->
             ?LAGER_LOG("Sending back ~p", [Result]),
