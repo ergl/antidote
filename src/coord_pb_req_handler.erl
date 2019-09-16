@@ -59,18 +59,24 @@ process_request_internal('ReadRequest', Args) ->
     #{partition := Partition, key := Key, vc_aggr := VC, has_read := HasRead} = Args,
     antidote_pvc_protocol:read_request(Partition, Key, VC, HasRead);
 
+%% TODO(borja): Make prepare node parallel
+%% See https://medium.com/@jlouis666/testing-a-parallel-map-implementation-2d9eab47094e
 process_request_internal('PrepareNode', Args) ->
     #{transaction_id := TxId, protocol := Protocol, prepares := PrepareMsgs} = Args,
-    %% TODO(borja): Make this in parallel
-    %% See https://medium.com/@jlouis666/testing-a-parallel-map-implementation-2d9eab47094e
     [begin
          #{partition := P, keydata := Payload, version := Vsn} = Prepare,
          antidote_pvc_protocol:prepare(P, Protocol, TxId, Payload, Vsn)
      end || Prepare <- PrepareMsgs];
 
-process_request_internal('Decide', Args) ->
-    #{partition := Partition, transaction_id := TxId, payload := Outcome} = Args,
-    ok = antidote_pvc_protocol:decide(Partition, TxId, Outcome),
+%% TODO(borja): Make decide node parallel
+%% See https://medium.com/@jlouis666/testing-a-parallel-map-implementation-2d9eab47094e
+process_request_internal('DecideNode', Args) ->
+    #{partitions := Partitions, transaction_id := TxId} = Args,
+    %% Outcome is not present on the wire if it is an abort
+    Outcome = maps:get(maybe_payload, Args, abort),
+    [begin
+         ok = antidote_pvc_vnode:decide(Partition, TxId, Outcome)
+     end || Partition <- Partitions],
     noreply;
 
 %% Used for rubis load
