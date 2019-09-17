@@ -77,7 +77,7 @@ process_request_internal('DecideNode', Args) ->
     [begin
          ok = antidote_pvc_vnode:decide(Partition, TxId, Outcome)
      end || Partition <- Partitions],
-    noreply;
+    ok;
 
 %% Used for rubis load
 process_request_internal('PutRegion', #{region_name := Name}) ->
