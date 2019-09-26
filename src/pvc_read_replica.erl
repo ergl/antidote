@@ -116,14 +116,14 @@ replica_ready(Partition, N) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec async_read(pid(), partition_id(), key(), ordsets:ordset(), pvc_vc()) -> ok.
-async_read(ReplyTo, Partition, Key, HasRead, VCaggr) ->
+-spec async_read(coord_req_promise:promise(), partition_id(), key(), ordsets:ordset(), pvc_vc()) -> ok.
+async_read(Promise, Partition, Key, HasRead, VCaggr) ->
     Target = random_replica(Partition),
     case ordsets:is_element(Partition, HasRead) of
         true ->
-            gen_server:cast(Target, {read_vlog, ReplyTo, Key, VCaggr});
+            gen_server:cast(Target, {read_vlog, Promise, Key, VCaggr});
         false ->
-            gen_server:cast(Target, {read_scan, ReplyTo, Key, HasRead, VCaggr})
+            gen_server:cast(Target, {read_scan, Promise, Key, HasRead, VCaggr})
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -156,22 +156,22 @@ handle_call(refresh_default, _Sender, State=#state{partition=Partition}) ->
 handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
 
-handle_cast({read_vlog, ReplyTo, Key, VCaggr}, State = #state{vlog_replica=VLog,
+handle_cast({read_vlog, Promise, Key, VCaggr}, State = #state{vlog_replica=VLog,
                                                               default_bottom_value=DefaultValue,
                                                               default_bottom_clock=DefaultClock}) ->
 
-    ok = read_vlog_internal(ReplyTo, Key, VCaggr, VLog, {DefaultValue, DefaultClock}),
+    ok = read_vlog_internal(Promise, Key, VCaggr, VLog, {DefaultValue, DefaultClock}),
     {noreply, State};
 
-handle_cast({read_scan, ReplyTo, Key, HasRead, VCaggr}, State) ->
-    ok = read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State),
+handle_cast({read_scan, Promise, Key, HasRead, VCaggr}, State) ->
+    ok = read_scan_internal(Promise, Key, HasRead, VCaggr, State),
     {noreply, State};
 
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({wait_scan, ReplyTo, Key, HasRead, VCaggr}, State) ->
-    ok = read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State),
+handle_info({wait_scan, Promise, Key, HasRead, VCaggr}, State) ->
+    ok = read_scan_internal(Promise, Key, HasRead, VCaggr, State),
     {noreply, State};
 
 handle_info(Info, State) ->
@@ -182,18 +182,18 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec read_scan_internal(pid(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
-read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State=#state{partition=Partition}) ->
+-spec read_scan_internal(coord_req_promise:promise(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
+read_scan_internal(Promise, Key, HasRead, VCaggr, State=#state{partition=Partition}) ->
     ?LAGER_LOG("most_recent_vc(~p)", [Partition]),
 
     MRVC = antidote_pvc_vnode:most_recent_vc(Partition),
     ?LAGER_LOG("MRVC = ~p", [MRVC]),
     case check_time(Partition, MRVC, VCaggr) of
         {not_ready, WaitTime} ->
-            erlang:send_after(WaitTime, self(), {wait_scan, ReplyTo, Key, HasRead, VCaggr}),
+            erlang:send_after(WaitTime, self(), {wait_scan, Promise, Key, HasRead, VCaggr}),
             ok;
         ready ->
-            scan_and_read(ReplyTo, Key, HasRead, VCaggr, State)
+            scan_and_read(Promise, Key, HasRead, VCaggr, State)
     end.
 
 %% @doc Scan the replication log for a valid vector clock time for a read at this partition
@@ -202,20 +202,20 @@ read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State=#state{partition=Partiti
 %%      that the current partition has read, that partition time is smaller or
 %%      equal than the VCaggr of the current transaction.
 %%
--spec scan_and_read(pid(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
-scan_and_read(ReplyTo, Key, HasRead, VCaggr, #state{partition=Partition,
+-spec scan_and_read(coord_req_promise:promise(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
+scan_and_read(Promise, Key, HasRead, VCaggr, #state{partition=Partition,
                                                     vlog_replica=VLog,
                                                     default_bottom_value=BottomValue,
                                                     default_bottom_clock=ClockValue}) ->
 
-    ?LAGER_LOG("scan_and_read(~p, ~p, ~p, ~p)", [ReplyTo, Key, HasRead, VCaggr]),
+    ?LAGER_LOG("scan_and_read(~p, ~p, ~p, ~p)", [Promise, Key, HasRead, VCaggr]),
     MaxVCRes = find_max_vc(Partition, HasRead, VCaggr),
     ?LAGER_LOG("MaxVC = ~p", [MaxVCRes]),
     case MaxVCRes of
         {error, Reason} ->
-            reply(ReplyTo, {error, Reason});
+            coord_req_promise:resolve({error, Reason}, Promise);
         {ok, MaxVC} ->
-            read_vlog_internal(ReplyTo, Key, MaxVC, VLog, {BottomValue, ClockValue})
+            read_vlog_internal(Promise, Key, MaxVC, VLog, {BottomValue, ClockValue})
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
@@ -254,20 +254,15 @@ find_max_vc(Partition, HasRead, VCaggr) ->
 %%      to the coordinator the value of that snapshot, along with the commit
 %%      vector clock time of that snapshot.
 %%
--spec read_vlog_internal(pid(), key(), pvc_vc(), atom(), tuple()) -> ok.
-read_vlog_internal(ReplyTo, Key, MaxVC, VLogCache, DefaultBottom) ->
-    ?LAGER_LOG("vlog read(~p, ~p, ~p)", [ReplyTo, Key, MaxVC]),
+-spec read_vlog_internal(coord_req_promise:promise(), key(), pvc_vc(), atom(), tuple()) -> ok.
+read_vlog_internal(Promise, Key, MaxVC, VLogCache, DefaultBottom) ->
+    ?LAGER_LOG("vlog read(~p, ~p, ~p)", [Promise, Key, MaxVC]),
     case materializer_vnode:pvc_read_replica(Key, MaxVC, VLogCache, DefaultBottom) of
         {error, Reason} ->
-            reply(ReplyTo, {error, Reason});
+            coord_req_promise:resolve({error, Reason}, Promise);
         {ok, Value, VersionVC} ->
-            reply(ReplyTo, {ok, Value, VersionVC, MaxVC})
+            coord_req_promise:resolve({ok, Value, VersionVC, MaxVC}, Promise)
     end.
-
--spec reply(pid(), term()) -> ok.
-reply(To, Msg) when is_pid(To) ->
-    To ! Msg,
-    ok.
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
 %%

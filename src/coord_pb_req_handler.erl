@@ -28,79 +28,75 @@
 -type key() :: term().
 -type reason() :: atom().
 
--export([process_request/2]).
+%% Only exported to avoid unused warning, don't care for now
+-export([rubis_request/2]).
 
-%% @doc Process a PB command
-%%
-%%      The first argument is the atom name of the command, and the second
-%%      the argument map coming from pvc_proto. To reply `Term` to the client,
-%%      return `{reply, Term}`. Return `noreply` to avoid returning anything
-%%      back to the client.
-%%
+-export([process_request/3]).
+
+-spec process_request(coord_req_promise:promise(), atom(), #{}) -> ok.
+
 %% FIXME(borja): Ugly, needs knowledge of PB message names and map layout
--spec process_request(atom(), #{}) -> {reply, term()} | noreply.
-process_request(Name, Args) ->
-    case process_request_internal(Name, Args) of
-        noreply ->
-            noreply;
-        Any ->
-            {reply, Any}
-    end.
+process_request(Promise, 'Ping', _) ->
+    coord_req_promise:resolve(ok, Promise);
 
-process_request_internal('Ping', _) -> ok;
+process_request(Promise, 'ConnectRequest', _) ->
+    Reply = antidote_pvc_protocol:connect(),
+    coord_req_promise:resolve(Reply, Promise);
 
-process_request_internal('ConnectRequest', _) ->
-    antidote_pvc_protocol:connect();
+process_request(Promise, 'Load', #{bin_size := Size}) ->
+    Reply = antidote_pvc_protocol:load(Size),
+    coord_req_promise:resolve(Reply, Promise);
 
-process_request_internal('Load', #{bin_size := Size}) ->
-    antidote_pvc_protocol:load(Size);
-
-process_request_internal('ReadRequest', Args) ->
+process_request(Promise, 'ReadRequest', Args) ->
+    %% TODO(borja): Pass promise further down
     #{partition := Partition, key := Key, vc_aggr := VC, has_read := HasRead} = Args,
-    antidote_pvc_protocol:read_request(Partition, Key, VC, HasRead);
+    ok = antidote_pvc_protocol:read_request(Promise, Partition, Key, VC, HasRead);
 
 %% TODO(borja): Make prepare node parallel
 %% See https://medium.com/@jlouis666/testing-a-parallel-map-implementation-2d9eab47094e
-process_request_internal('PrepareNode', Args) ->
+process_request(Promise, 'PrepareNode', Args) ->
     #{transaction_id := TxId, protocol := Protocol, prepares := PrepareMsgs} = Args,
-    [begin
-         #{partition := P, keydata := Payload, version := Vsn} = Prepare,
-         antidote_pvc_protocol:prepare(P, Protocol, TxId, Payload, Vsn)
-     end || Prepare <- PrepareMsgs];
+    Votes = [begin
+        #{partition := P, keydata := Payload, version := Vsn} = Prepare,
+        antidote_pvc_protocol:prepare(P, Protocol, TxId, Payload, Vsn)
+    end || Prepare <- PrepareMsgs],
+    coord_req_promise:resolve(Votes, Promise);
 
 %% TODO(borja): Make decide node parallel
 %% See https://medium.com/@jlouis666/testing-a-parallel-map-implementation-2d9eab47094e
-process_request_internal('DecideNode', Args) ->
+process_request(_Promise, 'DecideNode', Args) ->
     #{partitions := Partitions, transaction_id := TxId} = Args,
-    %% Outcome is not present on the wire if it is an abort
+    %% If abort, outcome is not present in the message
     Outcome = maps:get(maybe_payload, Args, abort),
-    [begin
-         ok = antidote_pvc_vnode:decide(Partition, TxId, Outcome)
-     end || Partition <- Partitions],
-    noreply;
+    _ = [antidote_pvc_protocol:decide(Partition, TxId, Outcome) || Partition <- Partitions],
+    ok.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Unusued
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% Used for rubis load
-process_request_internal('PutRegion', #{region_name := Name}) ->
-    put_region(Name);
+rubis_request('PutRegion', #{region_name := Name}) ->
+    {reply, put_region(Name)};
 
 %% Used for rubis load
-process_request_internal('PutCategory', #{category_name := Name}) ->
-    put_category(Name);
+rubis_request('PutCategory', #{category_name := Name}) ->
+    {reply, put_category(Name)};
 
 %% Benchmark only
-process_request_internal('AuthUser', #{username := Username,
+rubis_request('AuthUser', #{username := Username,
                                        password := Password}) ->
-    auth_user(Username, Password);
+    {reply, auth_user(Username, Password)};
 
 %% Used for rubis load and benchmark
-process_request_internal('RegisterUser', #{username := Username,
+rubis_request('RegisterUser', #{username := Username,
                                            password := Password,
                                            region_id := RegionId}) ->
 
     register_user(Username, Password, RegionId);
 
 %% Benchmark only
-process_request_internal('BrowseCategories', _) ->
+rubis_request('BrowseCategories', _) ->
     case browse_categories() of
         {error, Reason} ->
             {error, Reason};
@@ -109,7 +105,7 @@ process_request_internal('BrowseCategories', _) ->
     end;
 
 %% Benchmark only
-process_request_internal('BrowseRegions', _) ->
+rubis_request('BrowseRegions', _) ->
     case browse_regions() of
         {error, Reason} ->
             {error, Reason};
@@ -118,7 +114,7 @@ process_request_internal('BrowseRegions', _) ->
     end;
 
 %% Benchmark only
-process_request_internal('SearchByCategory', #{category_id := CategoryId}) ->
+rubis_request('SearchByCategory', #{category_id := CategoryId}) ->
     case search_items_by_category(CategoryId) of
         {error, Reason} ->
             {error, Reason};
@@ -127,7 +123,7 @@ process_request_internal('SearchByCategory', #{category_id := CategoryId}) ->
     end;
 
 %% Benchmark only
-process_request_internal('SearchByRegion', #{region_id := RegionId,
+rubis_request('SearchByRegion', #{region_id := RegionId,
                                              category_id := CategoryId}) ->
 
     case search_items_by_region(CategoryId, RegionId) of
@@ -138,7 +134,7 @@ process_request_internal('SearchByRegion', #{region_id := RegionId,
     end;
 
 %% Benchmark only
-process_request_internal('ViewItem', #{item_id := ItemId}) ->
+rubis_request('ViewItem', #{item_id := ItemId}) ->
     case view_item(ItemId) of
         {error, Reason} ->
             {error, Reason};
@@ -147,7 +143,7 @@ process_request_internal('ViewItem', #{item_id := ItemId}) ->
     end;
 
 %% Benchmark only
-process_request_internal('ViewUser', #{user_id := UserId}) ->
+rubis_request('ViewUser', #{user_id := UserId}) ->
     case view_user(UserId) of
         {error, Reason} ->
             {error, Reason};
@@ -156,7 +152,7 @@ process_request_internal('ViewUser', #{user_id := UserId}) ->
     end;
 
 %% Benchmark only
-process_request_internal('ViewItemBidHist', #{item_id := ItemId}) ->
+rubis_request('ViewItemBidHist', #{item_id := ItemId}) ->
     case view_item_bid_hist(ItemId) of
         {error, Reason} ->
             {error, Reason};
@@ -165,20 +161,20 @@ process_request_internal('ViewItemBidHist', #{item_id := ItemId}) ->
     end;
 
 %% Benchmark only
-process_request_internal('StoreBuyNow', #{on_item_id := ItemId,
+rubis_request('StoreBuyNow', #{on_item_id := ItemId,
                                           buyer_id := BuyerId,
                                           quantity := Quantity}) ->
     store_buy_now(ItemId, BuyerId, Quantity);
 
 %% Used for rubis load and benchmark
-process_request_internal('StoreBid', #{on_item_id := ItemId,
+rubis_request('StoreBid', #{on_item_id := ItemId,
                               bidder_id := BidderId,
                               value := Value}) ->
 
     store_bid(ItemId, BidderId, Value);
 
 %% Used for rubis load and benchmark
-process_request_internal('StoreComment', #{on_item_id := ItemId,
+rubis_request('StoreComment', #{on_item_id := ItemId,
                                            from_id := Fromid,
                                            to_id := ToId,
                                            rating := Rating,
@@ -187,7 +183,7 @@ process_request_internal('StoreComment', #{on_item_id := ItemId,
     store_comment(ItemId, Fromid, ToId, Rating, Body);
 
 %% Used for rubis load and benchmark
-process_request_internal('StoreItem', #{item_name := Name,
+rubis_request('StoreItem', #{item_name := Name,
                                         description := Desc,
                                         quantity := Q,
                                         category_id := CategoryId,
@@ -196,7 +192,7 @@ process_request_internal('StoreItem', #{item_name := Name,
     store_item(Name, Desc, Q, CategoryId, UserId);
 
 %% Benchmark only
-process_request_internal('AboutMe', #{user_id := UserId}) ->
+rubis_request('AboutMe', #{user_id := UserId}) ->
     case about_me(UserId) of
         {error, Reason} ->
             {error, Reason};

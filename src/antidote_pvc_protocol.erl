@@ -24,7 +24,7 @@
 %% New API
 -export([connect/0,
          load/1,
-         read_request/4,
+         read_request/5,
          prepare/5,
          decide/3]).
 
@@ -68,7 +68,8 @@ load(Size) ->
     ok.
 
 -ifdef(read_request).
-read_request(Partition, Key, VCaggr, HasRead) ->
+%% FIXME(borja): This will be sync, can we remove?
+read_request(Promise, Partition, Key, VCaggr, HasRead) ->
     Received = os:timestamp(),
     {Took, ok} = timer:tc(pvc_read_replica,
                           async_read,
@@ -77,24 +78,19 @@ read_request(Partition, Key, VCaggr, HasRead) ->
     WaitReceive = os:timestamp(),
     receive
         {error, Reason} ->
-            {error, Reason};
+            coord_req_promise:resolve({error, Reason}, Promise);
 
         {ok, _Value, CommitVC, MaxVC} ->
             ReceivedMsg = os:timestamp(),
-            {ok, #{rcv => Received,
-                   read_took => Took,
-                   wait_took => timer:now_diff(ReceivedMsg, WaitReceive),
-                   send => os:timestamp()}, CommitVC, MaxVC}
+            Reply = {ok, #{rcv => Received,
+                           read_took => Took,
+                           wait_took => timer:now_diff(ReceivedMsg, WaitReceive),
+                           send => os:timestamp()}, CommitVC, MaxVC},
+            coord_req_promise:resolve(Reply, Promise)
     end.
 -else.
-read_request(Partition, Key, VCaggr, HasRead) ->
-    ok = pvc_read_replica:async_read(self(), Partition, Key, HasRead, VCaggr),
-    receive
-        {error, Reason} ->
-            {error, Reason};
-        {ok, Value, CommitVC, MaxVC} ->
-            {ok, Value, CommitVC, MaxVC}
-    end.
+read_request(Promise, Partition, Key, VCaggr, HasRead) ->
+    ok = pvc_read_replica:async_read(Promise, Partition, Key, HasRead, VCaggr).
 -endif.
 
 prepare(Partition, Protocol, TxId, Payload, PartitionVersion) ->
