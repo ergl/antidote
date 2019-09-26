@@ -56,12 +56,12 @@ init({Ref, Socket, Transport, _Opts}) ->
     State = #state{socket=Socket, transport=Transport, id_len=IDLen},
     gen_server:enter_loop(?MODULE, [], State).
 
-handle_call(E, _From, S) ->
-    io:format("unexpected call: ~p~n", [E]),
+handle_call(E, From, S) ->
+    lager:warning("server got unexpected call with msg ~w from ~w", [E, From]),
     {reply, ok, S}.
 
 handle_cast(E, S) ->
-    io:format("unexpected cast: ~p~n", [E]),
+    lager:warning("server got unexpected cast with msg ~w", [E]),
     {noreply, S}.
 
 handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
@@ -82,16 +82,19 @@ handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
     {noreply, State};
 
 handle_info({tcp_closed, _Socket}, S) ->
+    lager:info("server got tcp_closed"),
     {stop, normal, S};
 
 handle_info({tcp_error, _Socket, Reason}, S) ->
+    lager:info("server got tcp_error"),
     {stop, Reason, S};
 
 handle_info(timeout, State) ->
+    lager:info("server got timeout"),
     {stop, normal, State};
 
 handle_info(E, S) ->
-    io:format("unexpected info: ~p~n", [E]),
+    lager:warning("server got unexpected info with msg ~w", [E]),
     {noreply, S}.
 
 code_change(_OldVsn, State, _Extra) ->
