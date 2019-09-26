@@ -58,7 +58,6 @@ get_ready({{value, TxId}, Queue}, DecideTable, PendingData, Acc) ->
             NewAcc = [{TxId, TxData, VC} | Acc],
             get_ready(queue:out(Queue), DecideTable, PendingData, NewAcc);
         [] ->
-            lager:info("[~p] QUEUE PENDING", [TxId]),
             %% Queue head is still pending, put it back in
             {Acc, queue:in_r(TxId, Queue)}
     end.
