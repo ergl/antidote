@@ -79,7 +79,6 @@ handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
     {noreply, State};
 
 handle_info({tcp_closed, _Socket}, S) ->
-    lager:info("server got tcp_closed"),
     {stop, normal, S};
 
 handle_info({tcp_error, _Socket, Reason}, S) ->
