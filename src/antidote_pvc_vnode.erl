@@ -31,7 +31,8 @@
          replicas_ready/0]).
 
 %% Protocol API
--export([prepare/5,
+-export([rc_read/3,
+         prepare/5,
          decide/3]).
 
 %% riak_core_vnode callbacks
@@ -119,6 +120,10 @@
     %% from outside of the virtual node, to avoid serialization overhead.
     decision_cache :: cache(tx_id(), {protocol(), decision()}),
 
+    %% Storage used for the Read Committed level, simple mapping,
+    %% without versions
+    rc_storage :: cache(key(), val()),
+
     dequeue_timer = undefined :: timer:tref() | undefined
 }).
 
@@ -160,6 +165,13 @@ replicas_ready() ->
     end,
     lists:all(ReadyFun, Nodes).
 
+-spec rc_read(Partition :: partition_id(), Key :: key(), Default :: val()) -> {ok, val()}.
+rc_read(Partition, Key, Default) ->
+    case ets:lookup(cache_name(Partition, ?RC_STORAGE), Key) of
+        [{Key, Val}] -> Val;
+        _ -> Default
+    end.
+
 -spec prepare(Partition :: partition_id(),
               Protocol :: protocol(),
               TxId :: tx_id(),
@@ -197,7 +209,8 @@ init([Partition]) ->
         pending_tx_data = new_cache(Partition, ?PENDING_DATA_TABLE, ?WRITE_HEAVY_OPTS),
         pending_reads   = new_cache(Partition, ?PENDING_READS_TABLE, ?PENDING_OPTS),
         pending_writes  = new_cache(Partition, ?PENDING_WRITES_TABLE, ?PENDING_OPTS),
-        decision_cache  = new_cache(Partition, ?DECIDE_TABLE, ?WRITE_HEAVY_OPTS)
+        decision_cache  = new_cache(Partition, ?DECIDE_TABLE, ?WRITE_HEAVY_OPTS),
+        rc_storage      = new_cache(Partition, ?RC_STORAGE)
     },
 
     {ok, State}.

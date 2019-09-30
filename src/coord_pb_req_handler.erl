@@ -47,6 +47,10 @@ process_request(Promise, 'Load', #{bin_size := Size}) ->
     Reply = antidote_pvc_protocol:load(Size),
     coord_req_promise:resolve(Reply, Promise);
 
+process_request(Promise, 'RCReadRequest', Args) ->
+    #{partition := Partition, key := Key} = Args,
+    ok = antidote_pvc_protocol:read_request(Promise, Partition, Key);
+
 process_request(Promise, 'ReadRequest', Args) ->
     %% TODO(borja): Pass promise further down
     #{partition := Partition, key := Key, vc_aggr := VC, has_read := HasRead} = Args,

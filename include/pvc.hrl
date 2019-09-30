@@ -35,3 +35,4 @@
 -define(PENDING_DATA_TABLE, pending_tx_data).
 -define(PENDING_READS_TABLE, pending_reads).
 -define(PENDING_WRITES_TABLE, pending_writes).
+-define(RC_STORAGE, rc_storage).

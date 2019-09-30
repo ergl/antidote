@@ -24,6 +24,7 @@
 %% New API
 -export([connect/0,
          load/1,
+         read_request/3,
          read_request/5,
          prepare/5,
          decide/3]).
@@ -66,6 +67,13 @@ load(Size) ->
                                                     {unsafe_set_clock, NewLastPrep, ForceClock}),
     ok = all_ok(ForceStateReply),
     ok.
+
+%% @doc Read Request for the Read Committed cons. level
+%%
+%%      Will always read the latest version.
+%%
+read_request(Promise, Partition, Key) ->
+    ok = pvc_read_replica:async_read(Promise, Partition, Key).
 
 -ifdef(read_request).
 %% FIXME(borja): This will be sync, can we remove?

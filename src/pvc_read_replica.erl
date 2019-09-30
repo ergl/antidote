@@ -35,7 +35,7 @@
          replica_ready/2]).
 
 %% protocol API
--export([async_read/5]).
+-export([async_read/3, async_read/5]).
 
 %% gen_fsm callbacks
 -export([init/1,
@@ -116,6 +116,11 @@ replica_ready(Partition, N) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+-spec async_read(coord_req_promise:promise(), partition_id(), key()) -> ok.
+async_read(Promise, Partition, Key) ->
+    Target = random_replica(Partition),
+    gen_server:cast(Target, {read_rc, Promise, Key}).
+
 -spec async_read(coord_req_promise:promise(), partition_id(), key(), ordsets:ordset(), pvc_vc()) -> ok.
 async_read(Promise, Partition, Key, HasRead, VCaggr) ->
     Target = random_replica(Partition),
@@ -155,6 +160,11 @@ handle_call(refresh_default, _Sender, State=#state{partition=Partition}) ->
 
 handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
+
+handle_cast({read_rc, Promise, Key}, State=#state{partition=P, default_bottom_value=Bottom}) ->
+    Value = antidote_pvc_vnode:rc_read(P, Key, Bottom),
+    ok = coord_req_promise:resolve(Value, Promise),
+    {noreply, State};
 
 handle_cast({read_vlog, Promise, Key, VCaggr}, State = #state{vlog_replica=VLog,
                                                               default_bottom_value=DefaultValue,
