@@ -64,6 +64,10 @@
     writeset :: #{key() => val()}
 }).
 
+-record(rc_payload, {
+    writeset :: #{key() => val()}
+}).
+
 -record(ser_payload, {
     writeset :: #{key() => val()},
     readset :: #{key() => non_neg_integer()}
@@ -80,8 +84,10 @@
     readset :: [{key(), non_neg_integer()}]
 }).
 
--type protocol_payload() :: #psi_payload{} | #ser_payload{}.
--type persist_data() :: #psi_data{} | #ser_data{}.
+-record(rc_data, {writeset :: #{key() => val()}}).
+
+-type protocol_payload() :: #psi_payload{} | #ser_payload{} | #rc_payload{}.
+-type persist_data() :: #psi_data{} | #ser_data{} | #rc_data{}.
 
 %% Called internally by riak_core, or via rpc
 -ignore_xref([start_vnode/1,
@@ -330,7 +336,10 @@ conflict_check(Payload=#psi_payload{}, Version, #state{pending_reads=Reads,
             WriteErr;
         true ->
             {ok, Data}
-    end.
+    end;
+
+conflict_check(Payload=#rc_payload{}, _Vsn, _State) ->
+    {ok, make_data(Payload)}.
 
 %%%===================================================================
 %%% Prepare Conflict Check Functions
@@ -381,6 +390,10 @@ persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
     true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
     true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- WKeys]),
     true = ets:insert(State#state.pending_reads, [{Key, TxId} || {Key, _} <- RS]),
+    ok;
+
+persist_data(TxId, Data=#rc_data{}, State) ->
+    true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
     ok.
 
 %%%===================================================================
@@ -389,6 +402,7 @@ persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
 
 -spec make_payload(protocol(), term()) -> protocol_payload().
 make_payload(psi, WS) -> #psi_payload{writeset=WS};
+make_payload(rc, WS) -> #rc_payload{writeset=WS};
 make_payload(ser, {RS, WS}) -> #ser_payload{readset=RS, writeset=WS}.
 
 %% @doc Memoize keys so we don't need to compute them each time
@@ -400,7 +414,10 @@ make_data(#ser_payload{writeset=WS, readset=RS}) ->
 
 make_data(#psi_payload{writeset=WS}) ->
     #psi_data{writeset=WS,
-              write_keys=maps:keys(WS)}.
+              write_keys=maps:keys(WS)};
+
+make_data(#rc_payload{writeset=WS}) ->
+    #rc_data{writeset=WS}.
 
 -spec check_key_overlap(Key :: key(),
                         Version :: non_neg_integer(),
@@ -482,7 +499,7 @@ decide_internal(Partition, TxId, abort) ->
 
 -spec clear_pending(Partition :: partition_id(),
                     TxId :: tx_id(),
-                    Data :: persist_data()) -> ok.
+                    Data :: #psi_data{} | #ser_data{}) -> ok.
 
 clear_pending(Partition, TxId, #psi_data{write_keys=WKeys}) ->
     clear_writes(TxId, WKeys, cache_name(Partition, ?PENDING_WRITES_TABLE));
@@ -506,47 +523,73 @@ clear_writes(TxId, WriteKeys, Writes) ->
 %%%===================================================================
 
 -spec dequeue_event_internal(#state{}) -> pvc_commit_queue:cqueue().
-dequeue_event_internal(#state{partition = Partition,
-                              commit_queue = Queue,
-                              most_recent_vc = MRVCTable,
-                              decision_cache = DecideTable,
-                              last_vsn_cache = LastVsnCache,
-                              pending_tx_data = PendingData}) ->
+dequeue_event_internal(State = #state{commit_queue = Queue,
+                                      decision_cache = DecideTable,
+                                      pending_tx_data = PendingData}) ->
 
     {ReadyTx, NewQueue} = pvc_commit_queue:dequeue_ready(Queue, DecideTable, PendingData),
     case ReadyTx of
-        [] ->
-            ok;
+        [] -> ok;
         Entries ->
             lists:foreach(fun({TxId, TxData, CommitVC}) ->
-                ?LAGER_LOG("Processing ~p, update materializer", [TxId]),
-                %% Persist the writeset in storage
-                ok = update_materializer(Partition, TxData, CommitVC),
-
-                %% Update current MRVC
-                ?LAGER_LOG("Processing ~p, update MRVC", [TxId]),
-                NewMRVC = update_mrvc(CommitVC, MRVCTable),
-
-                %% Update Commit Log
-                ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
-                ok = logging_vnode:pvc_insert_to_commit_log(Partition, NewMRVC),
-
-                ?LAGER_LOG("Processing ~p, cache VLog.last", [TxId]),
-                CommitTime = pvc_vclock:get_time(Partition, CommitVC),
-                ok = cache_last_vsn(TxData, CommitTime, LastVsnCache),
-
-                %% Remove the keys from the pending table
-                %% NOTE: Don't try to optimize by fusing this loop with the previous
-                %% function. We want the changes to the VLog to be visible before
-                %% removing the key from the pending table. Since Erlang doesn't offer
-                %% an atomic multi-object ets:delete_object/2, we have to do it the old way.
-                ok = clear_pending(Partition, TxId, TxData)
+                ok = process_ready_tx(TxId, TxData, CommitVC, State)
             end, Entries)
     end,
     NewQueue.
 
+%% @doc Make this transaction visible to the rest of the system
+-spec process_ready_tx(TxId :: txid(),
+                       TxData :: persist_data(),
+                       CommitVC :: pvc_vc(),
+                       State :: #state{}) -> ok.
+
+process_ready_tx(TxId, #rc_data{writeset=WS}, _VC, #state{rc_storage=Storage}) ->
+    ?LAGER_LOG("Processing RC transaction ~p", [TxId]),
+    %% On Read Committed, we just store the data, no versions
+    %% Objects are updated in LWW fashion
+    Objects = maps:to_list(WS),
+    true = ets:insert(Storage, Objects),
+    ok;
+
+process_ready_tx(TxId, TxData, CommitVC, #state{partition=Partition,
+                                                most_recent_vc=MRVCTable,
+                                                last_vsn_cache=LastVsnCache}) ->
+
+    %% We're using MVCC for both PSI and Serializability. This involves keeping
+    %% extra partition state, such as the MostRecentVC, marking the maximum
+    %% commit version clock seen until now.
+    %%
+    %% Since these transactions perform conflict detection during the prepare
+    %% phase, we also cache some extra state, such as the last comitted version
+    %% (as a single scalar), and keys sitting in the writesets/readsets of
+    %% pending transactions, to speed up checking for overlaps.
+
+    ?LAGER_LOG("Processing ~p, update materializer", [TxId]),
+    %% Persist the writeset in storage
+    ok = update_materializer(Partition, TxData, CommitVC),
+
+    %% Update current MRVC
+    ?LAGER_LOG("Processing ~p, update MRVC", [TxId]),
+    NewMRVC = update_mrvc(CommitVC, MRVCTable),
+
+    %% Update Commit Log
+    ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
+    ok = logging_vnode:pvc_insert_to_commit_log(Partition, NewMRVC),
+
+    ?LAGER_LOG("Processing ~p, cache VLog.last", [TxId]),
+    CommitTime = pvc_vclock:get_time(Partition, CommitVC),
+    ok = cache_last_vsn(TxData, CommitTime, LastVsnCache),
+
+    %% Remove the keys from the pending table
+    %% NOTE: Don't try to optimize by fusing this loop with the previous
+    %% function. We want the changes to the VLog to be visible before
+    %% removing the key from the pending table. Since Erlang doesn't offer
+    %% an atomic multi-object ets:delete_object/2, we have to do it the old way.
+    ok = clear_pending(Partition, TxId, TxData),
+    ok.
+
 -spec update_materializer(Partition :: partition_id(),
-                          TxData :: persist_data(),
+                          TxData :: #psi_data{} | #ser_data{},
                           CommitVC :: pvc_vc()) -> ok.
 
 update_materializer(Partition, TxData, CommitVC) ->
@@ -564,7 +607,7 @@ update_mrvc(CommitVC, MRVCTable) ->
     true = ets:update_element(MRVCTable, mrvc, {2, NewMRVC}),
     NewMRVC.
 
--spec cache_last_vsn(TxData :: persist_data(),
+-spec cache_last_vsn(TxData :: #psi_data{} | #ser_data{},
                      CommitTime :: non_neg_integer(),
                      LastVsnCache :: cache(key(), non_neg_integer())) -> ok.
 
