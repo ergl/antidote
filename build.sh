@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 
 main() {
+    if [[ $# -lt 1 ]]; then
+        echo "./build.sh cmd profile || cmd := compile | run | stop | restart"
+        exit 1
+    fi
+
     local command="${1}"
     local profile="${2:-default}"
 
