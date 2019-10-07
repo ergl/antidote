@@ -332,7 +332,7 @@ valid_readset(#ser_data{readset=Keys}, Writes, LastVsnCache, DefaultVsn) ->
     ConflictFunction = fun(Key, Version) ->
         check_key_overlap(Key, Version, Writes, LastVsnCache, DefaultVsn)
     end,
-    valid_readset_inernal(Keys, ConflictFunction).
+    valid_readset_internal(Keys, ConflictFunction).
 
 -spec valid_writeset(Data :: persist_data(),
                      Reads :: cache(key(), tx_id()),
@@ -417,16 +417,16 @@ stale_version(Key, Version, LastVsnCache, DefaultVsn) ->
             true
     end.
 
--spec valid_readset_inernal(
+-spec valid_readset_internal(
     Versions :: [{key(), non_neg_integer()}],
     ConflictFun :: fun((key(), non_neg_integer()) -> true | {error, reason()})
 ) -> true | {error, reason()}.
 
-valid_readset_inernal([], _Fun) -> true;
-valid_readset_inernal([{Key, Vsn} | Rest], ConflictFun) ->
+valid_readset_internal([], _Fun) -> true;
+valid_readset_internal([{Key, Vsn} | Rest], ConflictFun) ->
     case ConflictFun(Key, Vsn) of
         {error, _}=Err -> Err;
-        true -> valid_readset_inernal(Rest, ConflictFun)
+        true -> valid_readset_internal(Rest, ConflictFun)
     end.
 
 -spec valid_writeset_internal(
