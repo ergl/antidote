@@ -343,12 +343,12 @@ valid_readset(#ser_data{readset=Keys}, Writes, LastVsnCache, DefaultVsn) ->
 
 valid_writeset(#ser_data{write_keys=WKeys}, Reads, Writes, Version, LastVsnCache, DefaultVsn) ->
     ConflictFun = fun(Key) ->
-    Disputed = ets:member(Reads, Key) orelse
-               ets:member(Writes, Key),
-    case Disputed of
-        true -> {error, pvc_conflict};
-        false -> stale_version(Key, Version, LastVsnCache, DefaultVsn)
-    end
+        Disputed = ets:member(Reads, Key) orelse
+                   ets:member(Writes, Key),
+        case Disputed of
+            true -> {error, pvc_conflict};
+            false -> stale_version(Key, Version, LastVsnCache, DefaultVsn)
+        end
     end,
     valid_writeset_internal(WKeys, ConflictFun);
 
