@@ -351,8 +351,13 @@ conflict_check(Payload=#rc_payload{}, _Vsn, _State) ->
                     DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
 
 valid_readset(#ser_data{readset=Keys}, Writes, LastVsnCache, DefaultVsn) ->
-    ConflictFunction = fun(Key, Version) ->
-        check_key_overlap(Key, Version, Writes, LastVsnCache, DefaultVsn)
+    %% For serializability, check
+    %% (t'.ws ^ t.rs) = \empty
+    %% ^ \forall (k,vsn) \in t.rs => VLog.last(k).vid[i] <= vsn
+    %% Meaning: we're not reading something some previous transaction is going
+    %% to overwrite (or already has)
+    ConflictFunction = fun(Key, KeyVersion) ->
+        check_key_overlap(Key, KeyVersion, Writes, LastVsnCache, DefaultVsn)
     end,
     valid_readset_internal(Keys, ConflictFunction).
 
@@ -363,13 +368,15 @@ valid_readset(#ser_data{readset=Keys}, Writes, LastVsnCache, DefaultVsn) ->
                      LastVsnCache :: cache(key(), non_neg_integer()),
                      DefaultVsn :: non_neg_integer()) -> true | {error, reason()}.
 
-valid_writeset(#ser_data{write_keys=WKeys}, Reads, Writes, Version, LastVsnCache, DefaultVsn) ->
+valid_writeset(#ser_data{write_keys=WKeys}, Reads, _Writes, _Version, _LastVsnCache, _DefaultVsn) ->
+    %% For serializability, check
+    %% (t'.rs ^ t.ws) = \empty
+    %% write-write conflicts are covered during the readset check, and stale
+    %% writes are covered by the stale reads check, since our check is looser
     ConflictFun = fun(Key) ->
-        Disputed = ets:member(Reads, Key) orelse
-                   ets:member(Writes, Key),
-        case Disputed of
+        case ets:member(Reads, Key) of
             true -> {error, pvc_conflict};
-            false -> stale_version(Key, Version, LastVsnCache, DefaultVsn)
+            false -> true
         end
     end,
     valid_writeset_internal(WKeys, ConflictFun);
