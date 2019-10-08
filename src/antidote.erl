@@ -24,23 +24,33 @@
 
 -include("antidote.hrl").
 
-%% API for applications
--export([ start/0, stop/0,
-          start_transaction/2,
-          read_objects/2,
-          read_objects/3,
-          update_objects/2,
-          update_objects/3,
-          abort_transaction/1,
-          commit_transaction/1,
-          create_bucket/2,
-          create_object/3,
-          delete_object/1,
-          register_pre_hook/3,
-          register_post_hook/3,
-          unregister_hook/2
-        ]).
+-ignore_xref([start/0,
+              stop/0,
+              create_bucket/2,
+              create_object/3,
+              delete_object/1,
+              register_pre_hook/3,
+              register_post_hook/3,
+              unregister_hook/2]).
 
+%% External API for console use, never called otherwise
+-export([start/0,
+         stop/0,
+         create_bucket/2,
+         create_object/3,
+         delete_object/1,
+         register_pre_hook/3,
+         register_post_hook/3,
+         unregister_hook/2]).
+
+%% API for applications
+-export([start_transaction/2,
+         read_objects/2,
+         read_objects/3,
+         update_objects/2,
+         update_objects/3,
+         abort_transaction/1,
+         commit_transaction/1]).
 
 %% Public API
 
