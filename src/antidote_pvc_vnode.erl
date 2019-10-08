@@ -381,9 +381,9 @@ make_payload(ser, {RS, WS}) -> #ser_payload{readset=RS, writeset=WS}.
 %% @doc Memoize keys so we don't need to compute them each time
 -spec make_data(protocol_payload()) -> persist_data().
 make_data(#ser_payload{writeset=WS, readset=RS}) ->
-    #ser_data{writeset=WS,
-              readset=maps:to_list(RS),
-              write_keys=maps:keys(WS)};
+    #ser_data{writeset=WS, %% for tx data
+              readset=maps:to_list(RS), %% to check t'.ws ^ t.rs
+              write_keys=maps:keys(WS)}; %% persist t.ws
 
 make_data(#psi_payload{writeset=WS}) ->
     #psi_data{writeset=WS,
