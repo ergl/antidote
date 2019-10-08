@@ -28,9 +28,11 @@
 %% Defines how often partition vnodes try to dequeue ready transactions
 -define(DEQUEUE_INTERVAL, 5).
 
-%% Storage ETS for the writesets sitting in the commit queue
--define(WRITESET_TABLE, pvc_queue_writesets).
-%% Reverse index of the above table, with a mapping key -> tx_id
--define(WRITESET_TABLE_INDEX, pvc_queue_index).
-%% Decide ETS table name inside clocksi_vnode
+%% Storage ETS tables inside antidote_pvc_vnode
 -define(DECIDE_TABLE, pvc_decide_table).
+-define(MRVC_TABLE, most_recent_vc).
+-define(LAST_VSN_TABLE, last_vsn).
+-define(PENDING_DATA_TABLE, pending_tx_data).
+-define(PENDING_READS_TABLE, pending_reads).
+-define(PENDING_WRITES_TABLE, pending_writes).
+-define(RC_STORAGE, rc_storage).

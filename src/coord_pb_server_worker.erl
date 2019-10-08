@@ -56,27 +56,25 @@ init({Ref, Socket, Transport, _Opts}) ->
     State = #state{socket=Socket, transport=Transport, id_len=IDLen},
     gen_server:enter_loop(?MODULE, [], State).
 
-handle_call(E, _From, S) ->
-    io:format("unexpected call: ~p~n", [E]),
+handle_call(E, From, S) ->
+    lager:warning("server got unexpected call with msg ~w from ~w", [E, From]),
     {reply, ok, S}.
 
 handle_cast(E, S) ->
-    io:format("unexpected cast: ~p~n", [E]),
+    lager:warning("server got unexpected cast with msg ~w", [E]),
     {noreply, S}.
 
 handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
                                                 transport=Transport,
                                                 id_len=IDLen}) ->
     <<MessageID:IDLen, Request/binary>> = Data,
-    {HandlerMod, Type, Msg} = pvc_proto:decode_client_req(Request),
-    case coord_pb_req_handler:process_request(Type, Msg) of
-        {reply, Result} ->
-            ?LAGER_LOG("Sending back ~p", [Result]),
-            Reply = pvc_proto:encode_serv_reply(HandlerMod, Type, Result),
-            Transport:send(Socket, <<MessageID:IDLen, Reply/binary>>);
-        noreply ->
-            ok
-    end,
+    {PBMod, PBType, Msg} = pvc_proto:decode_client_req(Request),
+
+    ?LAGER_LOG("request id=~b type=~p msg=~w", [MessageID, PBType, Msg]),
+
+    Promise = coord_req_promise:new(self(), {MessageID, PBMod, PBType}),
+    ok = coord_pb_req_handler:process_request(Promise, PBType, Msg),
+
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
@@ -84,13 +82,24 @@ handle_info({tcp_closed, _Socket}, S) ->
     {stop, normal, S};
 
 handle_info({tcp_error, _Socket, Reason}, S) ->
+    lager:info("server got tcp_error"),
     {stop, Reason, S};
 
 handle_info(timeout, State) ->
+    lager:info("server got timeout"),
     {stop, normal, State};
 
+handle_info({promise_resolve, Result, {Id, Mod, Type}}, S=#state{socket=Socket,
+                                                    transport=Transport,
+                                                    id_len=IDLen}) ->
+
+    ?LAGER_LOG("response id=~b msg=~w", [Id, Result]),
+    Reply = pvc_proto:encode_serv_reply(Mod, Type, Result),
+    Transport:send(Socket, <<Id:IDLen, Reply/binary>>),
+    {noreply, S};
+
 handle_info(E, S) ->
-    io:format("unexpected info: ~p~n", [E]),
+    lager:warning("server got unexpected info with msg ~w", [E]),
     {noreply, S}.
 
 code_change(_OldVsn, State, _Extra) ->

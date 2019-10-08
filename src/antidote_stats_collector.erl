@@ -23,7 +23,7 @@
 
 -module(antidote_stats_collector).
 
--include("log_version_miss.hrl").
+-include("antidote.hrl").
 
 -behaviour(gen_server).
 
@@ -36,7 +36,8 @@
 %% API
 -export([start_link/0,
          init_stale_metrics/0,
-         init_vlog_miss_table/0,
+         log_version_miss/1,
+         log_partition_not_ready/1,
          report_vlog_misses/0]).
 
 %% gen_server callbacks
@@ -47,9 +48,15 @@
          terminate/2,
          code_change/3]).
 
+-record(stat_entry, {
+    partition :: partition_id(),
+    log_misses = 0 :: non_neg_integer(),
+    not_ready_tries = 0 :: non_neg_integer()
+}).
+
 -record(state, {
     update_timer = undefined :: undefined | timer:tref(),
-    log_miss_table = undefined :: undefined | ets:tab()
+    stats_table :: ets:tab()
 }).
 
 start_link() ->
@@ -59,18 +66,28 @@ start_link() ->
 init_stale_metrics() ->
     gen_server:cast(?MODULE, init_metrics).
 
-%% @doc Init the version miss table
-%%      Will track how many key version misses we do by aggressive GC
--spec init_vlog_miss_table() -> ok.
-init_vlog_miss_table() ->
-    gen_server:cast(?MODULE, init_vlog_miss_table).
+-spec log_version_miss(partition_id()) -> ok.
+log_version_miss(Partition) ->
+    _ = ets:update_counter(?MODULE, Partition, {#stat_entry.log_misses, 1}, fresh_entry(Partition)),
+    ok.
 
--spec report_vlog_misses() -> [tuple()].
+log_partition_not_ready(P) ->
+    _ = ets:update_counter(?MODULE, P, {#stat_entry.not_ready_tries, 1}, fresh_entry(P)),
+    ok.
+
+-spec report_vlog_misses() -> [#{}].
 report_vlog_misses() ->
-    ets:tab2list(?LOG_MISS_TABLE).
+    lists:map(fun entry_to_map/1, ets:tab2list(?MODULE)).
 
 init([]) ->
-    {ok, #state{}}.
+    lager:info("Initializing ~p ETS table", [?MODULE]),
+    Table = ets:new(?MODULE, [set,
+                              named_table,
+                              public,
+                              {write_concurrency, true},
+                              {keypos, #stat_entry.partition}]),
+
+    {ok, #state{stats_table=Table}}.
 
 handle_call(_Req, _From, State) ->
     {reply, ok, State}.
@@ -84,11 +101,6 @@ handle_cast({update, Metric}, State) ->
     Val = antidote_stats:get_value(Metric),
     exometer:update(Metric, Val),
     {noreply, State};
-
-handle_cast(init_vlog_miss_table, State=#state{log_miss_table=undefined}) ->
-    lager:info("Initializing ~p ETS table", [?LOG_MISS_TABLE]),
-    Table = ets:new(?LOG_MISS_TABLE, [set, named_table, public, {write_concurrency, true}]),
-    {noreply, State#state{log_miss_table=Table}};
 
 handle_cast(_Req, State) ->
     {noreply, State}.
@@ -112,3 +124,13 @@ init_metrics() ->
     lists:foreach(fun(Metric) ->
         exometer:new(Metric, histogram, [{time_span, timer:seconds(60)}])
     end, Metrics).
+
+-spec fresh_entry(partition_id()) -> #stat_entry{}.
+fresh_entry(P) ->
+    #stat_entry{partition = P, not_ready_tries = 0, log_misses = 0}.
+
+-spec entry_to_map(#stat_entry{}) -> #{atom() => term()}.
+entry_to_map(Entry) ->
+    FieldNames = record_info(fields, stat_entry),
+    [_Name | Fields] = tuple_to_list(Entry),
+    maps:from_list(lists:zip(FieldNames, Fields)).

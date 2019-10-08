@@ -18,27 +18,25 @@
 %%
 %% -------------------------------------------------------------------
 
--module(pvc_read_replica_sup).
+-module(coord_req_promise).
 
--behavior(supervisor).
+-record(promise, {
+    reply_to :: pid(),
+    context :: term()
+}).
 
-%% API
--export([start_replica/2,
-         start_link/0]).
 
--export([init/1]).
+-type promise() :: #promise{}.
 
--ignore_xref([start_link/0]).
+-export([new/2,
+         resolve/2]).
 
-start_link() ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_replica(Partition, Id) ->
-    supervisor:start_child(?MODULE, [Partition, Id]).
+-spec new(pid(), term()) -> promise().
+new(From, Context) ->
+    #promise{reply_to=From, context=Context}.
 
-init([]) ->
-    {ok, {{simple_one_for_one, 5, 10},
-        [{pvc_read_replica,
-            {pvc_read_replica, start_link, []},
-            transient, 5000, worker, [pvc_read_replica]}]
-    }}.
+-spec resolve(term(), promise()) -> ok.
+resolve(Reply, #promise{reply_to=To, context=Context}) ->
+    To ! {promise_resolve, Reply, Context},
+    ok.

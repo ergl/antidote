@@ -42,21 +42,21 @@ enqueue(TxId, Queue) ->
     queue:in(TxId, Queue).
 
 -spec dequeue_ready(cqueue(), cache_id(), cache_id()) -> {[{txid(), writeset(), pvc_vc()}], cqueue()}.
-dequeue_ready(Queue, DecideTable, WritesetTable) ->
-    {Acc, NewCQueue} = get_ready(queue:out(Queue), DecideTable, WritesetTable, []),
+dequeue_ready(Queue, DecideTable, PendingData) ->
+    {Acc, NewCQueue} = get_ready(queue:out(Queue), DecideTable, PendingData, []),
     {lists:reverse(Acc), NewCQueue}.
 
-get_ready({empty, Queue}, _DecideTable, _WritesetTable, Acc) ->
+get_ready({empty, Queue}, _DecideTable, _PendingData, Acc) ->
     {Acc, Queue};
 
-get_ready({{value, TxId}, Queue}, DecideTable, WritesetTable, Acc) ->
+get_ready({{value, TxId}, Queue}, DecideTable, PendingData, Acc) ->
     case ets:take(DecideTable, TxId) of
         [{TxId, abort}] ->
-            get_ready(queue:out(Queue), DecideTable, WritesetTable, Acc);
+            get_ready(queue:out(Queue), DecideTable, PendingData, Acc);
         [{TxId, ready, VC}] ->
-            [{TxId, WriteSet}] = ets:take(WritesetTable, TxId),
-            NewAcc = [{TxId, WriteSet, VC} | Acc],
-            get_ready(queue:out(Queue), DecideTable, WritesetTable, NewAcc);
+            [{TxId, TxData}] = ets:take(PendingData, TxId),
+            NewAcc = [{TxId, TxData, VC} | Acc],
+            get_ready(queue:out(Queue), DecideTable, PendingData, NewAcc);
         [] ->
             %% Queue head is still pending, put it back in
             {Acc, queue:in_r(TxId, Queue)}
@@ -66,30 +66,30 @@ get_ready({{value, TxId}, Queue}, DecideTable, WritesetTable, Acc) ->
 
 pvc_commit_queue_ready_same_test() ->
     Decide = ets:new(decide_table, [set]),
-    WriteSets = ets:new(writeset_table, [set]),
+    TxData = ets:new(tx_data_table, [set]),
 
     CQ = pvc_commit_queue:new(),
 
     %% If there are no ready elements nor deleted, the queue stays the same
-    {Elts, CQ1} = pvc_commit_queue:dequeue_ready(CQ, Decide, WriteSets),
+    {Elts, CQ1} = pvc_commit_queue:dequeue_ready(CQ, Decide, TxData),
     ?assertEqual([], Elts),
     ?assertEqual(CQ, CQ1),
 
     CQ2 = pvc_commit_queue:enqueue(id, CQ1),
-    {Elts1, CQ3} = pvc_commit_queue:dequeue_ready(CQ2, Decide, WriteSets),
+    {Elts1, CQ3} = pvc_commit_queue:dequeue_ready(CQ2, Decide, TxData),
     %% Dequeue is idempotent, calling it again will not modify the queue
-    {_, CQ4} = pvc_commit_queue:dequeue_ready(CQ2, Decide, WriteSets),
+    {_, CQ4} = pvc_commit_queue:dequeue_ready(CQ2, Decide, TxData),
 
     %% If there are no ready elements nor deleted, the queue stays the same
     ?assertEqual([], Elts1),
     ?assertEqual(CQ3, CQ4),
 
     ets:delete(Decide),
-    ets:delete(WriteSets).
+    ets:delete(TxData).
 
 pvc_commit_queue_ready_skip_test() ->
     Decide = ets:new(decide_table, [set]),
-    WriteSets = ets:new(writeset_table, [set]),
+    TxData = ets:new(tx_data_table, [set]),
 
     CQ = pvc_commit_queue:new(),
     CQ1 = pvc_commit_queue:enqueue(id, CQ),
@@ -97,24 +97,24 @@ pvc_commit_queue_ready_skip_test() ->
     CQ3 = pvc_commit_queue:enqueue(id2, CQ2),
 
     %% This would happen atomically during the prepare phase
-    true = ets:insert(WriteSets, [{id, #{}},
-                                  {id1, #{}},
-                                  {id2, #{}}]),
+    true = ets:insert(TxData, [{id, #{}},
+                               {id1, #{}},
+                               {id2, #{}}]),
 
     %% Mark id1 as aborted, id2 as ready, id is pending (we remove id1's writeset)
-    true = ets:delete(WriteSets, id1),
+    true = ets:delete(TxData, id1),
     true = ets:insert(Decide, [{id1, abort},
                                {id2, ready, []}]),
 
     %% id is still pending, so it will block other transactions in the queue
-    {Elts, CQ4} = pvc_commit_queue:dequeue_ready(CQ3, Decide, WriteSets),
+    {Elts, CQ4} = pvc_commit_queue:dequeue_ready(CQ3, Decide, TxData),
     ?assertEqual([], Elts),
 
     %% Marking id as ready should unblock the queue
     true = ets:insert(Decide, {id, ready, []}),
 
     %% Get ready skips removed entries from the queue
-    {Elts1, CQ5} = pvc_commit_queue:dequeue_ready(CQ4, Decide, WriteSets),
+    {Elts1, CQ5} = pvc_commit_queue:dequeue_ready(CQ4, Decide, TxData),
     %% The entries are in the same order as we put them into the queue
     ?assertMatch([{id, #{}, []}, {id2, #{}, []}], Elts1),
 
@@ -123,6 +123,6 @@ pvc_commit_queue_ready_skip_test() ->
     ?assertEqual(Empty, CQ5),
 
     ets:delete(Decide),
-    ets:delete(WriteSets).
+    ets:delete(TxData).
 
 -endif.

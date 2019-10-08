@@ -38,10 +38,14 @@ start(_StartType, _StartArgs) ->
             ok = riak_core:register([{vnode_module, rubis_keygen_vnode}]),
             ok = riak_core_node_watcher:service_up(rubis_keygen, self()),
 
+            %% Protocol Layer
+            ok = riak_core:register([{vnode_module, antidote_pvc_vnode}]),
+            ok = riak_core_node_watcher:service_up(antidote_pvc, self()),
+
             ok = riak_core:register([{vnode_module, logging_vnode}]),
             ok = riak_core_node_watcher:service_up(logging, self()),
-            %%ClockSI layer
 
+            %%ClockSI layer
             ok = riak_core:register([{vnode_module, clocksi_vnode}]),
             ok = riak_core_node_watcher:service_up(clocksi, self()),
 

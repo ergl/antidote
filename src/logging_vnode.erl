@@ -603,10 +603,7 @@ handle_command({get_all, LogId, Continuation, Ops}, _Sender,
     end;
 
 handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State) ->
-%%    T1 = erlang:timestamp(),
     MaxVC = pvc_commit_log:get_smaller_from_dots(ReadPartitions, VCAggr, State#state.pvc_clog),
-%%    T2 = erlang:timestamp(),
-%%    lager:info("PVC get_smaller_from_dots took ~p microseconds~n", [timer:now_diff(T2, T1)]),
     {reply, MaxVC, State};
 
 handle_command({pvc_add_clog, VC}, _Sender, State) ->

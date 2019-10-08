@@ -24,8 +24,9 @@
 %% New API
 -export([connect/0,
          load/1,
-         read_request/4,
-         prepare/4,
+         read_request/3,
+         read_request/5,
+         prepare/5,
          decide/3]).
 
 %% Old API, deprecated
@@ -58,17 +59,25 @@ load(Size) ->
     ok = all_ok(SetDefaultReply),
 
     %% Refresh all read replicas
-    RefreshReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master, pvc_refresh_replicas),
+    RefreshReply = dc_utilities:bcast_vnode_sync(antidote_pvc_vnode_master, refresh_replicas),
     ok = all_ok(RefreshReply),
 
     %% Force advance replica state
-    ForceStateReply = dc_utilities:bcast_vnode_sync(clocksi_vnode_master,
-                                                    {pvc_unsafe_set_clock, NewLastPrep, ForceClock}),
+    ForceStateReply = dc_utilities:bcast_vnode_sync(antidote_pvc_vnode_master,
+                                                    {unsafe_set_clock, NewLastPrep, ForceClock}),
     ok = all_ok(ForceStateReply),
     ok.
 
+%% @doc Read Request for the Read Committed cons. level
+%%
+%%      Will always read the latest version.
+%%
+read_request(Promise, Partition, Key) ->
+    ok = pvc_read_replica:async_read(Promise, Partition, Key).
+
 -ifdef(read_request).
-read_request(Partition, Key, VCaggr, HasRead) ->
+%% FIXME(borja): This will be sync, can we remove?
+read_request(Promise, Partition, Key, VCaggr, HasRead) ->
     Received = os:timestamp(),
     {Took, ok} = timer:tc(pvc_read_replica,
                           async_read,
@@ -77,29 +86,24 @@ read_request(Partition, Key, VCaggr, HasRead) ->
     WaitReceive = os:timestamp(),
     receive
         {error, Reason} ->
-            {error, Reason};
+            coord_req_promise:resolve({error, Reason}, Promise);
 
         {ok, _Value, CommitVC, MaxVC} ->
             ReceivedMsg = os:timestamp(),
-            {ok, #{rcv => Received,
-                   read_took => Took,
-                   wait_took => timer:now_diff(ReceivedMsg, WaitReceive),
-                   send => os:timestamp()}, CommitVC, MaxVC}
+            Reply = {ok, #{rcv => Received,
+                           read_took => Took,
+                           wait_took => timer:now_diff(ReceivedMsg, WaitReceive),
+                           send => os:timestamp()}, CommitVC, MaxVC},
+            coord_req_promise:resolve(Reply, Promise)
     end.
 -else.
-read_request(Partition, Key, VCaggr, HasRead) ->
-    ok = pvc_read_replica:async_read(self(), Partition, Key, HasRead, VCaggr),
-    receive
-        {error, Reason} ->
-            {error, Reason};
-        {ok, Value, CommitVC, MaxVC} ->
-            {ok, Value, CommitVC, MaxVC}
-    end.
+read_request(Promise, Partition, Key, VCaggr, HasRead) ->
+    ok = pvc_read_replica:async_read(Promise, Partition, Key, HasRead, VCaggr).
 -endif.
 
-prepare(Partition, TxId, WriteSet, PartitionVersion) ->
-    ok = clocksi_vnode:pvc_prepare(self(), Partition, TxId, WriteSet, PartitionVersion),
-    receive
+prepare(Partition, Protocol, TxId, Payload, PartitionVersion) ->
+    Vote = antidote_pvc_vnode:prepare(Partition, Protocol, TxId, Payload, PartitionVersion),
+    case Vote of
         {error, Reason} ->
             ?LAGER_LOG("Received ~p", [{error, Reason}]),
             {error, Partition, Reason};
@@ -109,7 +113,7 @@ prepare(Partition, TxId, WriteSet, PartitionVersion) ->
     end.
 
 decide(Partition, TxId, Outcome) ->
-    clocksi_vnode:pvc_decide(Partition, TxId, Outcome).
+    antidote_pvc_vnode:decide(Partition, TxId, Outcome).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 

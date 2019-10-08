@@ -35,7 +35,7 @@
          replica_ready/2]).
 
 %% protocol API
--export([async_read/5]).
+-export([async_read/3, async_read/5]).
 
 %% gen_fsm callbacks
 -export([init/1,
@@ -45,28 +45,20 @@
          terminate/2,
          code_change/3]).
 
+-ignore_xref([start_link/2]).
+
 -record(state, {
     %% Name of this read replica
     self :: atom(),
     %% Partition that this server is replicating
     partition :: partition_id(),
 
-    %% Read replica of
-    %% MostRecentVC
-    %% SeqNumber
-    partition_state_replica :: atom(),
-
     %% Read replica of the VLog ETS table
     vlog_replica :: atom(),
 
     %% Default value and clock for empty keys
     default_bottom_value = <<>> :: any(),
-    default_bottom_clock = pvc_vclock:new() :: pvc_vc(),
-
-    %% Read replica of the last version committed by a key
-    %% This is useful to compute VLog.last(key) without
-    %% traversing the entire VLog
-    committed_cache_replica :: atom()
+    default_bottom_clock = pvc_vclock:new() :: pvc_vc()
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -80,6 +72,10 @@
 %%
 %%      Since they replicate ETS tables stored in vnodes, they have
 %%      to be started in the same physical node.
+%%
+%%
+%%      This function is called from the supervisor dynamically
+%%      (see pvc_read_replica_sup:start_replica/2)
 %%
 -spec start_link(Partition :: partition_id(),
                  Id :: non_neg_integer()) -> {ok, pid()} | ignore | {error, term()}.
@@ -120,14 +116,19 @@ replica_ready(Partition, N) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec async_read(pid(), partition_id(), key(), ordsets:ordset(), pvc_vc()) -> ok.
-async_read(ReplyTo, Partition, Key, HasRead, VCaggr) ->
+-spec async_read(coord_req_promise:promise(), partition_id(), key()) -> ok.
+async_read(Promise, Partition, Key) ->
+    Target = random_replica(Partition),
+    gen_server:cast(Target, {read_rc, Promise, Key}).
+
+-spec async_read(coord_req_promise:promise(), partition_id(), key(), ordsets:ordset(), pvc_vc()) -> ok.
+async_read(Promise, Partition, Key, HasRead, VCaggr) ->
     Target = random_replica(Partition),
     case ordsets:is_element(Partition, HasRead) of
         true ->
-            gen_server:cast(Target, {read_vlog, ReplyTo, Key, VCaggr});
+            gen_server:cast(Target, {read_vlog, Promise, Key, VCaggr});
         false ->
-            gen_server:cast(Target, {read_scan, ReplyTo, Key, HasRead, VCaggr})
+            gen_server:cast(Target, {read_scan, Promise, Key, HasRead, VCaggr})
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -139,20 +140,12 @@ init([Partition, Id]) ->
     VLog = materializer_vnode:get_cache_name(Partition, pvc_snapshot_cache),
     {BottomValue, BottomClock} = materializer_vnode:pvc_get_default_value({Partition, node()}),
 
-    %% Partition replica
-    StateReplica = clocksi_vnode:get_cache_name(Partition, pvc_state_table),
-    %% TODO(borja/pvc-ccoord): Change name of ETS table
-    Committed = clocksi_vnode:get_cache_name(Partition, committed_tx),
-
     Self = generate_replica_name(Partition, Id),
-
     {ok, #state{self = Self,
                 partition = Partition,
                 vlog_replica = VLog,
                 default_bottom_value = BottomValue,
-                default_bottom_clock = BottomClock,
-                committed_cache_replica = Committed,
-                partition_state_replica = StateReplica}}.
+                default_bottom_clock = BottomClock}}.
 
 handle_call(ready, _From, State) ->
     {reply, ready, State};
@@ -168,22 +161,27 @@ handle_call(refresh_default, _Sender, State=#state{partition=Partition}) ->
 handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
 
-handle_cast({read_vlog, ReplyTo, Key, VCaggr}, State = #state{vlog_replica=VLog,
+handle_cast({read_rc, Promise, Key}, State=#state{partition=P, default_bottom_value=Bottom}) ->
+    Value = antidote_pvc_vnode:rc_read(P, Key, Bottom),
+    ok = coord_req_promise:resolve(Value, Promise),
+    {noreply, State};
+
+handle_cast({read_vlog, Promise, Key, VCaggr}, State = #state{vlog_replica=VLog,
                                                               default_bottom_value=DefaultValue,
                                                               default_bottom_clock=DefaultClock}) ->
 
-    ok = read_vlog_internal(ReplyTo, Key, VCaggr, VLog, {DefaultValue, DefaultClock}),
+    ok = read_vlog_internal(Promise, Key, VCaggr, VLog, {DefaultValue, DefaultClock}),
     {noreply, State};
 
-handle_cast({read_scan, ReplyTo, Key, HasRead, VCaggr}, State) ->
-    ok = read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State),
+handle_cast({read_scan, Promise, Key, HasRead, VCaggr}, State) ->
+    ok = read_scan_internal(Promise, Key, HasRead, VCaggr, State),
     {noreply, State};
 
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({wait_scan, ReplyTo, Key, HasRead, VCaggr}, State) ->
-    ok = read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State),
+handle_info({wait_scan, Promise, Key, HasRead, VCaggr}, State) ->
+    ok = read_scan_internal(Promise, Key, HasRead, VCaggr, State),
     {noreply, State};
 
 handle_info(Info, State) ->
@@ -194,24 +192,18 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec read_scan_internal(pid(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
-read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State) ->
-    #state{partition=Partition,
-           partition_state_replica=ReplicaState} = State,
+-spec read_scan_internal(coord_req_promise:promise(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
+read_scan_internal(Promise, Key, HasRead, VCaggr, State=#state{partition=Partition}) ->
+    ?LAGER_LOG("most_recent_vc(~p)", [Partition]),
 
-    %% FIXME(borja): Remove hack {Partition, node()}
-    %% Table should be at this node
-    ?LAGER_LOG("get_mrvc({~p,~p})", [Partition, node()]),
-
-    MRVC = clocksi_vnode:pvc_get_most_recent_vc({Partition, node()}, ReplicaState),
+    MRVC = antidote_pvc_vnode:most_recent_vc(Partition),
     ?LAGER_LOG("MRVC = ~p", [MRVC]),
     case check_time(Partition, MRVC, VCaggr) of
         {not_ready, WaitTime} ->
-            ?LAGER_LOG("Partition not ready, will wait ~p", [WaitTime]),
-            erlang:send_after(WaitTime, self(), {wait_scan, ReplyTo, Key, HasRead, VCaggr}),
+            erlang:send_after(WaitTime, self(), {wait_scan, Promise, Key, HasRead, VCaggr}),
             ok;
         ready ->
-            scan_and_read(ReplyTo, Key, HasRead, VCaggr, State)
+            scan_and_read(Promise, Key, HasRead, VCaggr, State)
     end.
 
 %% @doc Scan the replication log for a valid vector clock time for a read at this partition
@@ -220,40 +212,34 @@ read_scan_internal(ReplyTo, Key, HasRead, VCaggr, State) ->
 %%      that the current partition has read, that partition time is smaller or
 %%      equal than the VCaggr of the current transaction.
 %%
--spec scan_and_read(pid(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
-scan_and_read(ReplyTo, Key, HasRead, VCaggr, #state{partition=Partition,
+-spec scan_and_read(coord_req_promise:promise(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
+scan_and_read(Promise, Key, HasRead, VCaggr, #state{partition=Partition,
                                                     vlog_replica=VLog,
                                                     default_bottom_value=BottomValue,
-                                                    default_bottom_clock=ClockValue,
-                                                    partition_state_replica=ReplicaState}) ->
+                                                    default_bottom_clock=ClockValue}) ->
 
-    ?LAGER_LOG("scan_and_read(~p, ~p, ~p, ~p)", [ReplyTo, Key, HasRead, VCaggr]),
-    MaxVCRes = find_max_vc(Partition, HasRead, VCaggr, ReplicaState),
+    ?LAGER_LOG("scan_and_read(~p, ~p, ~p, ~p)", [Promise, Key, HasRead, VCaggr]),
+    MaxVCRes = find_max_vc(Partition, HasRead, VCaggr),
     ?LAGER_LOG("MaxVC = ~p", [MaxVCRes]),
     case MaxVCRes of
         {error, Reason} ->
-            reply(ReplyTo, {error, Reason});
+            coord_req_promise:resolve({error, Reason}, Promise);
         {ok, MaxVC} ->
-            read_vlog_internal(ReplyTo, Key, MaxVC, VLog, {BottomValue, ClockValue})
+            read_vlog_internal(Promise, Key, MaxVC, VLog, {BottomValue, ClockValue})
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
--spec find_max_vc(
-    partition_id(),
-    ordsets:ordset(),
-    pvc_vc(),
-    atom()
-) -> {ok, pvc_vc()} | {error, reason()}.
+-spec find_max_vc(Partition :: partition_id(),
+                  HasRead :: ordsets:ordset(),
+                  VCaggr :: pvc_vc()) -> {ok, pvc_vc()} | {error, reason()}.
 
-find_max_vc(Partition, HasRead, VCaggr, ReplicaState) ->
+find_max_vc(Partition, HasRead, VCaggr) ->
     %% If this is the first partition we're reading, our MaxVC will be
     %% the current MostRecentVC at this partition
     MaxVC = case ordsets:size(HasRead) of
         0 ->
-            %% FIXME(borja): Remove hack {Partition, node()}
-            %% Table should be at this node
-            ?LAGER_LOG("get_mrvc({~p,~p})", [Partition, node()]),
-            clocksi_vnode:pvc_get_most_recent_vc({Partition, node()}, ReplicaState);
+            ?LAGER_LOG("get_mrvc(~p)", [Partition]),
+            antidote_pvc_vnode:most_recent_vc(Partition);
         _ ->
             ?LAGER_LOG("logging_vnode:pvc_get_max_vc({~p,~p})", [Partition, node()]),
             logging_vnode:pvc_get_max_vc({Partition, node()}, ordsets:to_list(HasRead), VCaggr)
@@ -278,20 +264,15 @@ find_max_vc(Partition, HasRead, VCaggr, ReplicaState) ->
 %%      to the coordinator the value of that snapshot, along with the commit
 %%      vector clock time of that snapshot.
 %%
--spec read_vlog_internal(pid(), key(), pvc_vc(), atom(), tuple()) -> ok.
-read_vlog_internal(ReplyTo, Key, MaxVC, VLogCache, DefaultBottom) ->
-    ?LAGER_LOG("vlog read(~p, ~p, ~p)", [ReplyTo, Key, MaxVC]),
+-spec read_vlog_internal(coord_req_promise:promise(), key(), pvc_vc(), atom(), tuple()) -> ok.
+read_vlog_internal(Promise, Key, MaxVC, VLogCache, DefaultBottom) ->
+    ?LAGER_LOG("vlog read(~p, ~p, ~p)", [Promise, Key, MaxVC]),
     case materializer_vnode:pvc_read_replica(Key, MaxVC, VLogCache, DefaultBottom) of
         {error, Reason} ->
-            reply(ReplyTo, {error, Reason});
+            coord_req_promise:resolve({error, Reason}, Promise);
         {ok, Value, VersionVC} ->
-            reply(ReplyTo, {ok, Value, VersionVC, MaxVC})
+            coord_req_promise:resolve({ok, Value, VersionVC, MaxVC}, Promise)
     end.
-
--spec reply(pid(), term()) -> ok.
-reply(To, Msg) when is_pid(To) ->
-    To ! Msg,
-    ok.
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
 %%
@@ -303,6 +284,7 @@ check_time(Partition, MostRecentVC, VCaggr) ->
     AggregateTime = pvc_vclock:get_time(Partition, VCaggr),
     case MostRecentTime < AggregateTime of
         true ->
+            ok = antidote_stats_collector:log_partition_not_ready(Partition),
             {not_ready, ?PVC_WAIT_MS};
         false ->
             ready

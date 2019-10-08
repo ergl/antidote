@@ -22,7 +22,6 @@
 
 -include("antidote.hrl").
 -include("pvc.hrl").
--include("log_version_miss.hrl").
 
 -define(bottom, {<<>>, pvc_vclock:new()}).
 
@@ -101,7 +100,7 @@ get_smaller(VC, #vlog{at=Id, data=[{MaxTime, MaxVersion} | _]=Data, min_version=
         LookupKey > abs(MaxTime) ->
             MaxVersion;
         LookupKey < MinVersion ->
-            ?LOG_VERSION_MISS(Id),
+            ok = antidote_stats_collector:log_version_miss(Id),
             ?bottom;
         true ->
             get_smaller_internal(-LookupKey, Data)
