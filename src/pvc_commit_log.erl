@@ -53,7 +53,7 @@ new_at(AtId) ->
 insert(VC, C=#clog{at=Id, smallest=bottom, data=Tree}) ->
     Key = pvc_vclock:get_time(Id, VC),
     %% If smallest is bottom, set the first time we get to it
-    %% We assume that the entries will be added in order
+    %% IMPORTANT: We assume that the entries will be added in order
     C#clog{smallest=Key, data=gb_trees:insert(Key, VC, Tree)};
 
 insert(VC, C=#clog{at=Id, smallest=Smallest, data=Tree}) ->
@@ -68,6 +68,7 @@ maybe_gc(Smallest, Tree) ->
             {Smallest, Tree};
         true ->
             StartingAt = Smallest,
+            %% Here smallest will never be bottom, there's always some data
             Edge = Smallest + (Size - ?MAX_VERSIONS),
             NewTree = gc_tree(StartingAt, Edge, Tree),
             {Edge, NewTree}
@@ -94,7 +95,6 @@ get_smaller_from_dots([], _, #clog{data=Tree}) ->
     end;
 
 get_smaller_from_dots(Dots, VC, #clog{data=Tree}) ->
-    %% TODO(borja/misc): Can we optimize here? (smallest > VC[Id])
     case catch get_smaller_from_dots(Dots, VC, gb_trees:balance(Tree), pvc_vclock:new()) of
         {found, Max} ->
             Max;
