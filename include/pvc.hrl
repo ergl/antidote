@@ -17,8 +17,8 @@
 %%
 %% So, every time VERSION_THRESHOLD versions are reached, we will remove all
 %% versions, except for last MAX_VERSIONS.
--define(VERSION_THRESHOLD, 500).
--define(MAX_VERSIONS, 100).
+-define(VERSION_THRESHOLD, 10).
+-define(MAX_VERSIONS, 5).
 
 %% Size of active listener pool for the protocol buffer server
 -define(COORD_PB_POOL, (1 * erlang:system_info(schedulers_online))).
