@@ -216,10 +216,10 @@ get_all(IndexNode, LogId, Continuation, PrevOps) ->
                                         infinity).
 
 %% @doc Scan the CLog for the MaxVC
--spec pvc_get_max_vc(index_node(), [partition_id()], pvc_vc()) -> pvc_vc().
-pvc_get_max_vc(IndexNode, ReadPartitions, VCAggr) ->
+-spec pvc_get_max_vc(partition_id(), [partition_id()], pvc_vc()) -> pvc_vc().
+pvc_get_max_vc(Partition, ReadPartitions, VCAggr) ->
     riak_core_vnode_master:sync_command(
-        IndexNode,
+        {Partition, node()},
         {pvc_max_vc, ReadPartitions, VCAggr},
         ?LOGGING_MASTER,
         infinity

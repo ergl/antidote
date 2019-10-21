@@ -242,7 +242,7 @@ find_max_vc(Partition, HasRead, VCaggr) ->
             antidote_pvc_vnode:most_recent_vc(Partition);
         _ ->
             ?LAGER_LOG("logging_vnode:pvc_get_max_vc({~p,~p})", [Partition, node()]),
-            logging_vnode:pvc_get_max_vc({Partition, node()}, ordsets:to_list(HasRead), VCaggr)
+            logging_vnode:pvc_get_max_vc(Partition, ordsets:to_list(HasRead), VCaggr)
     end,
 
     ?LAGER_LOG("Scanned MaxVC ~p", [MaxVC]),
