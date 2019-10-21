@@ -67,6 +67,7 @@
 
 %% PVC-only export
 -export([pvc_get_max_vc/3,
+         pvc_get_max_vc_snapshot/3,
          pvc_insert_to_commit_log/2]).
 
 -ignore_xref([start_vnode/1]).
@@ -221,6 +222,15 @@ pvc_get_max_vc(Partition, ReadPartitions, VCAggr) ->
     riak_core_vnode_master:sync_command(
         {Partition, node()},
         {pvc_max_vc, ReadPartitions, VCAggr},
+        ?LOGGING_MASTER,
+        infinity
+    ).
+
+-spec pvc_get_max_vc_snapshot(partition_id(), [partition_id()], pvc_vc()) -> {pvc_vc(), [pvc_vc(), ...]}.
+pvc_get_max_vc_snapshot(Partition, ReadPartitions, VCAggr) ->
+    riak_core_vnode_master:sync_command(
+        {Partition, node()},
+        {pvc_max_vc_snapshot, ReadPartitions, VCAggr},
         ?LOGGING_MASTER,
         infinity
     ).
@@ -605,6 +615,11 @@ handle_command({get_all, LogId, Continuation, Ops}, _Sender,
 handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State) ->
     MaxVC = pvc_commit_log:get_smaller_from_dots(ReadPartitions, VCAggr, State#state.pvc_clog),
     {reply, MaxVC, State};
+
+handle_command({pvc_max_vc_snapshot, ReadPartitions, VCAggr}, _Sender, State) ->
+    MaxVC = pvc_commit_log:get_smaller_from_dots(ReadPartitions, VCAggr, State#state.pvc_clog),
+    CLog = pvc_commit_log:to_list(State#state.pvc_clog),
+    {reply, {MaxVC, CLog}, State};
 
 handle_command({pvc_add_clog, VC}, _Sender, State) ->
     NewCLog = pvc_commit_log:insert(VC, State#state.pvc_clog),

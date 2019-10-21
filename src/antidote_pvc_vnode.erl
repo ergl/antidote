@@ -25,6 +25,8 @@
 -include("pvc.hrl").
 -include("debug_log.hrl").
 
+-export([fix_partition_state_snapshot/3]).
+
 %% Public API
 -export([most_recent_vc/1,
          vnodes_ready/0,
@@ -178,6 +180,13 @@ rc_read(Partition, Key, Default) ->
         _ -> Default
     end.
 
+-spec fix_partition_state_snapshot(partition_id(), ordsets:ordset(), pvc_vc()) -> {pvc_vc(), [pvc_vc(), ...], []}.
+fix_partition_state_snapshot(Partition, HasRead, VCaggr) ->
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        {fix_partition_state, HasRead, VCaggr},
+                                        ?VNODE_MASTER,
+                                        infinity).
+
 -spec prepare(Partition :: partition_id(),
               Protocol :: protocol(),
               TxId :: tx_id(),
@@ -272,7 +281,14 @@ handle_command({prepare, TxId, Payload, Version}, _From, State) ->
 
 handle_command(dequeue_event, _From, State) ->
     NewQueue = dequeue_event_internal(State),
-    {noreply, State#state{commit_queue=NewQueue}}.
+    {noreply, State#state{commit_queue=NewQueue}};
+
+handle_command({fix_partition_state, HasRead, VCaggr}, _From, State=#state{partition=Partition,
+                                                                           commit_queue=CQueue,
+                                                                           decision_cache=DecideTable}) ->
+    FixedQueue = pvc_commit_queue:to_list(CQueue, DecideTable),
+    {MaxVC, FixedLog} = logging_vnode:pvc_get_max_vc_snapshot(Partition, ordsets:to_list(HasRead), VCaggr),
+    {reply, {MaxVC, FixedLog, FixedQueue}, State}.
 
 %%%===================================================================
 %%% Prepare Internal Functions

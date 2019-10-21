@@ -170,7 +170,7 @@ handle_cast({read_vlog, Promise, Key, VCaggr}, State = #state{vlog_replica=VLog,
                                                               default_bottom_value=DefaultValue,
                                                               default_bottom_clock=DefaultClock}) ->
 
-    ok = read_vlog_internal(Promise, Key, VCaggr, VLog, {DefaultValue, DefaultClock}),
+    ok = read_vlog_internal(Promise, Key, VCaggr, VLog, {DefaultValue, DefaultClock}, [], []),
     {noreply, State};
 
 handle_cast({read_scan, Promise, Key, HasRead, VCaggr}, State) ->
@@ -222,10 +222,10 @@ scan_and_read(Promise, Key, HasRead, VCaggr, #state{partition=Partition,
     MaxVCRes = find_max_vc(Partition, HasRead, VCaggr),
     ?LAGER_LOG("MaxVC = ~p", [MaxVCRes]),
     case MaxVCRes of
-        {error, Reason} ->
-            coord_req_promise:resolve({error, Reason}, Promise);
-        {ok, MaxVC} ->
-            read_vlog_internal(Promise, Key, MaxVC, VLog, {BottomValue, ClockValue})
+        {error, Reason, FixedLog, FixedQueue} ->
+            coord_req_promise:resolve({error, Reason, FixedLog, FixedQueue}, Promise);
+        {ok, MaxVC, FixedLog, FixedQueue} ->
+            read_vlog_internal(Promise, Key, MaxVC, VLog, {BottomValue, ClockValue}, FixedLog, FixedQueue)
     end.
 
 %% @doc Scan the log for the maximum aggregate time that will be used for a read
@@ -234,16 +234,7 @@ scan_and_read(Promise, Key, HasRead, VCaggr, #state{partition=Partition,
                   VCaggr :: pvc_vc()) -> {ok, pvc_vc()} | {error, reason()}.
 
 find_max_vc(Partition, HasRead, VCaggr) ->
-    %% If this is the first partition we're reading, our MaxVC will be
-    %% the current MostRecentVC at this partition
-    MaxVC = case ordsets:size(HasRead) of
-        0 ->
-            ?LAGER_LOG("get_mrvc(~p)", [Partition]),
-            antidote_pvc_vnode:most_recent_vc(Partition);
-        _ ->
-            ?LAGER_LOG("logging_vnode:pvc_get_max_vc({~p,~p})", [Partition, node()]),
-            logging_vnode:pvc_get_max_vc(Partition, ordsets:to_list(HasRead), VCaggr)
-    end,
+    {MaxVC, FixedLog, FixedQueue} = antidote_pvc_vnode:fix_partition_state_snapshot(Partition, HasRead, VCaggr),
 
     ?LAGER_LOG("Scanned MaxVC ~p", [MaxVC]),
     %% If the selected time is too old, we should abort the read
@@ -252,10 +243,10 @@ find_max_vc(Partition, HasRead, VCaggr) ->
     ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
     case ValidVersionTime of
         true ->
-            {ok, MaxVC};
+            {ok, MaxVC, FixedLog, FixedQueue};
 
         false ->
-            {error, maxvc_bad_vc}
+            {error, maxvc_bad_vc, FixedLog, FixedQueue}
     end.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
@@ -264,15 +255,11 @@ find_max_vc(Partition, HasRead, VCaggr) ->
 %%      to the coordinator the value of that snapshot, along with the commit
 %%      vector clock time of that snapshot.
 %%
--spec read_vlog_internal(coord_req_promise:promise(), key(), pvc_vc(), atom(), tuple()) -> ok.
-read_vlog_internal(Promise, Key, MaxVC, VLogCache, DefaultBottom) ->
+-spec read_vlog_internal(coord_req_promise:promise(), key(), pvc_vc(), atom(), tuple(), [_], [_]) -> ok.
+read_vlog_internal(Promise, Key, MaxVC, VLogCache, DefaultBottom, FixedLog, FixedQueue) ->
     ?LAGER_LOG("vlog read(~p, ~p, ~p)", [Promise, Key, MaxVC]),
-    case materializer_vnode:pvc_read_replica(Key, MaxVC, VLogCache, DefaultBottom) of
-        {error, Reason} ->
-            coord_req_promise:resolve({error, Reason}, Promise);
-        {ok, Value, VersionVC} ->
-            coord_req_promise:resolve({ok, Value, VersionVC, MaxVC}, Promise)
-    end.
+    {ok, Value, VersionVC} = materializer_vnode:pvc_read_replica(Key, MaxVC, VLogCache, DefaultBottom),
+    coord_req_promise:resolve({ok, Value, VersionVC, MaxVC, FixedLog, FixedQueue}, Promise).
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
 %%
