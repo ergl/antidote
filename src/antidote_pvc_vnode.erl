@@ -262,7 +262,7 @@ handle_command(refresh_replicas, _From, S = #state{partition=P, replicas_n=N}) -
     {reply, Result, S};
 
 handle_command({unsafe_set_clock, Seq, MRVC}, _From, S = #state{partition=P, most_recent_vc=MRVCTable}) ->
-    ok = logging_vnode:pvc_insert_to_commit_log(P, MRVC),
+    ok = logging_vnode:pvc_insert_to_commit_log(P, ignore, MRVC),
     true = ets:insert(MRVCTable, {mrvc, MRVC}),
     {reply, ok, S#state{default_last_vsn=Seq, last_prepared=Seq}};
 
@@ -597,7 +597,7 @@ process_ready_tx(TxId, TxData, CommitVC, #state{partition=Partition,
 
     %% Update Commit Log
     ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
-    ok = logging_vnode:pvc_insert_to_commit_log(Partition, NewMRVC),
+    ok = logging_vnode:pvc_insert_to_commit_log(Partition, TxId, NewMRVC),
 
     ?LAGER_LOG("Processing ~p, cache VLog.last", [TxId]),
     CommitTime = pvc_vclock:get_time(Partition, CommitVC),

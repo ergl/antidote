@@ -222,8 +222,8 @@ scan_and_read(Promise, Key, HasRead, VCaggr, #state{partition=Partition,
     MaxVCRes = find_max_vc(Partition, HasRead, VCaggr),
     ?LAGER_LOG("MaxVC = ~p", [MaxVCRes]),
     case MaxVCRes of
-        {error, Reason, FixedLog, FixedQueue} ->
-            coord_req_promise:resolve({error, Reason, FixedLog, FixedQueue}, Promise);
+        {error, MaxVC, FixedLog, FixedQueue} ->
+            coord_req_promise:resolve({error, MaxVC, FixedLog, FixedQueue}, Promise);
         {ok, MaxVC, FixedLog, FixedQueue} ->
             read_vlog_internal(Promise, Key, MaxVC, VLog, {BottomValue, ClockValue}, FixedLog, FixedQueue)
     end.
@@ -246,7 +246,7 @@ find_max_vc(Partition, HasRead, VCaggr) ->
             {ok, MaxVC, FixedLog, FixedQueue};
 
         false ->
-            {error, maxvc_bad_vc, FixedLog, FixedQueue}
+            {error, MaxVC, FixedLog, FixedQueue}
     end.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot

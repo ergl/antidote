@@ -68,7 +68,7 @@
 %% PVC-only export
 -export([pvc_get_max_vc/3,
          pvc_get_max_vc_snapshot/3,
-         pvc_insert_to_commit_log/2]).
+         pvc_insert_to_commit_log/3]).
 
 -ignore_xref([start_vnode/1]).
 
@@ -236,11 +236,11 @@ pvc_get_max_vc_snapshot(Partition, ReadPartitions, VCAggr) ->
     ).
 
 %% @doc Append the given Vector Clock to the Commit Log
--spec pvc_insert_to_commit_log(partition_id(), pvc_vc()) -> ok.
-pvc_insert_to_commit_log(Partition, VC) ->
+-spec pvc_insert_to_commit_log(partition_id(), term(), pvc_vc()) -> ok.
+pvc_insert_to_commit_log(Partition, TxId, VC) ->
     riak_core_vnode_master:sync_command(
         {Partition, node()},
-        {pvc_add_clog, VC},
+        {pvc_add_clog, TxId, VC},
         ?LOGGING_MASTER,
         infinity
     ).
@@ -621,8 +621,8 @@ handle_command({pvc_max_vc_snapshot, ReadPartitions, VCAggr}, _Sender, State) ->
     CLog = pvc_commit_log:to_list(State#state.pvc_clog),
     {reply, {MaxVC, CLog}, State};
 
-handle_command({pvc_add_clog, VC}, _Sender, State) ->
-    NewCLog = pvc_commit_log:insert(VC, State#state.pvc_clog),
+handle_command({pvc_add_clog, TxId, VC}, _Sender, State) ->
+    NewCLog = pvc_commit_log:insert(VC, TxId, State#state.pvc_clog),
     {reply, ok, State#state{pvc_clog=NewCLog}};
 
 handle_command(_Message, _Sender, State) ->
