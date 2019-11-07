@@ -31,14 +31,15 @@
 -define(INTERVAL, 10000). %% 10 sec
 
 %% Called by rpc
--ignore_xref([report_vlog_misses/0]).
+-ignore_xref([report_stats/0]).
 
 %% API
 -export([start_link/0,
          init_stale_metrics/0,
          log_version_miss/1,
+         log_clog_miss/1,
          log_partition_not_ready/1,
-         report_vlog_misses/0]).
+         report_stats/0]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -50,7 +51,8 @@
 
 -record(stat_entry, {
     partition :: partition_id(),
-    log_misses = 0 :: non_neg_integer(),
+    vlog_misses = 0 :: non_neg_integer(),
+    clog_misses = 0 :: non_neg_integer(),
     not_ready_tries = 0 :: non_neg_integer()
 }).
 
@@ -68,15 +70,20 @@ init_stale_metrics() ->
 
 -spec log_version_miss(partition_id()) -> ok.
 log_version_miss(Partition) ->
-    _ = ets:update_counter(?MODULE, Partition, {#stat_entry.log_misses, 1}, fresh_entry(Partition)),
+    _ = ets:update_counter(?MODULE, Partition, {#stat_entry.vlog_misses, 1}, fresh_entry(Partition)),
+    ok.
+
+-spec log_clog_miss(partition_id()) -> ok.
+log_clog_miss(Partition) ->
+    _ = ets:update_counter(?MODULE, Partition, {#stat_entry.clog_misses, 1}, fresh_entry(Partition)),
     ok.
 
 log_partition_not_ready(P) ->
     _ = ets:update_counter(?MODULE, P, {#stat_entry.not_ready_tries, 1}, fresh_entry(P)),
     ok.
 
--spec report_vlog_misses() -> [#{}].
-report_vlog_misses() ->
+-spec report_stats() -> [#{}].
+report_stats() ->
     lists:map(fun entry_to_map/1, ets:tab2list(?MODULE)).
 
 init([]) ->
@@ -127,7 +134,7 @@ init_metrics() ->
 
 -spec fresh_entry(partition_id()) -> #stat_entry{}.
 fresh_entry(P) ->
-    #stat_entry{partition = P, not_ready_tries = 0, log_misses = 0}.
+    #stat_entry{partition = P, not_ready_tries = 0, vlog_misses = 0, clog_misses = 0}.
 
 -spec entry_to_map(#stat_entry{}) -> #{atom() => term()}.
 entry_to_map(Entry) ->

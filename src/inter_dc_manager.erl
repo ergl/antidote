@@ -29,8 +29,7 @@
 -define(DC_CONNECT_RETY_SLEEP, 1000).
 
 -ignore_xref([flush_pvc_commit_queues/0,
-              stop_read_replicas/0,
-              report_vlog_misses/0]).
+              stop_read_replicas/0]).
 
 -export([get_descriptor/0,
          start_bg_processes/1,

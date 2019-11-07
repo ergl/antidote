@@ -80,13 +80,26 @@ gc_tree(N, N, Acc) ->
 gc_tree(Start, Edge, Acc) when Edge > Start ->
     gc_tree(Start + 1, Edge, gb_trees:delete_any(Start, Acc)).
 
+get_smaller_from_dots(HasRead, InVC, C=#clog{at=P, smallest=Min}) ->
+    Selected = get_smaller_from_dots_internal(HasRead, InVC, C),
+    SelectedTime = pvc_vclock:get_time(P, Selected),
+    case lower(SelectedTime, Min) of
+        true ->
+            %% If the clock selected is lower than our smallest clock, that
+            %% means that the valid clock, if it existed, has been pruned by gc
+            antidote_stats_collector:log_clog_miss(P);
+        false ->
+            ok
+    end,
+    Selected.
+
 %% Given a VC and a list of indexes to check, get the maximum entry in the log
 %% such that it's lower or equal to VC at the given indexes.
 %%
 %%    max { e \in Clog | forall idx. e[idx] <= VC[idx] }
 %%
--spec get_smaller_from_dots([partition_id()], pvc_vc(), clog()) -> pvc_vc().
-get_smaller_from_dots([], _, #clog{data=Tree}) ->
+-spec get_smaller_from_dots_internal([partition_id()], pvc_vc(), clog()) -> pvc_vc().
+get_smaller_from_dots_internal([], _, #clog{data=Tree}) ->
     case gb_trees:is_empty(Tree) of
         true ->
             pvc_vclock:new();
@@ -94,18 +107,18 @@ get_smaller_from_dots([], _, #clog{data=Tree}) ->
             element(2, gb_trees:largest(Tree))
     end;
 
-get_smaller_from_dots(Dots, VC, #clog{data=Tree}) ->
-    case catch get_smaller_from_dots(Dots, VC, gb_trees:balance(Tree), pvc_vclock:new()) of
+get_smaller_from_dots_internal(Dots, VC, #clog{data=Tree}) ->
+    case catch get_smaller_from_dots_internal(Dots, VC, gb_trees:balance(Tree), pvc_vclock:new()) of
         {found, Max} ->
             Max;
         Default ->
             Default
     end.
 
-get_smaller_from_dots(_, _, none, Acc) ->
+get_smaller_from_dots_internal(_, _, none, Acc) ->
     Acc;
 
-get_smaller_from_dots(Dots, VC, Tree, Acc) ->
+get_smaller_from_dots_internal(Dots, VC, Tree, Acc) ->
     case get_root(Tree) of
         none ->
             Acc;
@@ -113,7 +126,7 @@ get_smaller_from_dots(Dots, VC, Tree, Acc) ->
             case vc_ge_for_dots(Dots, Value, VC) of
                 false ->
                     %% Given VC is too large, try in a previous entry
-                    get_smaller_from_dots(Dots, VC, left(Tree), Acc);
+                    get_smaller_from_dots_internal(Dots, VC, left(Tree), Acc);
                 true ->
                     %% The visited vector is small enough, so we compare it
                     %% with the running max. If our max doesn't change,
@@ -123,7 +136,7 @@ get_smaller_from_dots(Dots, VC, Tree, Acc) ->
                         true ->
                             throw({found, Selected});
                         false ->
-                            get_smaller_from_dots(Dots, VC, right(Tree), Selected)
+                            get_smaller_from_dots_internal(Dots, VC, right(Tree), Selected)
                     end
             end
     end.
@@ -140,6 +153,10 @@ vc_ge_for_dots(Dots, A, B) ->
     lists:all(fun({X, Y}) -> X =< Y end, Compared).
 
 %% Util
+
+-spec lower(non_neg_integer(), non_neg_integer() | atom) -> boolean().
+lower(_, bottom) -> false;
+lower(L, R) -> L < R.
 
 %% Peeked at the internals of gb_trees for this
 
