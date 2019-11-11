@@ -23,6 +23,11 @@
 -include("antidote.hrl").
 -include("pvc.hrl").
 
+%% When the log reaches this size, the log will be pruned
+-define(GC_THRESHOLD, 30).
+%% The number of versions to keep after a GC pass
+-define(KEEP_VERSIONS, 15).
+
 -define(bottom, {<<>>, pvc_vclock:new()}).
 
 -type min_version() :: undefined | non_neg_integer().
@@ -69,14 +74,14 @@ insert(VC, Value, V=#vlog{at=Id, data=Dict, min_version=OldMin}) ->
 -spec maybe_gc(non_neg_integer(), min_version(), versions()) -> {versions(), non_neg_integer()}.
 maybe_gc(LastInserted, OldMin, Data) ->
     Size = orddict:size(Data),
-    case Size > ?VERSION_THRESHOLD of
+    case Size > ?GC_THRESHOLD of
         false ->
             {Data, min_version(LastInserted, OldMin)};
         true ->
             %% TODO(borja): Improve this, both sublist and last are O(n)
             %% Merge sublist and last (and maybe the min version calc)
             %% into a single function
-            NewData = lists:sublist(Data, ?MAX_VERSIONS),
+            NewData = lists:sublist(Data, ?KEEP_VERSIONS),
             {PrunedMinVersion, _} = lists:last(NewData),
             NewMin = max_version(abs(PrunedMinVersion), OldMin),
             {NewData, NewMin}

@@ -23,6 +23,11 @@
 -include("antidote.hrl").
 -include("pvc.hrl").
 
+%% When the log reaches this size, the log will be pruned
+-define(GC_THRESHOLD, 4000).
+%% The number of versions to keep after a GC pass
+-define(KEEP_VERSIONS, 2000).
+
 -record(clog, {
     at :: partition_id(),
     smallest :: non_neg_integer() | bottom,
@@ -63,13 +68,13 @@ insert(VC, C=#clog{at=Id, smallest=Smallest, data=Tree}) ->
 
 maybe_gc(Smallest, Tree) ->
     Size = gb_trees:size(Tree),
-    case Size > ?VERSION_THRESHOLD of
+    case Size > ?GC_THRESHOLD of
         false ->
             {Smallest, Tree};
         true ->
             StartingAt = Smallest,
             %% Here smallest will never be bottom, there's always some data
-            Edge = Smallest + (Size - ?MAX_VERSIONS),
+            Edge = Smallest + (Size - ?KEEP_VERSIONS),
             NewTree = gc_tree(StartingAt, Edge, Tree),
             {Edge, NewTree}
     end.
