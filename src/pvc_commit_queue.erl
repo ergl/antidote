@@ -64,7 +64,7 @@ get_ready(Queue, DecideTable, PendingData, Acc) ->
                     get_ready(queue:drop(Queue), DecideTable, PendingData, Acc);
                 [{TxId, ready, VC}] ->
                     %% Transaction is decided, build data and continue
-                    [{TxId, TxData}] = ets:take(PendingData, TxId),
+                    TxData = ets:lookup_element(PendingData, TxId, 2),
                     NewAcc = [{TxId, TxData, VC} | Acc],
                     get_ready(queue:drop(Queue), DecideTable, PendingData, NewAcc);
                 [] ->

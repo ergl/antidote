@@ -19,8 +19,14 @@
 %% Storage ETS tables inside antidote_pvc_vnode
 -define(DECIDE_TABLE, pvc_decide_table).
 -define(MRVC_TABLE, most_recent_vc).
+-define(LAST_ID_TABLE, last_queue_id).
 -define(LAST_VSN_TABLE, last_vsn).
 -define(PENDING_DATA_TABLE, pending_tx_data).
 -define(PENDING_READS_TABLE, pending_reads).
 -define(PENDING_WRITES_TABLE, pending_writes).
 -define(RC_STORAGE, rc_storage).
+
+%% Time (in ms) a partition should wait between retries at checking
+%% a partition's most recent vc during reads.
+-define(MRVC_RETRY_MS, (2 * ?DEQUEUE_INTERVAL)).
+-define(QUEUE_RETRY_MS, (2 * ?DEQUEUE_INTERVAL)).

@@ -108,10 +108,6 @@
 
 %% PVC
 
-%% Time (in ms) a partition should wait between retries at checking
-%% a partition's most recent vc during reads.
--define(PVC_WAIT_MS, 1000).
-
 -type pvc_vc() :: pvc_vclock:vc(index_node()).
 
 -record(pvc_decide_meta, {

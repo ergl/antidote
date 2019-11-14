@@ -23,6 +23,7 @@
 -behavior(gen_server).
 
 -include("antidote.hrl").
+-include("pvc.hrl").
 -include("debug_log.hrl").
 
 %% supervision tree
@@ -128,7 +129,7 @@ async_read(Promise, Partition, Key, HasRead, VCaggr) ->
         true ->
             gen_server:cast(Target, {read_vlog, Promise, Key, VCaggr});
         false ->
-            gen_server:cast(Target, {read_scan, Promise, Key, HasRead, VCaggr})
+            gen_server:cast(Target, {wait_ready, Promise, Key, HasRead, VCaggr})
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -173,15 +174,19 @@ handle_cast({read_vlog, Promise, Key, VCaggr}, State = #state{vlog_replica=VLog,
     ok = read_vlog_internal(Promise, Key, VCaggr, VLog, {DefaultValue, DefaultClock}),
     {noreply, State};
 
-handle_cast({read_scan, Promise, Key, HasRead, VCaggr}, State) ->
-    ok = read_scan_internal(Promise, Key, HasRead, VCaggr, State),
+handle_cast({wait_ready, Promise, Key, HasRead, VCaggr}, State) ->
+    ok = wait_mrvc(Promise, Key, HasRead, VCaggr, State),
     {noreply, State};
 
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({wait_scan, Promise, Key, HasRead, VCaggr}, State) ->
-    ok = read_scan_internal(Promise, Key, HasRead, VCaggr, State),
+handle_info({wait_mrvc, Promise, Key, HasRead, VCaggr}, State) ->
+    ok = wait_mrvc(Promise, Key, HasRead, VCaggr, State),
+    {noreply, State};
+
+handle_info({wait_queue_ready, Promise, Key, HasRead, VCaggr, TxId}, State) ->
+    ok = wait_queue_ready(Promise, Key, HasRead, VCaggr, TxId, State),
     {noreply, State};
 
 handle_info(Info, State) ->
@@ -192,17 +197,40 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec read_scan_internal(coord_req_promise:promise(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
-read_scan_internal(Promise, Key, HasRead, VCaggr, State=#state{partition=Partition}) ->
-    ?LAGER_LOG("most_recent_vc(~p)", [Partition]),
-
-    MRVC = antidote_pvc_vnode:most_recent_vc(Partition),
-    ?LAGER_LOG("MRVC = ~p", [MRVC]),
-    case check_time(Partition, MRVC, VCaggr) of
+-spec wait_mrvc(coord_req_promise:promise(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
+wait_mrvc(Promise, Key, HasRead, VCaggr, State=#state{partition=Partition}) ->
+    case check_mrvc_ready(Partition, VCaggr) of
         {not_ready, WaitTime} ->
-            erlang:send_after(WaitTime, self(), {wait_scan, Promise, Key, HasRead, VCaggr}),
+            erlang:send_after(WaitTime, self(), {wait_mrvc, Promise, Key, HasRead, VCaggr}),
             ok;
         ready ->
+            enter_queue_wait(Promise, Key, HasRead, VCaggr, State)
+    end.
+
+-spec enter_queue_wait(coord_req_promise:promise(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
+enter_queue_wait(Promise, Key, HasRead, VCaggr, State=#state{partition=Partition}) ->
+    case antidote_pvc_vnode:last_queue_id(Partition) of
+        {ok, TxId} ->
+            wait_queue_ready(Promise, Key, HasRead, VCaggr, TxId, State);
+        empty ->
+            scan_and_read(Promise, Key, HasRead, VCaggr, State)
+    end.
+
+-spec wait_queue_ready(Promise :: coord_req_promise:promise(),
+                       Key :: key(),
+                       HasRead :: ordsets:ordset(),
+                       VCaggr :: pvc_vc(),
+                       TxId :: antidote_pvc_vnode:tx_id(),
+                       State :: #state{}) -> ok.
+
+wait_queue_ready(Promise, Key, HasRead, VCaggr, TxId, State=#state{partition=Partition}) ->
+    case check_queue_ready(Partition, TxId) of
+        {not_ready, WaitTime} ->
+            ?LAGER_LOG("~p at ~p = not ready", [?FUNCTION_NAME, Partition]),
+            erlang:send_after(WaitTime, self(), {wait_queue_ready, Promise, Key, HasRead, VCaggr, TxId}),
+            ok;
+        ready ->
+            ?LAGER_LOG("~p at ~p = ready", [?FUNCTION_NAME, Partition]),
             scan_and_read(Promise, Key, HasRead, VCaggr, State)
     end.
 
@@ -278,16 +306,26 @@ read_vlog_internal(Promise, Key, MaxVC, VLogCache, DefaultBottom) ->
 %%
 %%      If it is not, will sleep for 1000 ms and try again.
 %%
--spec check_time(partition_id(), pvc_vc(), pvc_vc()) -> ready | {not_ready, non_neg_integer()}.
-check_time(Partition, MostRecentVC, VCaggr) ->
-    MostRecentTime = pvc_vclock:get_time(Partition, MostRecentVC),
+-spec check_mrvc_ready(partition_id(), pvc_vc()) -> ready | {not_ready, non_neg_integer()}.
+check_mrvc_ready(Partition, VCaggr) ->
+    MRVC = antidote_pvc_vnode:most_recent_vc(Partition),
+    MostRecentTime = pvc_vclock:get_time(Partition, MRVC),
     AggregateTime = pvc_vclock:get_time(Partition, VCaggr),
     case MostRecentTime < AggregateTime of
         true ->
+            ?LAGER_LOG("~p at ~p = not ready", [?FUNCTION_NAME, Partition]),
             ok = antidote_stats_collector:log_partition_not_ready(Partition),
-            {not_ready, ?PVC_WAIT_MS};
+            {not_ready, ?MRVC_RETRY_MS};
         false ->
+            ?LAGER_LOG("~p at ~p = ready", [?FUNCTION_NAME, Partition]),
             ready
+    end.
+
+-spec check_queue_ready(partition_id(), antidote_pvc_vnode:tx_id()) -> ready | {not_ready, non_neg_integer()}.
+check_queue_ready(Partition, TxId) ->
+    case antidote_pvc_vnode:is_txid_in_queue(Partition, TxId) of
+        false -> ready;
+        true -> {not_ready, ?QUEUE_RETRY_MS}
     end.
 
 -spec generate_replica_name(partition_id(), non_neg_integer()) -> atom().

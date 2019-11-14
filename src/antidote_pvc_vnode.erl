@@ -28,7 +28,9 @@
 %% Public API
 -export([most_recent_vc/1,
          vnodes_ready/0,
-         replicas_ready/0]).
+         replicas_ready/0,
+         last_queue_id/1,
+         is_txid_in_queue/2]).
 
 %% Protocol API
 -export([rc_read/3,
@@ -55,6 +57,8 @@
 -type tx_id() :: term().
 -type decision() :: abort | {ready, pvc_vc()}.
 -type cache(_K, _V) :: ets:tab().
+
+-export_type([tx_id/0]).
 
 -define(VNODE_MASTER, antidote_pvc_vnode_master).
 -define(WRITE_HEAVY_OPTS, [set, public, named_table, {write_concurrency, true}]).
@@ -130,6 +134,9 @@
     %% without versions
     rc_storage :: cache(key(), val()),
 
+    %% The last Transaction id to be enqueued, stored in ETS
+    last_queue_id :: cache(last_queue_tx, tx_id()),
+
     dequeue_timer = undefined :: timer:tref() | undefined
 }).
 
@@ -140,6 +147,18 @@
 -spec most_recent_vc(partition_id()) -> pvc_vc().
 most_recent_vc(Partition) ->
     ets:lookup_element(cache_name(Partition, ?MRVC_TABLE), mrvc, 2).
+
+%% @doc Get the current last tx id the tail of the commit queue.
+-spec last_queue_id(partition_id()) -> {ok, tx_id()} | empty.
+last_queue_id(Partition) ->
+    case ets:lookup_element(cache_name(Partition, ?LAST_ID_TABLE), last_queue_tx, 2) of
+        ignore -> empty;
+        TxId -> {ok, TxId}
+    end.
+
+-spec is_txid_in_queue(partition_id(), tx_id()) -> boolean().
+is_txid_in_queue(Partition, TxId) ->
+    ets:member(cache_name(Partition, ?PENDING_DATA_TABLE), TxId).
 
 %% @doc For all nodes in the system, report if all the vnodes are ready
 -spec vnodes_ready() -> boolean().
@@ -208,15 +227,19 @@ init([Partition]) ->
     MRVC = new_cache(Partition, ?MRVC_TABLE),
     true = ets:insert(MRVC, {mrvc, pvc_vclock:new()}),
 
+    LastIdTable = new_cache(Partition, ?LAST_ID_TABLE),
+    true = ets:insert(LastIdTable, {last_queue_tx, ignore}),
+
     State = #state{
         partition       = Partition,
         most_recent_vc  = MRVC,
         last_vsn_cache  = new_cache(Partition, ?LAST_VSN_TABLE),
-        pending_tx_data = new_cache(Partition, ?PENDING_DATA_TABLE, ?WRITE_HEAVY_OPTS),
+        pending_tx_data = new_cache(Partition, ?PENDING_DATA_TABLE, ?WRITE_HEAVY_OPTS ++ [{read_concurrency, true}]),
         pending_reads   = new_cache(Partition, ?PENDING_READS_TABLE, ?PENDING_OPTS),
         pending_writes  = new_cache(Partition, ?PENDING_WRITES_TABLE, ?PENDING_OPTS),
         decision_cache  = new_cache(Partition, ?DECIDE_TABLE, ?WRITE_HEAVY_OPTS),
-        rc_storage      = new_cache(Partition, ?RC_STORAGE)
+        rc_storage      = new_cache(Partition, ?RC_STORAGE),
+        last_queue_id   = LastIdTable
     },
 
     {ok, State}.
@@ -230,7 +253,8 @@ handle_command(is_ready, _Sender, State) ->
                                        State#state.pending_tx_data,
                                        State#state.pending_reads,
                                        State#state.pending_writes,
-                                       State#state.decision_cache]),
+                                       State#state.decision_cache,
+                                       State#state.last_queue_id]),
     {reply, Ready, State};
 
 handle_command(start_replicas, _From, S = #state{partition=P, replicas_n=N}) ->
@@ -261,7 +285,8 @@ handle_command(flush_queue, _From, State) ->
     lists:foreach(fun ets:delete_all_objects/1, [State#state.pending_tx_data,
                                                  State#state.pending_reads,
                                                  State#state.pending_writes,
-                                                 State#state.decision_cache]),
+                                                 State#state.decision_cache,
+                                                 State#state.last_queue_id]),
 
     {reply, ok, State#state{commit_queue=pvc_commit_queue:new()}};
 
@@ -391,16 +416,19 @@ valid_writeset(#psi_data{write_keys=WKeys}, _Reads, Writes, Version, LastVsnCach
 persist_data(TxId, Data=#psi_data{write_keys=Keys}, State) ->
     true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
     true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- Keys]),
+    ok = cache_last_id(TxId, State#state.last_queue_id),
     ok;
 
 persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
     true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
     true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- WKeys]),
     true = ets:insert(State#state.pending_reads, [{Key, TxId} || {Key, _} <- RS]),
+    ok = cache_last_id(TxId, State#state.last_queue_id),
     ok;
 
 persist_data(TxId, Data=#rc_data{}, State) ->
     true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
+    ok = cache_last_id(TxId, State#state.last_queue_id),
     ok.
 
 %%%===================================================================
@@ -478,6 +506,11 @@ valid_writeset_internal([Key | Rest], ConflictFun) ->
         true -> valid_writeset_internal(Rest, ConflictFun)
     end.
 
+-spec cache_last_id(tx_id(), cache(last_queue_tx, tx_id())) -> ok.
+cache_last_id(TxId, LastIdTable) ->
+    true = ets:insert(LastIdTable, {last_queue_tx, TxId}),
+    ok.
+
 %%%===================================================================
 %%% Decide Internal Functions
 %%%===================================================================
@@ -506,14 +539,25 @@ decide_internal(Partition, TxId, abort) ->
 
 -spec clear_pending(Partition :: partition_id(),
                     TxId :: tx_id(),
-                    Data :: #psi_data{} | #ser_data{}) -> ok.
+                    Data :: persist_data()) -> ok.
+
+clear_pending(Partition, TxId, #rc_data{}) ->
+    clear_tx_data(TxId, cache_name(Partition, ?PENDING_DATA_TABLE));
 
 clear_pending(Partition, TxId, #psi_data{write_keys=WKeys}) ->
+    clear_tx_data(TxId, cache_name(Partition, ?PENDING_DATA_TABLE)),
     clear_writes(TxId, WKeys, cache_name(Partition, ?PENDING_WRITES_TABLE));
 
 clear_pending(Partition, TxId, #ser_data{write_keys=WKeys, readset=RS}) ->
+    clear_tx_data(TxId, cache_name(Partition, ?PENDING_DATA_TABLE)),
     clear_reads(TxId, RS, cache_name(Partition, ?PENDING_READS_TABLE)),
     clear_writes(TxId, WKeys, cache_name(Partition, ?PENDING_WRITES_TABLE)).
+
+
+-spec clear_tx_data(tx_id(), cache(tx_id(), persist_data())) -> ok.
+clear_tx_data(TxId, PendingData) ->
+    true = ets:delete(PendingData, TxId),
+    ok.
 
 -spec clear_reads(tx_id(), [{key(), non_neg_integer()}], cache(key(), tx_id())) -> ok.
 clear_reads(TxId, ReadKeys, Reads) ->
@@ -550,12 +594,14 @@ dequeue_event_internal(State = #state{commit_queue = Queue,
                        CommitVC :: pvc_vc(),
                        State :: #state{}) -> ok.
 
-process_ready_tx(TxId, #rc_data{writeset=WS}, _VC, #state{rc_storage=Storage}) ->
+process_ready_tx(TxId, TxData=#rc_data{writeset=WS}, _VC, #state{partition=Partition,
+                                                                 rc_storage=Storage}) ->
     ?LAGER_LOG("Processing RC transaction ~p", [TxId]),
     %% On Read Committed, we just store the data, no versions
     %% Objects are updated in LWW fashion
     Objects = maps:to_list(WS),
     true = ets:insert(Storage, Objects),
+    ok = clear_pending(Partition, TxId, TxData),
     ok;
 
 process_ready_tx(TxId, TxData, CommitVC, #state{partition=Partition,
@@ -592,6 +638,7 @@ process_ready_tx(TxId, TxData, CommitVC, #state{partition=Partition,
     %% function. We want the changes to the VLog to be visible before
     %% removing the key from the pending table. Since Erlang doesn't offer
     %% an atomic multi-object ets:delete_object/2, we have to do it the old way.
+    ?LAGER_LOG("Processing ~p, prune ETS data", [TxId]),
     ok = clear_pending(Partition, TxId, TxData),
     ok.
 
