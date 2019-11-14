@@ -41,25 +41,36 @@ new() -> queue:new().
 enqueue(TxId, Queue) ->
     queue:in(TxId, Queue).
 
+%% @doc Return all the committed transactions up until the first undecided tx
+%%
+%%      If the head of the queue is undecided, return the empty list.
+%%
 -spec dequeue_ready(cqueue(), cache_id(), cache_id()) -> {[{txid(), writeset(), pvc_vc()}], cqueue()}.
 dequeue_ready(Queue, DecideTable, PendingData) ->
-    {Acc, NewCQueue} = get_ready(queue:out(Queue), DecideTable, PendingData, []),
+    {Acc, NewCQueue} = get_ready(Queue, DecideTable, PendingData, []),
     {lists:reverse(Acc), NewCQueue}.
 
-get_ready({empty, Queue}, _DecideTable, _PendingData, Acc) ->
-    {Acc, Queue};
+-spec get_ready(cqueue(), cache_id(), cache_id(), list()) -> {list(), cqueue()}.
+get_ready(Queue, DecideTable, PendingData, Acc) ->
+    case queue:peek(Queue) of
+        empty ->
+            %% There's nothing to process
+            {Acc, Queue};
 
-get_ready({{value, TxId}, Queue}, DecideTable, PendingData, Acc) ->
-    case ets:take(DecideTable, TxId) of
-        [{TxId, abort}] ->
-            get_ready(queue:out(Queue), DecideTable, PendingData, Acc);
-        [{TxId, ready, VC}] ->
-            [{TxId, TxData}] = ets:take(PendingData, TxId),
-            NewAcc = [{TxId, TxData, VC} | Acc],
-            get_ready(queue:out(Queue), DecideTable, PendingData, NewAcc);
-        [] ->
-            %% Queue head is still pending, put it back in
-            {Acc, queue:in_r(TxId, Queue)}
+        {value, TxId} ->
+            case ets:take(DecideTable, TxId) of
+                [{TxId, abort}] ->
+                    %% Transaction is aborted, drop it and continue
+                    get_ready(queue:drop(Queue), DecideTable, PendingData, Acc);
+                [{TxId, ready, VC}] ->
+                    %% Transaction is decided, build data and continue
+                    [{TxId, TxData}] = ets:take(PendingData, TxId),
+                    NewAcc = [{TxId, TxData, VC} | Acc],
+                    get_ready(queue:drop(Queue), DecideTable, PendingData, NewAcc);
+                [] ->
+                    %% Transaction is still pending, queue is blocked, return
+                    {Acc, Queue}
+            end
     end.
 
 -ifdef(TEST).
