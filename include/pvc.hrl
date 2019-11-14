@@ -14,7 +14,7 @@
 -define(COORD_PB_PORT, 7878).
 
 %% Defines how often partition vnodes try to dequeue ready transactions
--define(DEQUEUE_INTERVAL, 5).
+-define(DEQUEUE_INTERVAL, 1).
 
 %% Storage ETS tables inside antidote_pvc_vnode
 -define(DECIDE_TABLE, pvc_decide_table).
