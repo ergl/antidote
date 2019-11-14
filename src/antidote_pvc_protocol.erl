@@ -75,31 +75,8 @@ load(Size) ->
 read_request(Promise, Partition, Key) ->
     ok = pvc_read_replica:async_read(Promise, Partition, Key).
 
--ifdef(read_request).
-%% FIXME(borja): This will be sync, can we remove?
-read_request(Promise, Partition, Key, VCaggr, HasRead) ->
-    Received = os:timestamp(),
-    {Took, ok} = timer:tc(pvc_read_replica,
-                          async_read,
-                          [self(), Partition, Key, HasRead, VCaggr]),
-
-    WaitReceive = os:timestamp(),
-    receive
-        {error, Reason} ->
-            coord_req_promise:resolve({error, Reason}, Promise);
-
-        {ok, _Value, CommitVC, MaxVC} ->
-            ReceivedMsg = os:timestamp(),
-            Reply = {ok, #{rcv => Received,
-                           read_took => Took,
-                           wait_took => timer:now_diff(ReceivedMsg, WaitReceive),
-                           send => os:timestamp()}, CommitVC, MaxVC},
-            coord_req_promise:resolve(Reply, Promise)
-    end.
--else.
 read_request(Promise, Partition, Key, VCaggr, HasRead) ->
     ok = pvc_read_replica:async_read(Promise, Partition, Key, HasRead, VCaggr).
--endif.
 
 prepare(Partition, Protocol, TxId, Payload, PartitionVersion) ->
     Vote = antidote_pvc_vnode:prepare(Partition, Protocol, TxId, Payload, PartitionVersion),
