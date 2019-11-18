@@ -67,6 +67,7 @@
 
 %% PVC-only export
 -export([pvc_get_max_vc/3,
+         pvc_get_fixed_vc/2,
          pvc_insert_to_commit_log/2]).
 
 -ignore_xref([start_vnode/1]).
@@ -221,6 +222,15 @@ pvc_get_max_vc(Partition, ReadPartitions, VCAggr) ->
     riak_core_vnode_master:sync_command(
         {Partition, node()},
         {pvc_max_vc, ReadPartitions, VCAggr},
+        ?LOGGING_MASTER,
+        infinity
+    ).
+
+%% @doc Get the entry from the vlog at the given time
+pvc_get_fixed_vc(Partition, PrepTime) ->
+    riak_core_vnode_master:sync_command(
+        {Partition, node()},
+        {pvc_clog_entry_at, PrepTime},
         ?LOGGING_MASTER,
         infinity
     ).
@@ -609,6 +619,10 @@ handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State) ->
 handle_command({pvc_add_clog, VC}, _Sender, State) ->
     NewCLog = pvc_commit_log:insert(VC, State#state.pvc_clog),
     {reply, ok, State#state{pvc_clog=NewCLog}};
+
+handle_command({pvc_clog_entry_at, PrepTime}, _Sender, State) ->
+    VC = pvc_commit_log:get_max_entry_at(PrepTime, State#state.pvc_clog),
+    {reply, VC, State};
 
 handle_command(_Message, _Sender, State) ->
     {noreply, State}.

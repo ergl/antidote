@@ -57,6 +57,7 @@
 -type tx_id() :: term().
 -type decision() :: abort | {ready, pvc_vc()}.
 -type cache(_K, _V) :: ets:tab().
+-type cache(_K, _V1, _V2) :: ets:tab().
 
 -export_type([tx_id/0]).
 
@@ -92,6 +93,7 @@
 
 -type protocol_payload() :: #psi_payload{} | #ser_payload{} | #rc_payload{}.
 -type persist_data() :: #psi_data{} | #ser_data{} | #rc_data{}.
+-type last_queue_cache() :: cache(last_queue_tx, tx_id(), non_neg_integer()).
 
 %% Called internally by riak_core, or via rpc
 -ignore_xref([start_vnode/1,
@@ -135,7 +137,7 @@
     rc_storage :: cache(key(), val()),
 
     %% The last Transaction id to be enqueued, stored in ETS
-    last_queue_id :: cache(last_queue_tx, tx_id()),
+    last_queue_id :: last_queue_cache(),
 
     dequeue_timer = undefined :: timer:tref() | undefined
 }).
@@ -148,12 +150,15 @@
 most_recent_vc(Partition) ->
     ets:lookup_element(cache_name(Partition, ?MRVC_TABLE), mrvc, 2).
 
-%% @doc Get the current last tx id the tail of the commit queue.
--spec last_queue_id(partition_id()) -> {ok, tx_id()} | empty.
+%% @doc Get the id of the last transaction that was prepared at the given partition
+%%
+%%      Returns empty if there hasn't been any transactions yet
+%%
+-spec last_queue_id(partition_id()) -> {ok, tx_id(), non_neg_integer()} | empty.
 last_queue_id(Partition) ->
-    case ets:lookup_element(cache_name(Partition, ?LAST_ID_TABLE), last_queue_tx, 2) of
-        ignore -> empty;
-        TxId -> {ok, TxId}
+    case ets:lookup(cache_name(Partition, ?LAST_ID_TABLE), last_queue_tx) of
+        [{last_queue_tx, TxId, PrepareTime}] -> {ok, TxId, PrepareTime};
+        [] -> empty
     end.
 
 -spec is_txid_in_queue(partition_id(), tx_id()) -> boolean().
@@ -227,9 +232,6 @@ init([Partition]) ->
     MRVC = new_cache(Partition, ?MRVC_TABLE),
     true = ets:insert(MRVC, {mrvc, pvc_vclock:new()}),
 
-    LastIdTable = new_cache(Partition, ?LAST_ID_TABLE),
-    true = ets:insert(LastIdTable, {last_queue_tx, ignore}),
-
     State = #state{
         partition       = Partition,
         most_recent_vc  = MRVC,
@@ -239,7 +241,7 @@ init([Partition]) ->
         pending_writes  = new_cache(Partition, ?PENDING_WRITES_TABLE, ?PENDING_OPTS),
         decision_cache  = new_cache(Partition, ?DECIDE_TABLE, ?WRITE_HEAVY_OPTS),
         rc_storage      = new_cache(Partition, ?RC_STORAGE),
-        last_queue_id   = LastIdTable
+        last_queue_id   = new_cache(Partition, ?LAST_ID_TABLE)
     },
 
     {ok, State}.
@@ -320,6 +322,7 @@ prepare_internal(TxId, Payload, Version, State = #state{commit_queue=Queue,
             Seq = LastPrep + 1,
             NewQueue = pvc_commit_queue:enqueue(TxId, Queue),
             ok = persist_data(TxId, PersistData, State),
+            ok = persist_last_id(TxId, Seq, State#state.last_queue_id),
 
             ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {ok, Seq}]),
             Reply = {ok, Seq},
@@ -416,19 +419,16 @@ valid_writeset(#psi_data{write_keys=WKeys}, _Reads, Writes, Version, LastVsnCach
 persist_data(TxId, Data=#psi_data{write_keys=Keys}, State) ->
     true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
     true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- Keys]),
-    ok = cache_last_id(TxId, State#state.last_queue_id),
     ok;
 
 persist_data(TxId, Data=#ser_data{write_keys=WKeys, readset=RS}, State) ->
     true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
     true = ets:insert(State#state.pending_writes, [{Key, TxId} || Key <- WKeys]),
     true = ets:insert(State#state.pending_reads, [{Key, TxId} || {Key, _} <- RS]),
-    ok = cache_last_id(TxId, State#state.last_queue_id),
     ok;
 
 persist_data(TxId, Data=#rc_data{}, State) ->
     true = ets:insert(State#state.pending_tx_data, {TxId, Data}),
-    ok = cache_last_id(TxId, State#state.last_queue_id),
     ok.
 
 %%%===================================================================
@@ -506,9 +506,9 @@ valid_writeset_internal([Key | Rest], ConflictFun) ->
         true -> valid_writeset_internal(Rest, ConflictFun)
     end.
 
--spec cache_last_id(tx_id(), cache(last_queue_tx, tx_id())) -> ok.
-cache_last_id(TxId, LastIdTable) ->
-    true = ets:insert(LastIdTable, {last_queue_tx, TxId}),
+-spec persist_last_id(tx_id(), non_neg_integer(), last_queue_cache()) -> ok.
+persist_last_id(TxId, PrepareTime, LastIdTable) ->
+    true = ets:insert(LastIdTable, {last_queue_tx, TxId, PrepareTime}),
     ok.
 
 %%%===================================================================
