@@ -24,9 +24,9 @@
 -include("pvc.hrl").
 
 %% When the log reaches this size, the log will be pruned
--define(GC_THRESHOLD, 4000).
+-define(GC_THRESHOLD, 500).
 %% The number of versions to keep after a GC pass
--define(KEEP_VERSIONS, 2000).
+-define(KEEP_VERSIONS, 250).
 
 -record(clog, {
     at :: partition_id(),
