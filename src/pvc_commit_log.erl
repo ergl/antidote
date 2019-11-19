@@ -42,8 +42,6 @@
          insert/2,
          get_smaller_from_dots/3]).
 
--export([get_max_entry_at/2]).
-
 -spec new_at(partition_id()) -> clog().
 new_at(AtId) ->
     #clog{at=AtId, smallest=bottom, data=gb_trees:empty()}.
@@ -158,35 +156,6 @@ vc_ge_for_dots(Dots, A, B) ->
         {pvc_vclock:get_time(Dot, A), pvc_vclock:get_time(Dot, B)}
     end, Dots),
     lists:all(fun({X, Y}) -> X =< Y end, Compared).
-
--spec get_max_entry_at(non_neg_integer(), clog()) -> pvc_vc().
-get_max_entry_at(PrepTime, _C=#clog{at=P, smallest=Min, data=Tree}) when Min =/= bottom ->
-    case PrepTime < Min of
-        true ->
-            ok = antidote_stats_collector:log_fix_vc_miss(P),
-            pvc_vclock:new();
-        false ->
-            get_max_entry_at_internal(PrepTime, pvc_vclock:new(), gb_trees:balance(Tree))
-    end.
-
-get_max_entry_at_internal(PrepTime, Candidate, Tree) ->
-    case get_root(Tree) of
-        none ->
-            %% This will never happen on the first iteration, Tree always contains elements
-            Candidate;
-
-        {PrepTime, Value} ->
-            %% Element is in the tree, return it as is
-            Value;
-
-        {K1, V1} when K1 < PrepTime ->
-            %% If lower, keep on the right while keeping track of the biggest value
-            get_max_entry_at_internal(PrepTime, V1, right(Tree));
-
-        {K2, _} when K2 > PrepTime ->
-            %% If bigger, keep on the left while keeping the current candidate
-            get_max_entry_at_internal(PrepTime, Candidate, left(Tree))
-    end.
 
 %% Util
 

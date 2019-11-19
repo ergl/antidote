@@ -129,7 +129,7 @@ async_read(Promise, Partition, Key, HasRead, VCaggr) ->
         true ->
             gen_server:cast(Target, {read_vlog, Promise, Key, VCaggr});
         false ->
-            gen_server:cast(Target, {wait_ready, Promise, Key, ordsets:to_list(HasRead), VCaggr})
+            gen_server:cast(Target, {wait_ready, Promise, Key, HasRead, VCaggr})
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -175,25 +175,16 @@ handle_cast({read_vlog, Promise, Key, VCaggr}, State = #state{vlog_replica=VLog,
     {noreply, State};
 
 %% Empty HasRead, this is the first read
-handle_cast({wait_ready, Promise, Key, [], VCaggr}, State) ->
-    %% First read always has VCaggr set to 0, so no need to wait for MRVC
-    ok = enter_tx_wait(Promise, Key, VCaggr, State),
-    {noreply, State};
-
-%% Non-empty HasRead, read is from a transaction that has read something before
 handle_cast({wait_ready, Promise, Key, HasRead, VCaggr}, State) ->
-    ok = wait_mrvc(Promise, Key, HasRead, VCaggr, State),
+    Threshold = get_time_threshold(State#state.partition, VCaggr),
+    ok = wait_mrvc(Promise, Key, HasRead, VCaggr, Threshold, State),
     {noreply, State};
 
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({wait_mrvc, Promise, Key, HasRead, VCaggr}, State) ->
-    ok = wait_mrvc(Promise, Key, HasRead, VCaggr, State),
-    {noreply, State};
-
-handle_info({wait_for_tx_decision, Promise, Key, TxId, PrepTime}, State) ->
-    ok = wait_for_tx_decision(Promise, Key, TxId, PrepTime, State),
+handle_info({wait_mrvc, Promise, Key, HasRead, VCaggr, Threshold}, State) ->
+    ok = wait_mrvc(Promise, Key, HasRead, VCaggr, Threshold, State),
     {noreply, State};
 
 handle_info(Info, State) ->
@@ -204,56 +195,33 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec wait_mrvc(coord_req_promise:promise(), key(), ordsets:ordset(), pvc_vc(), #state{}) -> ok.
-wait_mrvc(Promise, Key, HasRead, VCaggr, State=#state{partition=Partition}) ->
-    case check_mrvc_ready(Partition, VCaggr) of
-        {not_ready, WaitTime} ->
-            erlang:send_after(WaitTime, self(), {wait_mrvc, Promise, Key, HasRead, VCaggr}),
-            ok;
-        ready ->
-            scan_and_read(Promise, Key, HasRead, VCaggr, State)
-    end.
+%% @doc Get how much we should wait before reading the partition
+%%
+%%      If the last prepared element is higher than the our clock, use that.
+%%      Otherwise, our current time.
+%%
+-spec get_time_threshold(partition_id(), pvc_vc()) -> non_neg_integer().
+get_time_threshold(Partition, VCaggr) ->
+    LastPrep = antidote_pvc_vnode:last_prepared(Partition),
+    OwnThreshold = pvc_vclock:get_time(Partition, VCaggr),
+    max(LastPrep, OwnThreshold).
 
-%% @doc Try and fix the maximum time we're allowed to read
-%%
-%%      We look at the last transaction id and prepare time that was
-%%      prepared at this partition, and then wait until it has been
-%%      decided and materialized in the partition (or been aborted).
-%%
-%%      When we're ready to read from the partition, we'll read UP
-%%      TO the clock time that we got from this transaction.
-%%
-%%      If this read is performed by the first transaction in the system,
-%%      proceed with a normal read, we don't need to wait.
--spec enter_tx_wait(coord_req_promise:promise(), key(), pvc_vc(), #state{}) -> ok.
-enter_tx_wait(Promise, Key, VCaggr, State=#state{partition=Partition}) ->
-    case antidote_pvc_vnode:last_queue_id(Partition) of
-        {ok, TxId, PrepTime} ->
-            %% At this point we can discard the VCaggr, we won't need it
-            wait_for_tx_decision(Promise, Key, TxId, PrepTime, State);
-        empty ->
-            scan_and_read(Promise, Key, [], VCaggr, State)
-    end.
+-spec wait_mrvc(Promise :: coord_req_promise:promise(),
+                Key :: key(),
+                HasRead :: ordsets:ordset(),
+                VCaggr :: pvc_vc(),
+                Threshold :: non_neg_integer(),
+                State :: #state{}) -> ok.
 
-%% @doc Perform a passive wait until the given TxId has been decided
-%%
-%%      Continue with a fixed read when decided
-%%
--spec wait_for_tx_decision(Promise :: coord_req_promise:promise(),
-                       Key :: key(),
-                       TxId :: antidote_pvc_vnode:tx_id(),
-                       PrepTime :: non_neg_integer(),
-                       State :: #state{}) -> ok.
-
-wait_for_tx_decision(Promise, Key, TxId, PrepTime, State=#state{partition=Partition}) ->
-    case check_queue_ready(Partition, TxId) of
+wait_mrvc(Promise, Key, HasRead, VCaggr, Threshold, State=#state{partition=Partition}) ->
+    case check_mrvc_ready(Partition, Threshold) of
         {not_ready, WaitTime} ->
             ?LAGER_LOG("~p at ~p = not ready", [?FUNCTION_NAME, Partition]),
-            erlang:send_after(WaitTime, self(), {wait_for_tx_decision, Promise, Key, TxId, PrepTime}),
+            erlang:send_after(WaitTime, self(), {wait_mrvc, Promise, Key, HasRead, VCaggr, Threshold}),
             ok;
         ready ->
             ?LAGER_LOG("~p at ~p = ready", [?FUNCTION_NAME, Partition]),
-            fix_vc_and_read(Promise, Key, PrepTime, State)
+            scan_and_read(Promise, Key, HasRead, VCaggr, Threshold, State)
     end.
 
 %% @doc Scan the replication log for a valid vector clock time for a read at this partition
@@ -266,59 +234,39 @@ wait_for_tx_decision(Promise, Key, TxId, PrepTime, State=#state{partition=Partit
                     Key :: key(),
                     HasRead :: ordsets:ordset(),
                     VCaggr :: pvc_vc(),
+                    Threshold :: non_neg_integer(),
                     State :: #state{}) -> ok.
 
-scan_and_read(Promise, Key, HasRead, VCaggr, #state{partition=Partition,
-                                                    vlog_replica=VLog,
-                                                    default_bottom_value=BottomValue,
-                                                    default_bottom_clock=ClockValue}) ->
-    ?LAGER_LOG("scan_and_read(~p, ~p, ~p, ~p)", [Promise, Key, HasRead, VCaggr]),
-    MaxVCRes = find_max_vc(Partition, HasRead, VCaggr),
-    ?LAGER_LOG("MaxVC = ~p", [MaxVCRes]),
-    case MaxVCRes of
+scan_and_read(Promise, Key, HasRead, VCaggr, Threshold, #state{partition=Partition,
+                                                               vlog_replica=VLog,
+                                                               default_bottom_value=BottomValue,
+                                                               default_bottom_clock=ClockValue}) ->
+
+    FixVCRes = find_fixed_vc(Partition, HasRead, VCaggr, Threshold),
+    case FixVCRes of
         {error, Reason} ->
             coord_req_promise:resolve({error, Reason}, Promise);
         {ok, MaxVC} ->
             read_vlog_internal(Promise, Key, MaxVC, VLog, {BottomValue, ClockValue})
     end.
 
+-spec find_fixed_vc(Partition :: partition_id(),
+                    HasRead :: ordsets:ordset(),
+                    VCaggr :: pvc_vc(),
+                    Threshold :: non_neg_integer()) -> {ok, pvc_vc()} | {error, reason()}.
 
--spec fix_vc_and_read(Promise :: coord_req_promise:promise(),
-                      Key :: key(),
-                      PrepTime :: non_neg_integer(),
-                      State :: #state{}) -> ok.
+find_fixed_vc(Partition, HasRead, VCaggr, Threshold) ->
+    MaxVC = logging_vnode:pvc_get_max_vc_with_threshold(Partition, HasRead, VCaggr, Threshold),
 
-fix_vc_and_read(Promise, Key, PrepTime, #state{partition=Partition,
-                                               vlog_replica=VLog,
-                                               default_bottom_value=BottomValue,
-                                               default_bottom_clock=ClockValue}) ->
+    ?LAGER_LOG("fixed MaxVC = ~p", [MaxVC]),
 
-    ?LAGER_LOG("~p(~p, ~p, ~p, ~p)", [?FUNCTION_NAME, Promise, Key]),
-
-    FixVC = logging_vnode:pvc_get_fixed_vc(Partition, PrepTime),
-    ?LAGER_LOG("FixedVC = ~p", [FixVC]),
-    read_vlog_internal(Promise, Key, FixVC, VLog, {BottomValue, ClockValue}).
-
-%% @doc Scan the log for the maximum aggregate time that will be used for a read
--spec find_max_vc(Partition :: partition_id(),
-                  HasRead :: ordsets:ordset(),
-                  VCaggr :: pvc_vc()) -> {ok, pvc_vc()} | {error, reason()}.
-
-find_max_vc(Partition, HasRead, VCaggr) ->
-    %% If this is the first partition we're reading, our MaxVC will be
-    %% the current MostRecentVC at this partition
-    MaxVC = logging_vnode:pvc_get_max_vc(Partition, ordsets:to_list(HasRead), VCaggr),
-    ?LAGER_LOG("Scanned MaxVC ~p", [MaxVC]),
-    %% If the selected time is too old, we should abort the read
     MaxSelectedTime = pvc_vclock:get_time(Partition, MaxVC),
     CurrentThresholdTime = pvc_vclock:get_time(Partition, VCaggr),
-    ValidVersionTime = MaxSelectedTime >= CurrentThresholdTime,
-    case ValidVersionTime of
+    if
+        MaxSelectedTime < CurrentThresholdTime ->
+            {error, maxvc_bad_vc};
         true ->
-            {ok, MaxVC};
-
-        false ->
-            {error, maxvc_bad_vc}
+            {ok, MaxVC}
     end.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
@@ -341,12 +289,11 @@ read_vlog_internal(Promise, Key, MaxVC, VLogCache, DefaultBottom) ->
 %%
 %%      If it is not, will sleep for 1000 ms and try again.
 %%
--spec check_mrvc_ready(partition_id(), pvc_vc()) -> ready | {not_ready, non_neg_integer()}.
-check_mrvc_ready(Partition, VCaggr) ->
+-spec check_mrvc_ready(partition_id(), non_neg_integer()) -> ready | {not_ready, non_neg_integer()}.
+check_mrvc_ready(Partition, Threshold) ->
     MRVC = antidote_pvc_vnode:most_recent_vc(Partition),
     MostRecentTime = pvc_vclock:get_time(Partition, MRVC),
-    AggregateTime = pvc_vclock:get_time(Partition, VCaggr),
-    case MostRecentTime < AggregateTime of
+    case MostRecentTime < Threshold of
         true ->
             ?LAGER_LOG("~p at ~p = not ready", [?FUNCTION_NAME, Partition]),
             ok = antidote_stats_collector:log_partition_not_ready(Partition),
@@ -354,13 +301,6 @@ check_mrvc_ready(Partition, VCaggr) ->
         false ->
             ?LAGER_LOG("~p at ~p = ready", [?FUNCTION_NAME, Partition]),
             ready
-    end.
-
--spec check_queue_ready(partition_id(), antidote_pvc_vnode:tx_id()) -> ready | {not_ready, non_neg_integer()}.
-check_queue_ready(Partition, TxId) ->
-    case antidote_pvc_vnode:is_txid_in_queue(Partition, TxId) of
-        false -> ready;
-        true -> {not_ready, ?QUEUE_RETRY_MS}
     end.
 
 -spec generate_replica_name(partition_id(), non_neg_integer()) -> atom().

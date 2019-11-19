@@ -66,8 +66,7 @@
          handle_exit/3]).
 
 %% PVC-only export
--export([pvc_get_max_vc/3,
-         pvc_get_fixed_vc/2,
+-export([pvc_get_max_vc_with_threshold/4,
          pvc_insert_to_commit_log/2]).
 
 -ignore_xref([start_vnode/1]).
@@ -226,14 +225,12 @@ pvc_get_max_vc(Partition, ReadPartitions, VCAggr) ->
         infinity
     ).
 
-%% @doc Get the entry from the vlog at the given time
-pvc_get_fixed_vc(Partition, PrepTime) ->
-    riak_core_vnode_master:sync_command(
-        {Partition, node()},
-        {pvc_clog_entry_at, PrepTime},
-        ?LOGGING_MASTER,
-        infinity
-    ).
+-spec pvc_get_max_vc_with_threshold(partition_id(), [partition_id()], pvc_vc(), non_neg_integer()) -> pvc_vc().
+pvc_get_max_vc_with_threshold(Partition, Dots, VCaggr, Threshold) ->
+    %% If we're reading this CLog, we have never read this partition before
+    NewDots = ordsets:add_element(Partition, Dots),
+    NewVCaggr = pvc_vclock:set_time(Partition, Threshold, VCaggr),
+    pvc_get_max_vc(Partition, ordsets:to_list(NewDots), NewVCaggr).
 
 %% @doc Append the given Vector Clock to the Commit Log
 -spec pvc_insert_to_commit_log(partition_id(), pvc_vc()) -> ok.
@@ -619,10 +616,6 @@ handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State) ->
 handle_command({pvc_add_clog, VC}, _Sender, State) ->
     NewCLog = pvc_commit_log:insert(VC, State#state.pvc_clog),
     {reply, ok, State#state{pvc_clog=NewCLog}};
-
-handle_command({pvc_clog_entry_at, PrepTime}, _Sender, State) ->
-    VC = pvc_commit_log:get_max_entry_at(PrepTime, State#state.pvc_clog),
-    {reply, VC, State};
 
 handle_command(_Message, _Sender, State) ->
     {noreply, State}.

@@ -38,7 +38,6 @@
          init_stale_metrics/0,
          log_version_miss/1,
          log_clog_miss/1,
-         log_fix_vc_miss/1,
          log_partition_not_ready/1,
          report_stats/0]).
 
@@ -54,7 +53,6 @@
     partition :: partition_id(),
     vlog_misses = 0 :: non_neg_integer(),
     clog_misses = 0 :: non_neg_integer(),
-    fix_vc_misses = 0 :: non_neg_integer(),
     not_ready_tries = 0 :: non_neg_integer()
 }).
 
@@ -77,10 +75,6 @@ log_version_miss(Partition) ->
 -spec log_clog_miss(partition_id()) -> ok.
 log_clog_miss(Partition) ->
     incr_counter(Partition, #stat_entry.clog_misses).
-
--spec log_fix_vc_miss(partition_id()) -> ok.
-log_fix_vc_miss(Partition) ->
-    incr_counter(Partition, #stat_entry.fix_vc_misses).
 
 -spec log_partition_not_ready(partition_id()) -> ok.
 log_partition_not_ready(Partition) ->

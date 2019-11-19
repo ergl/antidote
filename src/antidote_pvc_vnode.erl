@@ -29,8 +29,7 @@
 -export([most_recent_vc/1,
          vnodes_ready/0,
          replicas_ready/0,
-         last_queue_id/1,
-         is_txid_in_queue/2]).
+         last_prepared/1]).
 
 %% Protocol API
 -export([rc_read/3,
@@ -150,20 +149,15 @@
 most_recent_vc(Partition) ->
     ets:lookup_element(cache_name(Partition, ?MRVC_TABLE), mrvc, 2).
 
-%% @doc Get the id of the last transaction that was prepared at the given partition
+%% @doc Get the latest LastPrep assigned (last prepared time)
 %%
-%%      Returns empty if there hasn't been any transactions yet
-%%
--spec last_queue_id(partition_id()) -> {ok, tx_id(), non_neg_integer()} | empty.
-last_queue_id(Partition) ->
+%%      Returns 0 if there hasn't been any
+-spec last_prepared(partition_id()) -> non_neg_integer().
+last_prepared(Partition) ->
     case ets:lookup(cache_name(Partition, ?LAST_ID_TABLE), last_queue_tx) of
-        [{last_queue_tx, TxId, PrepareTime}] -> {ok, TxId, PrepareTime};
-        [] -> empty
+        [{last_queue_tx, PrepareTime}] -> PrepareTime;
+        [] -> 0
     end.
-
--spec is_txid_in_queue(partition_id(), tx_id()) -> boolean().
-is_txid_in_queue(Partition, TxId) ->
-    ets:member(cache_name(Partition, ?PENDING_DATA_TABLE), TxId).
 
 %% @doc For all nodes in the system, report if all the vnodes are ready
 -spec vnodes_ready() -> boolean().
@@ -322,7 +316,7 @@ prepare_internal(TxId, Payload, Version, State = #state{commit_queue=Queue,
             Seq = LastPrep + 1,
             NewQueue = pvc_commit_queue:enqueue(TxId, Queue),
             ok = persist_data(TxId, PersistData, State),
-            ok = persist_last_id(TxId, Seq, State#state.last_queue_id),
+            ok = persist_last_prepared(Seq, State#state.last_queue_id),
 
             ?LAGER_LOG("prepare @ ~p = ~p", [State#state.partition, {ok, Seq}]),
             Reply = {ok, Seq},
@@ -506,9 +500,9 @@ valid_writeset_internal([Key | Rest], ConflictFun) ->
         true -> valid_writeset_internal(Rest, ConflictFun)
     end.
 
--spec persist_last_id(tx_id(), non_neg_integer(), last_queue_cache()) -> ok.
-persist_last_id(TxId, PrepareTime, LastIdTable) ->
-    true = ets:insert(LastIdTable, {last_queue_tx, TxId, PrepareTime}),
+-spec persist_last_prepared(non_neg_integer(), last_queue_cache()) -> ok.
+persist_last_prepared(PrepareTime, LastIdTable) ->
+    true = ets:insert(LastIdTable, {last_queue_tx, PrepareTime}),
     ok.
 
 %%%===================================================================

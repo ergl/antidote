@@ -29,4 +29,3 @@
 %% Time (in ms) a partition should wait between retries at checking
 %% a partition's most recent vc during reads.
 -define(MRVC_RETRY_MS, (2 * ?DEQUEUE_INTERVAL)).
--define(QUEUE_RETRY_MS, (2 * ?DEQUEUE_INTERVAL)).
