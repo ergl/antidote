@@ -70,17 +70,15 @@ init_stale_metrics() ->
 
 -spec log_version_miss(partition_id()) -> ok.
 log_version_miss(Partition) ->
-    _ = ets:update_counter(?MODULE, Partition, {#stat_entry.vlog_misses, 1}, fresh_entry(Partition)),
-    ok.
+    incr_counter(Partition, #stat_entry.vlog_misses).
 
 -spec log_clog_miss(partition_id()) -> ok.
 log_clog_miss(Partition) ->
-    _ = ets:update_counter(?MODULE, Partition, {#stat_entry.clog_misses, 1}, fresh_entry(Partition)),
-    ok.
+    incr_counter(Partition, #stat_entry.clog_misses).
 
-log_partition_not_ready(P) ->
-    _ = ets:update_counter(?MODULE, P, {#stat_entry.not_ready_tries, 1}, fresh_entry(P)),
-    ok.
+-spec log_partition_not_ready(partition_id()) -> ok.
+log_partition_not_ready(Partition) ->
+    incr_counter(Partition, #stat_entry.not_ready_tries).
 
 -spec report_stats() -> [#{}].
 report_stats() ->
@@ -132,9 +130,10 @@ init_metrics() ->
         exometer:new(Metric, histogram, [{time_span, timer:seconds(60)}])
     end, Metrics).
 
--spec fresh_entry(partition_id()) -> #stat_entry{}.
-fresh_entry(P) ->
-    #stat_entry{partition = P, not_ready_tries = 0, vlog_misses = 0, clog_misses = 0}.
+-spec incr_counter(partition_id(), non_neg_integer()) -> ok.
+incr_counter(P, Pos) ->
+    _ = ets:update_counter(?MODULE, P, {Pos, 1}, #stat_entry{partition=P}),
+    ok.
 
 -spec entry_to_map(#stat_entry{}) -> #{atom() => term()}.
 entry_to_map(Entry) ->
