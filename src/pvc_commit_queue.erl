@@ -34,6 +34,8 @@
          enqueue/2,
          dequeue_ready/3]).
 
+-export([to_list/2]).
+
 -spec new() -> cqueue().
 new() -> queue:new().
 
@@ -72,6 +74,16 @@ get_ready(Queue, DecideTable, PendingData, Acc) ->
                     {Acc, Queue}
             end
     end.
+
+-spec to_list(cqueue(), cache_id()) -> [{txid(), pvc_vc() | abort | pending}, ...].
+to_list(Queue, DecideTable) ->
+    [begin
+         case ets:lookup(DecideTable, TxId) of
+             [{TxId, abort}] -> {TxId, abort};
+             [{TxId, ready, VC}] -> {TxId, VC};
+             [] -> {TxId, pending}
+         end
+     end || TxId <- queue:to_list(Queue)].
 
 -ifdef(TEST).
 

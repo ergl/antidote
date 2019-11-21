@@ -25,6 +25,8 @@
 -include("pvc.hrl").
 -include("debug_log.hrl").
 
+-export([fix_partition_state/4]).
+
 %% Public API
 -export([most_recent_vc/1,
          vnodes_ready/0,
@@ -215,6 +217,12 @@ prepare(Partition, Protocol, TxId, Payload, Version) ->
 decide(Partition, TxId, Outcome) ->
     decide_internal(Partition, TxId, Outcome).
 
+fix_partition_state(Partition, HasRead, VCaggr, Threshold) ->
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                         {fix_partition_state, HasRead, VCaggr, Threshold},
+                                         ?VNODE_MASTER,
+                                         infinity).
+
 %%%===================================================================
 %%% riak_core callbacks
 %%%===================================================================
@@ -273,7 +281,7 @@ handle_command(refresh_replicas, _From, S = #state{partition=P, replicas_n=N}) -
     {reply, Result, S};
 
 handle_command({unsafe_set_clock, Seq, MRVC}, _From, S = #state{partition=P, most_recent_vc=MRVCTable}) ->
-    ok = logging_vnode:pvc_insert_to_commit_log(P, MRVC),
+    ok = logging_vnode:pvc_insert_to_commit_log(P, MRVC, ignore),
     true = ets:insert(MRVCTable, {mrvc, MRVC}),
     {reply, ok, S#state{default_last_vsn=Seq, last_prepared=Seq}};
 
@@ -293,7 +301,14 @@ handle_command({prepare, TxId, Payload, Version}, _From, State) ->
 
 handle_command(dequeue_event, _From, State) ->
     NewQueue = dequeue_event_internal(State),
-    {noreply, State#state{commit_queue=NewQueue}}.
+    {noreply, State#state{commit_queue=NewQueue}};
+
+handle_command({fix_partition_state, HasRead, VCaggr, Threshold}, _From, State=#state{partition=Partition,
+                                                                                      commit_queue=Queue,
+                                                                                      decision_cache=DecideTable}) ->
+    FixedQueue = pvc_commit_queue:to_list(Queue, DecideTable),
+    {MaxVC, FixedLog} = logging_vnode:pvc_get_max_vc_with_threshold(Partition, HasRead, VCaggr, Threshold),
+    {reply, {MaxVC, FixedQueue, FixedLog}, State}.
 
 %%%===================================================================
 %%% Prepare Internal Functions
@@ -621,7 +636,7 @@ process_ready_tx(TxId, TxData, CommitVC, #state{partition=Partition,
 
     %% Update Commit Log
     ?LAGER_LOG("Processing ~p, append to CLog", [TxId]),
-    ok = logging_vnode:pvc_insert_to_commit_log(Partition, NewMRVC),
+    ok = logging_vnode:pvc_insert_to_commit_log(Partition, NewMRVC, TxId),
 
     ?LAGER_LOG("Processing ~p, cache VLog.last", [TxId]),
     CommitTime = pvc_vclock:get_time(Partition, CommitVC),

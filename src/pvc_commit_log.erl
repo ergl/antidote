@@ -31,7 +31,7 @@
 -record(clog, {
     at :: partition_id(),
     smallest :: non_neg_integer() | bottom,
-    data :: gb_trees:tree(non_neg_integer(), pvc_vc())
+    data :: gb_trees:tree(non_neg_integer(), {pvc_vc(), term()})
 }).
 
 -type clog() :: #clog{}.
@@ -39,8 +39,10 @@
 -export_type([clog/0]).
 
 -export([new_at/1,
-         insert/2,
+         insert/3,
          get_smaller_from_dots/3]).
+
+-export([to_list/1]).
 
 -spec new_at(partition_id()) -> clog().
 new_at(AtId) ->
@@ -54,16 +56,16 @@ new_at(AtId) ->
 %%
 %% If this assumption doesn't hold, this will fail
 %%
--spec insert(pvc_vc(), clog()) -> clog().
-insert(VC, C=#clog{at=Id, smallest=bottom, data=Tree}) ->
+-spec insert(pvc_vc(), term(), clog()) -> clog().
+insert(VC, TxId, C=#clog{at=Id, smallest=bottom, data=Tree}) ->
     Key = pvc_vclock:get_time(Id, VC),
     %% If smallest is bottom, set the first time we get to it
     %% IMPORTANT: We assume that the entries will be added in order
-    C#clog{smallest=Key, data=gb_trees:insert(Key, VC, Tree)};
+    C#clog{smallest=Key, data=gb_trees:insert(Key, {VC, TxId}, Tree)};
 
-insert(VC, C=#clog{at=Id, smallest=Smallest, data=Tree}) ->
+insert(VC, TxId, C=#clog{at=Id, smallest=Smallest, data=Tree}) ->
     Key = pvc_vclock:get_time(Id, VC),
-    {NewSmallest, NewTree} = maybe_gc(Smallest, gb_trees:insert(Key, VC, Tree)),
+    {NewSmallest, NewTree} = maybe_gc(Smallest, gb_trees:insert(Key, {VC, TxId}, Tree)),
     C#clog{smallest=NewSmallest, data=NewTree}.
 
 maybe_gc(Smallest, Tree) ->
@@ -84,6 +86,10 @@ gc_tree(N, N, Acc) ->
 
 gc_tree(Start, Edge, Acc) when Edge > Start ->
     gc_tree(Start + 1, Edge, gb_trees:delete_any(Start, Acc)).
+
+-spec to_list(clog()) -> [pvc_vc(), ...].
+to_list(#clog{data=Data}) ->
+    gb_trees:values(Data).
 
 get_smaller_from_dots(HasRead, InVC, C=#clog{at=P, smallest=Min}) ->
     Selected = get_smaller_from_dots_internal(HasRead, InVC, C),
@@ -109,7 +115,8 @@ get_smaller_from_dots_internal([], _, #clog{data=Tree}) ->
         true ->
             pvc_vclock:new();
         false ->
-            element(2, gb_trees:largest(Tree))
+            {_, {VC, _}} = gb_trees:largest(Tree),
+            VC
     end;
 
 get_smaller_from_dots_internal(Dots, VC, #clog{data=Tree}) ->
@@ -127,7 +134,7 @@ get_smaller_from_dots_internal(Dots, VC, Tree, Acc) ->
     case get_root(Tree) of
         none ->
             Acc;
-        {_K, Value} ->
+        {_K, {Value, _TxId}} ->
             case vc_ge_for_dots(Dots, Value, VC) of
                 false ->
                     %% Given VC is too large, try in a previous entry

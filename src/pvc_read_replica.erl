@@ -171,7 +171,7 @@ handle_cast({read_vlog, Promise, Key, VCaggr}, State = #state{vlog_replica=VLog,
                                                               default_bottom_value=DefaultValue,
                                                               default_bottom_clock=DefaultClock}) ->
 
-    ok = read_vlog_internal(Promise, Key, VCaggr, VLog, {DefaultValue, DefaultClock}),
+    ok = read_vlog_internal(Promise, Key, VCaggr, VLog, {DefaultValue, DefaultClock}, [], []),
     {noreply, State};
 
 %% Empty HasRead, this is the first read
@@ -244,19 +244,19 @@ scan_and_read(Promise, Key, HasRead, VCaggr, Threshold, #state{partition=Partiti
 
     FixVCRes = find_fixed_vc(Partition, HasRead, VCaggr, Threshold),
     case FixVCRes of
-        {error, Reason} ->
-            coord_req_promise:resolve({error, Reason}, Promise);
-        {ok, MaxVC} ->
-            read_vlog_internal(Promise, Key, MaxVC, VLog, {BottomValue, ClockValue})
+        {error, MaxVC, Queue, Log} ->
+            coord_req_promise:resolve({error, MaxVC, Log, Queue}, Promise);
+        {ok, MaxVC, Queue, Log} ->
+            read_vlog_internal(Promise, Key, MaxVC, VLog, {BottomValue, ClockValue}, Log, Queue)
     end.
 
 -spec find_fixed_vc(Partition :: partition_id(),
                     HasRead :: ordsets:ordset(),
                     VCaggr :: pvc_vc(),
-                    Threshold :: non_neg_integer()) -> {ok, pvc_vc()} | {error, reason()}.
+                    Threshold :: non_neg_integer()) -> {ok, pvc_vc(), _, _} | {error, pvc_vc(), _, _}.
 
 find_fixed_vc(Partition, HasRead, VCaggr, Threshold) ->
-    MaxVC = logging_vnode:pvc_get_max_vc_with_threshold(Partition, HasRead, VCaggr, Threshold),
+    {MaxVC, Queue, Log} = antidote_pvc_vnode:fix_partition_state(Partition, HasRead, VCaggr, Threshold),
 
     ?LAGER_LOG("fixed MaxVC = ~p", [MaxVC]),
 
@@ -264,9 +264,9 @@ find_fixed_vc(Partition, HasRead, VCaggr, Threshold) ->
     CurrentThresholdTime = pvc_vclock:get_time(Partition, VCaggr),
     if
         MaxSelectedTime < CurrentThresholdTime ->
-            {error, maxvc_bad_vc};
+            {error, MaxVC, Queue, Log};
         true ->
-            {ok, MaxVC}
+            {ok, MaxVC, Queue, Log}
     end.
 
 %% @doc Given a key and a version vector clock, get the appropiate snapshot
@@ -275,15 +275,11 @@ find_fixed_vc(Partition, HasRead, VCaggr, Threshold) ->
 %%      to the coordinator the value of that snapshot, along with the commit
 %%      vector clock time of that snapshot.
 %%
--spec read_vlog_internal(coord_req_promise:promise(), key(), pvc_vc(), atom(), tuple()) -> ok.
-read_vlog_internal(Promise, Key, MaxVC, VLogCache, DefaultBottom) ->
+-spec read_vlog_internal(coord_req_promise:promise(), key(), pvc_vc(), atom(), tuple(), _, _) -> ok.
+read_vlog_internal(Promise, Key, MaxVC, VLogCache, DefaultBottom, Log, Queue) ->
     ?LAGER_LOG("vlog read(~p, ~p, ~p)", [Promise, Key, MaxVC]),
-    case materializer_vnode:pvc_read_replica(Key, MaxVC, VLogCache, DefaultBottom) of
-        {error, Reason} ->
-            coord_req_promise:resolve({error, Reason}, Promise);
-        {ok, Value, VersionVC} ->
-            coord_req_promise:resolve({ok, Value, VersionVC, MaxVC}, Promise)
-    end.
+    {ok, Value, VersionVC} = materializer_vnode:pvc_read_replica(Key, MaxVC, VLogCache, DefaultBottom),
+    coord_req_promise:resolve({ok, Value, VersionVC, MaxVC, Log, Queue}, Promise).
 
 %% @doc Check if this partition is ready to proceed with a PVC read.
 %%

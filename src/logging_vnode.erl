@@ -67,7 +67,7 @@
 
 %% PVC-only export
 -export([pvc_get_max_vc_with_threshold/4,
-         pvc_insert_to_commit_log/2]).
+         pvc_insert_to_commit_log/3]).
 
 -ignore_xref([start_vnode/1]).
 
@@ -216,7 +216,7 @@ get_all(IndexNode, LogId, Continuation, PrevOps) ->
                                         infinity).
 
 %% @doc Scan the CLog for the MaxVC
--spec pvc_get_max_vc(partition_id(), [partition_id()], pvc_vc()) -> pvc_vc().
+-spec pvc_get_max_vc(partition_id(), [partition_id()], pvc_vc()) -> {pvc_vc(), [pvc_vc(), ...]}.
 pvc_get_max_vc(Partition, ReadPartitions, VCAggr) ->
     riak_core_vnode_master:sync_command(
         {Partition, node()},
@@ -225,7 +225,7 @@ pvc_get_max_vc(Partition, ReadPartitions, VCAggr) ->
         infinity
     ).
 
--spec pvc_get_max_vc_with_threshold(partition_id(), [partition_id()], pvc_vc(), non_neg_integer()) -> pvc_vc().
+-spec pvc_get_max_vc_with_threshold(partition_id(), [partition_id()], pvc_vc(), non_neg_integer()) -> {pvc_vc(), [pvc_vc(), ...]}.
 pvc_get_max_vc_with_threshold(Partition, Dots, VCaggr, Threshold) ->
     %% If we're reading this CLog, we have never read this partition before
     NewDots = ordsets:add_element(Partition, Dots),
@@ -233,11 +233,11 @@ pvc_get_max_vc_with_threshold(Partition, Dots, VCaggr, Threshold) ->
     pvc_get_max_vc(Partition, ordsets:to_list(NewDots), NewVCaggr).
 
 %% @doc Append the given Vector Clock to the Commit Log
--spec pvc_insert_to_commit_log(partition_id(), pvc_vc()) -> ok.
-pvc_insert_to_commit_log(Partition, VC) ->
+-spec pvc_insert_to_commit_log(partition_id(), pvc_vc(), _) -> ok.
+pvc_insert_to_commit_log(Partition, VC, TxId) ->
     riak_core_vnode_master:sync_command(
         {Partition, node()},
-        {pvc_add_clog, VC},
+        {pvc_add_clog, VC, TxId},
         ?LOGGING_MASTER,
         infinity
     ).
@@ -611,10 +611,11 @@ handle_command({get_all, LogId, Continuation, Ops}, _Sender,
 
 handle_command({pvc_max_vc, ReadPartitions, VCAggr}, _Sender, State) ->
     MaxVC = pvc_commit_log:get_smaller_from_dots(ReadPartitions, VCAggr, State#state.pvc_clog),
-    {reply, MaxVC, State};
+    CLog = pvc_commit_log:to_list(State#state.pvc_clog),
+    {reply, {MaxVC, CLog}, State};
 
-handle_command({pvc_add_clog, VC}, _Sender, State) ->
-    NewCLog = pvc_commit_log:insert(VC, State#state.pvc_clog),
+handle_command({pvc_add_clog, VC, TxId}, _Sender, State) ->
+    NewCLog = pvc_commit_log:insert(VC, TxId, State#state.pvc_clog),
     {reply, ok, State#state{pvc_clog=NewCLog}};
 
 handle_command(_Message, _Sender, State) ->
@@ -702,7 +703,7 @@ fill_pvc_log([{_, LogRecord}], PVCLog) ->
 %% @deprecated
 -spec add_to_pvc_log(#commit_log_payload{}, pvc_commit_log:clog()) -> pvc_commit_log:clog().
 add_to_pvc_log(#commit_log_payload{pvc_metadata = PVCTime}, PVCLog) ->
-    pvc_commit_log:insert(PVCTime#pvc_time.vcaggr, PVCLog).
+    pvc_commit_log:insert(PVCTime#pvc_time.vcaggr, ignore, PVCLog).
 
 %% This is called when the vnode starts and loads into the cache
 %% the id of the last operation appened to the log, so that new ops will
