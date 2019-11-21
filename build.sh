@@ -33,7 +33,11 @@ main() {
             sleep 2
             _build/"${profile}"/rel/antidote/bin/env ping
             ;;
-
+        *)
+            echo "Invalid comand: ${command}"
+            echo "./build.sh cmd profile || cmd := compile | run | stop | restart"
+            exit 1
+            ;;
     esac
 }
 
