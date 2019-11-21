@@ -670,6 +670,7 @@ get_last_op_from_log(Log, Continuation, ClockTable, PrevMaxVector, PVCLog) ->
             end
     end.
 
+%% @deprecated
 -spec fill_pvc_log([{log_id(), #log_record{}}], pvc_commit_log:clog()) -> pvc_commit_log:clog().
 fill_pvc_log([], PVCLog) ->
     PVCLog;
@@ -691,6 +692,7 @@ fill_pvc_log([{_, LogRecord}], PVCLog) ->
             PVCLog
     end.
 
+%% @deprecated
 -spec add_to_pvc_log(#commit_log_payload{}, pvc_commit_log:clog()) -> pvc_commit_log:clog().
 add_to_pvc_log(#commit_log_payload{pvc_metadata = PVCTime}, PVCLog) ->
     pvc_commit_log:insert(PVCTime#pvc_time.vcaggr, PVCLog).
