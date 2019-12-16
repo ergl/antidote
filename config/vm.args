@@ -41,7 +41,7 @@
 ## Riak Core configuration values coming from the command line.
 -riak_core handoff_port ${HANDOFF_PORT}
 
--riak_core ring_creation_size 128
+-riak_core ring_creation_size 64
 
 ## Set Max heap size to 100 MB (on 64-bit, 1 word = 8 bytes)
 +hmax 12500000
